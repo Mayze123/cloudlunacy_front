@@ -1,0 +1,5 @@
+# config/dynamic.yml
+# Initial dynamic configuration for Traefik.
+tcp:
+  routers: {}
+  services: {}

@@ -1,0 +1,24 @@
+version: "3.8"
+
+services:
+  traefik:
+    image: traefik:v2.9
+    container_name: traefik
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      # Mount the static configuration file (read-only)
+      - "./config/traefik.yml:/traefik.yml:ro"
+      # Mount the dynamic configuration file (read-write)
+      - "./config/dynamic.yml:/opt/traefik/dynamic.yml:rw"
+      # Mount the certificate directory (read-only)
+      - "/etc/letsencrypt:/letsencrypt:ro"
+      # Mount Docker socket for Traefik to discover containers (if needed)
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+    command:
+      - "--log.level=INFO"
+      - "--api.insecure=false" # Ensure the dashboard is secured in production.
+      - "--providers.file.filename=/traefik.yml"
+      - "--entrypoints.mongodb.address=:27017"
+      - "--providers.docker=false"

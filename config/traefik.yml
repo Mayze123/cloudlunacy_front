@@ -1,0 +1,20 @@
+# config/traefik.yml
+# Traefik static configuration file
+
+entryPoints:
+  mongodb:
+    address: ":27017"
+
+# TLS configuration using a wildcard certificate.
+tls:
+  stores:
+    default:
+      defaultCertificate:
+        certFile: "/letsencrypt/live/mongodb.cloudlunacy.uk/fullchain.pem"
+        keyFile: "/letsencrypt/live/mongodb.cloudlunacy.uk/privkey.pem"
+
+# File provider for dynamic configuration. Traefik will watch this file for changes.
+providers:
+  file:
+    filename: "/opt/traefik/dynamic.yml" # Adjust this path if needed
+    watch: true
