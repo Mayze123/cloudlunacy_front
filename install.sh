@@ -39,11 +39,16 @@ echo "[INFO] Installing Node.js dependencies..."
 npm install --production
 
 echo "[INFO] Creating Docker network if needed..."
-docker network create traefik_network --ignore-existing || true
-docker network inspect traefik_network >/dev/null 2>&1 || {
-  echo "[ERROR] Failed to create traefik_network"
-  exit 1
-}
+if ! docker network inspect traefik_network >/dev/null 2>&1; then
+    if docker network create traefik_network; then
+        echo "[INFO] Created traefik_network successfully"
+    else
+        echo "[ERROR] Failed to create traefik_network"
+        exit 1
+    fi
+else
+    echo "[INFO] traefik_network already exists"
+fi
 
 echo "[INFO] Setting up systemd service..."
 
