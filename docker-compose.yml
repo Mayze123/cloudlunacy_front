@@ -1,5 +1,9 @@
 version: "3.8"
 
+networks:
+  traefik_network:
+    driver: bridge
+    name: traefik_network
 services:
   traefik:
     image: traefik:v2.9
@@ -7,6 +11,8 @@ services:
     restart: unless-stopped
     ports:
       - "27017:27017"
+    networks:
+      - traefik_network
     volumes:
       # Mount the static configuration file (read-only)
       - "./config/traefik.yml:/traefik.yml:ro"

@@ -70,11 +70,7 @@ function updateDynamicConfig(subdomain, targetIp) {
   // Define the new service to route to the target IP and port
   config.tcp.services[serviceName] = {
     loadBalancer: {
-      servers: [
-        {
-          address: `${targetIp}:27017`,
-        },
-      ],
+      servers: [{ address: "mongodb:27017" }],
     },
   };
 
