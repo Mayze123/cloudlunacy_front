@@ -35,6 +35,13 @@ fi
 echo "[INFO] Installing Node.js dependencies..."
 npm install --production
 
+echo "[INFO] Creating Docker network if needed..."
+docker network create traefik_network --ignore-existing || true
+docker network inspect traefik_network >/dev/null 2>&1 || {
+  echo "[ERROR] Failed to create traefik_network"
+  exit 1
+}
+
 echo "[INFO] Setting up systemd service..."
 
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
