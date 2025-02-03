@@ -10,8 +10,8 @@ tls:
   stores:
     default:
       defaultCertificate:
-        certFile: "/letsencrypt/live/mongodb.cloudlunacy.uk/fullchain.pem"
-        keyFile: "/letsencrypt/live/mongodb.cloudlunacy.uk/privkey.pem"
+        certFile: "/etc/letsencrypt/live/mongodb.cloudlunacy.uk/fullchain.pem"
+        keyFile: "/etc/letsencrypt/live/mongodb.cloudlunacy.uk/privkey.pem"
 
 # File provider for dynamic configuration. Traefik will watch this file for changes.
 providers:
