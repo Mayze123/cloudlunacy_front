@@ -62,7 +62,7 @@ function updateDynamicConfig(subdomain, targetIp) {
   // Define the new router for the subdomain
   config.tcp.routers[routerName] = {
     entryPoints: ["mongodb"],
-    rule: `HostSNI('${subdomain}')`,
+    rule: "HostSNI(`*`)",
     service: serviceName,
     tls: { passthrough: false },
   };
