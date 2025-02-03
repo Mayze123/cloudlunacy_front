@@ -4,6 +4,7 @@ networks:
   traefik_network:
     driver: bridge
     name: traefik_network
+    attachable: true
 services:
   traefik:
     image: traefik:v2.9
