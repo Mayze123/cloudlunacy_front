@@ -26,9 +26,12 @@ app.use(express.json());
 
 // Get configuration values from environment variables or set defaults
 const PORT = process.env.FRONTDOOR_PORT || 3000;
-const FRONTDOOR_API_TOKEN = process.env.FRONTDOOR_API_TOKEN || "CHANGEME";
+const FRONTDOOR_API_TOKEN =
+  process.env.FRONTDOOR_API_TOKEN || "your_secret_token";
 // Path to the dynamic.yml file. Adjust if you mount this elsewhere.
-const DYNAMIC_FILE = process.env.DYNAMIC_FILE_PATH || path.join(__dirname, "config", "dynamic.yml");
+const DYNAMIC_FILE =
+  process.env.DYNAMIC_FILE_PATH ||
+  path.join(__dirname, "config", "dynamic.yml");
 
 // ----------------------------------------------------------------------------
 // Utility: Update Traefik's dynamic configuration file
@@ -61,7 +64,7 @@ function updateDynamicConfig(subdomain, targetIp) {
     entryPoints: ["mongodb"],
     rule: `HostSNI('${subdomain}')`,
     service: serviceName,
-    tls: { passthrough: false }
+    tls: { passthrough: false },
   };
 
   // Define the new service to route to the target IP and port
@@ -69,10 +72,10 @@ function updateDynamicConfig(subdomain, targetIp) {
     loadBalancer: {
       servers: [
         {
-          address: `${targetIp}:27017`
-        }
-      ]
-    }
+          address: `${targetIp}:27017`,
+        },
+      ],
+    },
   };
 
   // Write the updated configuration back to the YAML file
