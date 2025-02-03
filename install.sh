@@ -24,9 +24,12 @@ fi
 
 echo "[INFO] Cloning/updating repository from $REPO_URL..."
 if [ -d "$INSTALL_DIR" ]; then
-  echo "[INFO] Repository exists. Pulling latest changes..."
+  echo "[INFO] Repository exists. Forcing update..."
   cd "$INSTALL_DIR"
-  git pull
+  # Reset any local changes that would conflict
+  git reset --hard HEAD
+  git clean -fd
+  git pull --force origin main
 else
   git clone "$REPO_URL" "$INSTALL_DIR"
   cd "$INSTALL_DIR"
