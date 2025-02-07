@@ -1,16 +1,3 @@
-/**
- * frontdoorService.js
- *
- * A Node.js Express service for dynamically updating Traefik's dynamic configuration.
- * It exposes an API endpoint that lets you add new subdomain routing rules for MongoDB instances.
- *
- * The service reads and writes the YAML file (dynamic.yml) so that Traefik (with hot-reload enabled)
- * picks up new routes immediately.
- *
- * Author: [Your Name]
- * Date: [Current Date]
- */
-
 "use strict";
 
 // Load environment variables from .env file
@@ -24,22 +11,26 @@ const yaml = require("js-yaml");
 const app = express();
 app.use(express.json());
 
-// Get configuration values from environment variables or set defaults
+// Configuration values (with defaults)
 const PORT = process.env.FRONTDOOR_PORT || 3000;
 const FRONTDOOR_API_TOKEN =
   process.env.FRONTDOOR_API_TOKEN || "your_secret_token";
-// Path to the dynamic.yml file. Adjust if you mount this elsewhere.
+// Path to the dynamic.yml file (ensure this matches your mounted volume)
 const DYNAMIC_FILE =
   process.env.DYNAMIC_FILE_PATH ||
   path.join(__dirname, "config", "dynamic.yml");
 
-// ----------------------------------------------------------------------------
-// Utility: Update Traefik's dynamic configuration file
-// ----------------------------------------------------------------------------
+/**
+ * Updates Traefik's dynamic configuration file (dynamic.yml)
+ * to add a new TCP router and service for a given subdomain and target IP.
+ *
+ * @param {string} subdomain - The subdomain to be routed (e.g., cl-xxxx.mongodb.cloudlunacy.uk)
+ * @param {string} targetIp  - The IP address where MongoDB is accessible.
+ */
 function updateDynamicConfig(subdomain, targetIp) {
   let config = {};
 
-  // Load existing YAML configuration if the file exists
+  // Load existing YAML configuration if it exists
   if (fs.existsSync(DYNAMIC_FILE)) {
     try {
       const fileContents = fs.readFileSync(DYNAMIC_FILE, "utf8");
@@ -59,18 +50,18 @@ function updateDynamicConfig(subdomain, targetIp) {
   const routerName = `${safeName}-router`;
   const serviceName = `${safeName}-service`;
 
-  // Define the new router for the subdomain
+  // Define the new router to match the specific subdomain
   config.tcp.routers[routerName] = {
     entryPoints: ["mongodb"],
-    rule: "HostSNI(`*`)",
+    rule: `HostSNI(\`${subdomain}\`)`,
     service: serviceName,
     tls: { passthrough: false },
   };
 
-  // Define the new service to route to the target IP and port
+  // Define the new service to route to the target IP on MongoDB's default port (27017)
   config.tcp.services[serviceName] = {
     loadBalancer: {
-      servers: [{ address: "mongodb:27017" }],
+      servers: [{ address: `${targetIp}:27017` }],
     },
   };
 
@@ -87,7 +78,7 @@ function updateDynamicConfig(subdomain, targetIp) {
 // API Endpoints
 // ----------------------------------------------------------------------------
 
-// Basic health check endpoint
+// Health check endpoint
 app.get("/", (req, res) => {
   res.json({ message: "Front Door Service is running." });
 });
@@ -110,7 +101,6 @@ app.post("/api/frontdoor/add-subdomain", (req, res) => {
 
   try {
     updateDynamicConfig(subdomain, targetIp);
-    // With Traefik file provider hot-reload enabled, no restart is needed.
     console.log(`[INFO] Updated dynamic config: ${subdomain} -> ${targetIp}`);
     return res.json({ message: `Subdomain ${subdomain} added successfully.` });
   } catch (error) {
@@ -120,7 +110,7 @@ app.post("/api/frontdoor/add-subdomain", (req, res) => {
 });
 
 // ----------------------------------------------------------------------------
-// Start the Service
+// Start the Express Server
 // ----------------------------------------------------------------------------
 app.listen(PORT, () => {
   console.log(`[INFO] Front Door Service listening on port ${PORT}`);

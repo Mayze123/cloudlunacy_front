@@ -6,15 +6,14 @@
 # and sets up a systemd service so that the service starts on boot.
 #
 # Usage:
-#   chmod +x install.sh
+#  git reset --hard HEAD chmod +x install.sh sudo ./install.sh
 #   sudo ./install.sh
 
 set -e
 
-# Variables – update these as necessary
 SERVICE_NAME="frontdoor-service"
-INSTALL_DIR="/opt/$SERVICE_NAME"
-REPO_URL="https://github.com/Mayze123/cloudlunacy_front.git"  
+INSTALL_DIR="/opt/${SERVICE_NAME}"
+REPO_URL="https://github.com/Mayze123/cloudlunacy_front.git"
 
 # Ensure the script is run as root
 if [ "$(id -u)" -ne 0 ]; then
@@ -22,18 +21,23 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
+# Clone or update the repository
+if [ ! -d "$INSTALL_DIR" ]; then
+  git clone "$REPO_URL" "$INSTALL_DIR"
+else
+  cd "$INSTALL_DIR"
+  git pull origin main
+fi
+
+cd "$INSTALL_DIR"
 
 echo "[INFO] Installing Node.js dependencies..."
 npm install --production
 
 echo "[INFO] Creating Docker network if needed..."
 if ! docker network inspect traefik_network >/dev/null 2>&1; then
-    if docker network create traefik_network; then
-        echo "[INFO] Created traefik_network successfully"
-    else
-        echo "[ERROR] Failed to create traefik_network"
-        exit 1
-    fi
+    docker network create traefik_network
+    echo "[INFO] Created traefik_network successfully"
 else
     echo "[INFO] traefik_network already exists"
 fi

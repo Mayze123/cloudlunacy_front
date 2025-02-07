@@ -15,17 +15,12 @@ services:
     networks:
       - traefik_network
     volumes:
-      # Mount the static configuration file (read-only)
       - "./config/traefik.yml:/traefik.yml:ro"
-      # Mount the dynamic configuration file (read-write)
       - "./config/dynamic.yml:/opt/traefik/dynamic.yml:rw"
-      # Mount the certificate directory (read-only)
-      - "/etc/letsencrypt:/letsencrypt:ro"
-      # Mount Docker socket for Traefik to discover containers (if needed)
+      - "/etc/letsencrypt:/etc/letsencrypt:ro"
       - "/var/run/docker.sock:/var/run/docker.sock:ro"
     command:
       - "--log.level=INFO"
-      - "--api.insecure=false" # Ensure the dashboard is secured in production.
-      - "--providers.file.filename=/traefik.yml"
+      - "--api.insecure=false"
       - "--entrypoints.mongodb.address=:27017"
       - "--providers.docker=false"
