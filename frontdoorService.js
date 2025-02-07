@@ -21,16 +21,13 @@ const DYNAMIC_FILE =
   path.join(__dirname, "config", "dynamic.yml");
 
 /**
- * Updates Traefik's dynamic configuration file (dynamic.yml)
- * to add a new TCP router and service for a given subdomain and target IP.
- *
- * @param {string} subdomain - The subdomain to be routed (e.g., cl-xxxx.mongodb.cloudlunacy.uk)
- * @param {string} targetIp  - The IP address where MongoDB is accessible.
+ * Update Traefik's dynamic configuration file with a new subdomain routing rule.
+ * @param {string} subdomain - The subdomain to be added.
+ * @param {string} targetIp - The target IP address of the MongoDB instance.
  */
 function updateDynamicConfig(subdomain, targetIp) {
   let config = {};
 
-  // Load existing YAML configuration if it exists
   if (fs.existsSync(DYNAMIC_FILE)) {
     try {
       const fileContents = fs.readFileSync(DYNAMIC_FILE, "utf8");
@@ -40,7 +37,6 @@ function updateDynamicConfig(subdomain, targetIp) {
     }
   }
 
-  // Ensure the base structure exists
   config.tcp = config.tcp || {};
   config.tcp.routers = config.tcp.routers || {};
   config.tcp.services = config.tcp.services || {};
@@ -50,7 +46,7 @@ function updateDynamicConfig(subdomain, targetIp) {
   const routerName = `${safeName}-router`;
   const serviceName = `${safeName}-service`;
 
-  // Define the new router to match the specific subdomain
+  // Define the router with SNI rule matching the subdomain
   config.tcp.routers[routerName] = {
     entryPoints: ["mongodb"],
     rule: `HostSNI(\`${subdomain}\`)`,
@@ -58,14 +54,13 @@ function updateDynamicConfig(subdomain, targetIp) {
     tls: { passthrough: false },
   };
 
-  // Define the new service to route to the target IP on MongoDB's default port (27017)
+  // Define the service to route to the target IP and port 27017
   config.tcp.services[serviceName] = {
     loadBalancer: {
       servers: [{ address: `${targetIp}:27017` }],
     },
   };
 
-  // Write the updated configuration back to the YAML file
   try {
     const newYaml = yaml.dump(config);
     fs.writeFileSync(DYNAMIC_FILE, newYaml, "utf8");
@@ -73,7 +68,6 @@ function updateDynamicConfig(subdomain, targetIp) {
     throw new Error("Error writing dynamic.yml: " + error.message);
   }
 }
-
 // ----------------------------------------------------------------------------
 // API Endpoints
 // ----------------------------------------------------------------------------
