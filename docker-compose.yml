@@ -1,26 +1,51 @@
 version: "3.8"
 
+services:
+  traefik:
+    image: traefik:latest
+    container_name: traefik
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+      - "27017:27017"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik-certs:/traefik-certs
+      - ./config:/config
+    environment:
+      - CF_EMAIL=${CF_EMAIL}
+      - CF_API_KEY=${CF_API_KEY}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/dashboard/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - traefik_network
+
+  node-app:
+    build: ./node-app
+    container_name: node-app
+    restart: always
+    depends_on:
+      - traefik
+    ports:
+      - "${NODE_PORT}:3000"
+    volumes:
+      - ./config:/config
+    environment:
+      - JWT_SECRET=${JWT_SECRET}
+      - DYNAMIC_CONFIG_PATH=/config/dynamic.yml
+      - TRAEFIK_CONTAINER=traefik
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - traefik_network
+
 networks:
   traefik_network:
     driver: bridge
-    name: traefik_network
-    attachable: true
-services:
-  traefik:
-    image: traefik:v2.9
-    container_name: traefik
-    restart: unless-stopped
-    ports:
-      - "27017:27017"
-    networks:
-      - traefik_network
-    volumes:
-      - "./config/traefik.yml:/traefik.yml:ro"
-      - "./config/dynamic.yml:/opt/traefik/dynamic.yml:rw"
-      - "/etc/letsencrypt:/etc/letsencrypt:ro"
-      - "/var/run/docker.sock:/var/run/docker.sock:ro"
-    command:
-      - "--log.level=INFO"
-      - "--api.insecure=false"
-      - "--entrypoints.mongodb.address=:27017"
-      - "--providers.docker=false"

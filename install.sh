@@ -1,72 +1,79 @@
 #!/bin/bash
-# install.sh
-#
-# This script installs the Front Door Service on your VPS.
-# It clones (or updates) the GitHub repository, installs Node.js dependencies,
-# and sets up a systemd service so that the service starts on boot.
-#
-# Usage:
-#  git reset --hard HEAD chmod +x install.sh sudo ./install.sh
-#   sudo ./install.sh
+set -euo pipefail
+IFS=$'\n\t'
 
-set -e
-
-SERVICE_NAME="frontdoor-service"
-INSTALL_DIR="/opt/${SERVICE_NAME}"
-REPO_URL="https://github.com/Mayze123/cloudlunacy_front.git"
-
-# Ensure the script is run as root
-if [ "$(id -u)" -ne 0 ]; then
-  echo "[ERROR] This script must be run as root."
-  exit 1
+# Environment variables must be set or defaulted
+: "${FRONT_REPO_URL:?Need to set FRONT_REPO_URL (front server Git repo URL)}"
+: "${DOMAIN:?Need to set DOMAIN (your domain)}"
+: "${CF_EMAIL:?Need to set CF_EMAIL (Cloudflare email)}"
+: "${CF_API_KEY:?Need to set CF_API_KEY (Cloudflare API key)}"
+: "${NODE_PORT:=3000}"
+: "${JWT_SECRET:=}"
+if [ -z "$JWT_SECRET" ]; then
+  JWT_SECRET=$(openssl rand -base64 32)
 fi
 
-# Clone or update the repository
-if [ ! -d "$INSTALL_DIR" ]; then
-  git clone "$REPO_URL" "$INSTALL_DIR"
-else
-  cd "$INSTALL_DIR"
-  git pull origin main
+BASE_DIR="/opt/cloudlunacy-front"
+CONFIG_DIR="${BASE_DIR}/config"
+CERTS_DIR="${BASE_DIR}/traefik-certs"
+
+log() { echo "[INFO] $1"; }
+error_exit() { echo "[ERROR] $1" >&2; exit 1; }
+
+if [ -d "${BASE_DIR}" ]; then
+  error_exit "Directory ${BASE_DIR} already exists. Aborting."
 fi
 
-cd "$INSTALL_DIR"
+log "Cloning front server repository..."
+git clone "$FRONT_REPO_URL" "${BASE_DIR}" || error_exit "Failed to clone repository."
 
-echo "[INFO] Installing Node.js dependencies..."
-npm install --production
+log "Creating directories..."
+mkdir -p "${CERTS_DIR}" "${CONFIG_DIR}" || error_exit "Failed to create directories."
 
-echo "[INFO] Creating Docker network if needed..."
-if ! docker network inspect traefik_network >/dev/null 2>&1; then
-    docker network create traefik_network
-    echo "[INFO] Created traefik_network successfully"
-else
-    echo "[INFO] traefik_network already exists"
-fi
-
-echo "[INFO] Setting up systemd service..."
-
-SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
-cat > "$SERVICE_FILE" <<EOF
-[Unit]
-Description=Front Door Service for managing Traefik routes
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=${INSTALL_DIR}
-ExecStart=/usr/bin/node ${INSTALL_DIR}/frontdoorService.js
-Restart=always
-RestartSec=10
-EnvironmentFile=${INSTALL_DIR}/.env
-
-[Install]
-WantedBy=multi-user.target
+log "Creating .env file..."
+cat > "${BASE_DIR}/.env" <<EOF
+CF_EMAIL=${CF_EMAIL}
+CF_API_KEY=${CF_API_KEY}
+DOMAIN=${DOMAIN}
+NODE_PORT=${NODE_PORT}
+JWT_SECRET=${JWT_SECRET}
 EOF
 
-echo "[INFO] Reloading systemd daemon..."
-systemctl daemon-reload
+log "Creating Traefik static configuration..."
+cat > "${CONFIG_DIR}/traefik.yml" <<'EOF'
+entryPoints:
+  web:
+    address: ":80"
+  websecure:
+    address: ":443"
+  mongodb:
+    address: ":27017"
 
-echo "[INFO] Enabling and starting ${SERVICE_NAME} service..."
-systemctl enable "$SERVICE_NAME"
-systemctl restart "$SERVICE_NAME"
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: "${CF_EMAIL}"
+      storage: /traefik-certs/acme.json
+      dnsChallenge:
+        provider: cloudflare
+        delayBeforeCheck: 0
 
-echo "[INFO] Front Door Service installation completed successfully."
+providers:
+  file:
+    filename: /config/dynamic.yml
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+
+api:
+  dashboard: true
+EOF
+
+log "Creating Traefik dynamic configuration..."
+touch "${CONFIG_DIR}/dynamic.yml"
+
+log "Starting Docker containers..."
+cd "${BASE_DIR}" || error_exit "Failed to change directory"
+docker-compose up -d --build --force-recreate || error_exit "Failed to start Docker containers."
+
+log "Installation completed successfully!"

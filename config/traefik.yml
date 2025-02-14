@@ -1,20 +1,26 @@
-# config/traefik.yml
-# Traefik static configuration file
-
 entryPoints:
+  web:
+    address: ":80"
+  websecure:
+    address: ":443"
   mongodb:
     address: ":27017"
 
-# TLS configuration using a wildcard certificate.
-tls:
-  stores:
-    default:
-      defaultCertificate:
-        certFile: "/etc/letsencrypt/live/mongodb.cloudlunacy.uk/fullchain.pem"
-        keyFile: "/etc/letsencrypt/live/mongodb.cloudlunacy.uk/privkey.pem"
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: "${CF_EMAIL}"
+      storage: /traefik-certs/acme.json
+      dnsChallenge:
+        provider: cloudflare
+        delayBeforeCheck: 0
 
-# File provider for dynamic configuration. Traefik will watch this file for changes.
 providers:
   file:
-    filename: "/opt/traefik/dynamic.yml" # Adjust this path if needed
-    watch: true
+    filename: /config/dynamic.yml
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+
+api:
+  dashboard: true
