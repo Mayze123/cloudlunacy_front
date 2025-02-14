@@ -31,7 +31,7 @@ services:
     depends_on:
       - traefik
     ports:
-      - "${NODE_PORT}:3000"
+      - "${NODE_PORT}:3005"
     volumes:
       - ./config:/config
     environment:
