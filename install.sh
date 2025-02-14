@@ -5,6 +5,8 @@ IFS=$'\n\t'
 # Environment variables must be set or defaulted
 : "${FRONT_REPO_URL:?Need to set FRONT_REPO_URL (front server Git repo URL)}"
 : "${DOMAIN:?Need to set DOMAIN (your domain)}"
+: "${MONGO_DOMAIN:=mongodb.cloudlunacy.uk}"
+: "${APP_DOMAIN:=apps.cloudlunacy.uk}"
 : "${CF_EMAIL:?Need to set CF_EMAIL (Cloudflare email)}"
 : "${CF_API_KEY:?Need to set CF_API_KEY (Cloudflare API key)}"
 : "${NODE_PORT:=3000}"
@@ -35,6 +37,8 @@ cat > "${BASE_DIR}/.env" <<EOF
 CF_EMAIL=${CF_EMAIL}
 CF_API_KEY=${CF_API_KEY}
 DOMAIN=${DOMAIN}
+MONGO_DOMAIN=${MONGO_DOMAIN}
+APP_DOMAIN=${APP_DOMAIN}
 NODE_PORT=${NODE_PORT}
 JWT_SECRET=${JWT_SECRET}
 EOF

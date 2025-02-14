@@ -1,3 +1,8 @@
+/**
+ * frontdoorService.js
+ * Basic Express server to manage dynamic Traefik configuration.
+ */
+
 require("dotenv").config();
 const fs = require("fs").promises;
 const path = require("path");
@@ -16,6 +21,9 @@ const docker = new Docker({ socketPath: "/var/run/docker.sock" });
 
 app.use(express.json());
 
+/**
+ * JWT authentication middleware.
+ */
 function jwtAuth(req, res, next) {
   const authHeader = req.headers.authorization;
   if (!authHeader)
@@ -29,6 +37,9 @@ function jwtAuth(req, res, next) {
   }
 }
 
+/**
+ * Load dynamic configuration from dynamic.yml.
+ */
 async function loadDynamicConfig() {
   try {
     const content = await fs.readFile(dynamicConfigPath, "utf8");
@@ -38,11 +49,17 @@ async function loadDynamicConfig() {
   }
 }
 
+/**
+ * Save dynamic configuration to dynamic.yml.
+ */
 async function saveDynamicConfig(config) {
   const yamlStr = yaml.stringify(config);
   await fs.writeFile(dynamicConfigPath, yamlStr, "utf8");
 }
 
+/**
+ * (Optional) Trigger Traefik reload using the Docker API.
+ */
 async function triggerTraefikReload() {
   try {
     const container = docker.getContainer(
@@ -55,7 +72,10 @@ async function triggerTraefikReload() {
   }
 }
 
-function validateInput(subdomain, targetIp) {
+/**
+ * Validate subdomain and target IP/URL for MongoDB deployments.
+ */
+function validateMongoInput(subdomain, targetIp) {
   const subdomainRegex = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
   const ipRegex =
     /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
@@ -63,29 +83,32 @@ function validateInput(subdomain, targetIp) {
 }
 
 /**
- * Automatically generate a JWT for a given agent.
- * @param {Object} payload - Agent-specific data (e.g., agentId, permissions).
- * @returns {string} Signed JWT token.
+ * Validate subdomain and target URL for HTTP app deployments.
  */
-function generateAgentToken(payload) {
-  // You might include details such as agentId or roles.
-  return jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: "24h" });
+function validateAppInput(subdomain, targetUrl) {
+  const subdomainRegex = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+  // Simple URL validation (must start with http:// or https://)
+  const urlRegex = /^https?:\/\/[a-zA-Z0-9.-]+(?::\d+)?(\/.*)?$/;
+  return subdomainRegex.test(subdomain) && urlRegex.test(targetUrl);
 }
 
+/**
+ * Endpoint for adding a MongoDB subdomain.
+ */
 app.post("/api/frontdoor/add-subdomain", jwtAuth, async (req, res) => {
   try {
     const { subdomain, targetIp } = req.body;
-    if (!validateInput(subdomain, targetIp)) {
+    if (!validateMongoInput(subdomain, targetIp)) {
       return res
         .status(400)
         .json({ error: "Invalid subdomain or target IP format." });
     }
 
-    // Load and update Traefik dynamic configuration
+    // Load current dynamic configuration
     const config = await loadDynamicConfig();
     config.tcp = config.tcp || { routers: {}, services: {} };
     config.tcp.routers[subdomain] = {
-      rule: `HostSNI(\`${subdomain}.${process.env.DOMAIN}\`)`,
+      rule: `HostSNI(\`${subdomain}.${process.env.MONGO_DOMAIN}\`)`,
       service: `${subdomain}-service`,
     };
     config.tcp.services[`${subdomain}-service`] = {
@@ -95,29 +118,94 @@ app.post("/api/frontdoor/add-subdomain", jwtAuth, async (req, res) => {
     };
 
     await saveDynamicConfig(config);
-    await triggerTraefikReload();
+    // Optionally trigger a Traefik reload:
+    // await triggerTraefikReload();
 
-    res.json({ success: true, message: "Subdomain added successfully." });
+    res.json({
+      success: true,
+      message: "MongoDB subdomain added successfully.",
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
 
+/**
+ * New Endpoint for adding an HTTP app subdomain.
+ * This endpoint configures Traefik to route HTTP/HTTPS traffic.
+ */
+app.post("/api/frontdoor/add-app", jwtAuth, async (req, res) => {
+  try {
+    const { subdomain, targetUrl } = req.body;
+    if (!validateAppInput(subdomain, targetUrl)) {
+      return res
+        .status(400)
+        .json({ error: "Invalid subdomain or target URL format." });
+    }
+
+    // Load current dynamic configuration
+    const config = await loadDynamicConfig();
+    config.http = config.http || { routers: {}, services: {} };
+
+    // Create an HTTP router for the subdomain
+    config.http.routers[subdomain] = {
+      rule: `Host(\`${subdomain}.${process.env.APP_DOMAIN}\`)`,
+      service: `${subdomain}-service`,
+      entryPoints: ["web", "websecure"],
+      tls: {
+        certResolver: "letsencrypt",
+      },
+    };
+
+    // Create the service definition
+    config.http.services[`${subdomain}-service`] = {
+      loadBalancer: {
+        servers: [
+          {
+            url: targetUrl.startsWith("http")
+              ? targetUrl
+              : `http://${targetUrl}`,
+          },
+        ],
+      },
+    };
+
+    await saveDynamicConfig(config);
+    // Optionally trigger a Traefik reload:
+    // await triggerTraefikReload();
+
+    res.json({ success: true, message: "App subdomain added successfully." });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Healthcheck endpoint.
+ */
+app.get("/health", (req, res) => res.json({ status: "ok" }));
+
+/**
+ * Endpoint for agent registration.
+ */
 app.post("/api/agent/register", async (req, res) => {
   try {
     const { agentId } = req.body;
-    // You might add other agent-specific data or permissions
     const token = generateAgentToken({ agentId });
-    // Save token info in a database or simply return it
     res.json({ token });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.get("/health", (req, res) => res.json({ status: "ok" }));
+/**
+ * Generate JWT for an agent.
+ */
+function generateAgentToken(payload) {
+  return jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: "24h" });
+}
 
-app.listen(PORT, () => {
-  console.log(`Frontdoor API listening on port ${PORT}`);
-});
+// Start the server.
+app.listen(PORT, () => console.log(`Frontdoor API listening on port ${PORT}`));
