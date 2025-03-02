@@ -7,7 +7,7 @@ IFS=$'\n\t'
 #   sudo ./install.sh
 
 # Environment variables must be set or defaulted
-: "${FRONT_REPO_URL:?Need to set FRONT_REPO_URL (front server Git repo URL)}"
+: "${FRONT_REPO_URL:=https://github.com/Mayze123/cloudlunacy_front}"
 : "${DOMAIN:?Need to set DOMAIN (your domain)}"
 : "${MONGO_DOMAIN:=mongodb.cloudlunacy.uk}"
 : "${APP_DOMAIN:=apps.cloudlunacy.uk}"
