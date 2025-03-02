@@ -13,7 +13,7 @@ IFS=$'\n\t'
 : "${APP_DOMAIN:=apps.cloudlunacy.uk}"
 : "${CF_EMAIL:?Need to set CF_EMAIL (Cloudflare email)}"
 : "${CF_API_KEY:?Need to set CF_API_KEY (Cloudflare API key)}"
-: "${NODE_PORT:=3000}"
+: "${NODE_PORT:=3005}"
 : "${JWT_SECRET:=}"
 if [ -z "$JWT_SECRET" ]; then
   JWT_SECRET=$(openssl rand -base64 32)
