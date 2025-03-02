@@ -19,6 +19,18 @@ const dynamicConfigPath =
   path.join(__dirname, "../config/dynamic.yml");
 const docker = new Docker({ socketPath: "/var/run/docker.sock" });
 
+// Ensure required environment variables are available
+const APP_DOMAIN = process.env.APP_DOMAIN || "apps.cloudlunacy.uk";
+const MONGO_DOMAIN = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
+
+// Log environment variables at startup for debugging
+console.log("Environment variables:");
+console.log("NODE_PORT:", process.env.NODE_PORT);
+console.log("JWT_SECRET:", process.env.JWT_SECRET ? "Set (hidden)" : "Not set");
+console.log("APP_DOMAIN:", APP_DOMAIN);
+console.log("MONGO_DOMAIN:", MONGO_DOMAIN);
+console.log("DYNAMIC_CONFIG_PATH:", dynamicConfigPath);
+
 app.use(express.json());
 
 /**
@@ -108,7 +120,7 @@ app.post("/api/frontdoor/add-subdomain", jwtAuth, async (req, res) => {
     const config = await loadDynamicConfig();
     config.tcp = config.tcp || { routers: {}, services: {} };
     config.tcp.routers[subdomain] = {
-      rule: `HostSNI(\`${subdomain}.${process.env.MONGO_DOMAIN}\`)`,
+      rule: `HostSNI(\`${subdomain}.${MONGO_DOMAIN}\`)`,
       service: `${subdomain}-service`,
     };
     config.tcp.services[`${subdomain}-service`] = {
@@ -154,11 +166,11 @@ app.post("/api/frontdoor/add-app", jwtAuth, async (req, res) => {
       JSON.stringify(config, null, 2)
     );
 
-    console.log("🚀 ~ app.post ~ process:", process.env.APP_DOMAIN);
+    console.log("🚀 ~ app.post ~ APP_DOMAIN:", APP_DOMAIN);
 
     // Create an HTTP router for the subdomain
     config.http.routers[subdomain] = {
-      rule: `Host(\`${subdomain}.${process.env.APP_DOMAIN}\`)`,
+      rule: `Host(\`${subdomain}.${APP_DOMAIN}\`)`,
       service: `${subdomain}-service`,
       entryPoints: ["web", "websecure"],
       tls: {
@@ -217,7 +229,7 @@ app.post("/api/agent/register", async (req, res) => {
  * Generate JWT for an agent.
  */
 function generateAgentToken(payload) {
-  return jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: "24h" });
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: "24h" });
 }
 
 // Start the server.
