@@ -137,6 +137,7 @@ app.post("/api/frontdoor/add-subdomain", jwtAuth, async (req, res) => {
  */
 app.post("/api/frontdoor/add-app", jwtAuth, async (req, res) => {
   try {
+    console.log("[DEBUG] Received add-app request:", req.body);
     const { subdomain, targetUrl } = req.body;
     if (!validateAppInput(subdomain, targetUrl)) {
       return res
@@ -147,6 +148,11 @@ app.post("/api/frontdoor/add-app", jwtAuth, async (req, res) => {
     // Load current dynamic configuration
     const config = await loadDynamicConfig();
     config.http = config.http || { routers: {}, services: {} };
+
+    console.log(
+      "[DEBUG] Current dynamic configuration:",
+      JSON.stringify(config, null, 2)
+    );
 
     // Create an HTTP router for the subdomain
     config.http.routers[subdomain] = {
@@ -172,6 +178,11 @@ app.post("/api/frontdoor/add-app", jwtAuth, async (req, res) => {
     };
 
     await saveDynamicConfig(config);
+    console.log(
+      "[DEBUG] Updated dynamic configuration:",
+      JSON.stringify(config, null, 2)
+    );
+
     // Optionally trigger a Traefik reload:
     // await triggerTraefikReload();
 
