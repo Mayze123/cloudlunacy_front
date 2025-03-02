@@ -2,6 +2,10 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+# Usage:
+#   chmod +x install.sh
+#   sudo ./install.sh
+
 # Environment variables must be set or defaulted
 : "${FRONT_REPO_URL:?Need to set FRONT_REPO_URL (front server Git repo URL)}"
 : "${DOMAIN:?Need to set DOMAIN (your domain)}"
