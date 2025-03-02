@@ -154,6 +154,8 @@ app.post("/api/frontdoor/add-app", jwtAuth, async (req, res) => {
       JSON.stringify(config, null, 2)
     );
 
+    console.log("🚀 ~ app.post ~ process:", process.env.APP_DOMAIN);
+
     // Create an HTTP router for the subdomain
     config.http.routers[subdomain] = {
       rule: `Host(\`${subdomain}.${process.env.APP_DOMAIN}\`)`,
