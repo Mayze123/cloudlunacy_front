@@ -1,6 +1,6 @@
 # Front Door Service
 
-A Node.js service for dynamically managing Traefik routing rules for MongoDB Docker instances.
+A Node.js service for dynamically managing Traefik routing rules for MongoDB Docker instances
 
 ## Features
 
