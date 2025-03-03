@@ -6,6 +6,13 @@ entryPoints:
   mongodb:
     address: ":27017"
 
+# Enable debug logging
+log:
+  level: "DEBUG"
+
+# Access logs
+accessLog: {}
+
 certificatesResolvers:
   letsencrypt:
     acme:
@@ -18,9 +25,12 @@ certificatesResolvers:
 providers:
   file:
     filename: /config/dynamic.yml
+    watch: true # Automatically reload when file changes
   docker:
     endpoint: "unix:///var/run/docker.sock"
     exposedByDefault: false
+    watch: true
 
 api:
   dashboard: true
+  insecure: true # Only for debugging - remove in production

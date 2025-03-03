@@ -8,7 +8,7 @@ services:
     ports:
       - "80:80"
       - "443:443"
-      # - "27017:27017"
+      - "8080:8080" # Expose dashboard port
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik-certs:/traefik-certs
@@ -17,7 +17,8 @@ services:
       - CF_EMAIL=${CF_EMAIL}
       - CF_API_KEY=${CF_API_KEY}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/dashboard/"]
+      test:
+        ["CMD", "wget", "-q", "--spider", "http://localhost:8080/api/rawdata"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -38,6 +39,8 @@ services:
       - JWT_SECRET=${JWT_SECRET}
       - DYNAMIC_CONFIG_PATH=/config/dynamic.yml
       - TRAEFIK_CONTAINER=traefik
+      - APP_DOMAIN=${APP_DOMAIN:-apps.cloudlunacy.uk}
+      - MONGO_DOMAIN=${MONGO_DOMAIN:-mongodb.cloudlunacy.uk}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3005/health"]
       interval: 30s
