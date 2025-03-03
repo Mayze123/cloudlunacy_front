@@ -41,6 +41,7 @@ services:
       - TRAEFIK_CONTAINER=traefik
       - APP_DOMAIN=${APP_DOMAIN:-apps.cloudlunacy.uk}
       - MONGO_DOMAIN=${MONGO_DOMAIN:-mongodb.cloudlunacy.uk}
+      - DOCKER_NETWORK=${DOCKER_NETWORK:-traefik-network}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3005/health"]
       interval: 30s
@@ -51,4 +52,5 @@ services:
 
 networks:
   traefik_network:
-    driver: bridge
+    name: ${DOCKER_NETWORK:-traefik-network}
+    external: true
