@@ -1,6 +1,6 @@
 /**
  * frontdoorService.js
- * Basic Express server to manage dynamic Traefik configuration.
+ * Express server to manage dynamic Traefik configuration.
  */
 
 require("dotenv").config();
@@ -34,6 +34,14 @@ console.log("DYNAMIC_CONFIG_PATH:", dynamicConfigPath);
 app.use(express.json());
 
 /**
+ * Middleware for logging all requests
+ */
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  next();
+});
+
+/**
  * JWT authentication middleware.
  */
 function jwtAuth(req, res, next) {
@@ -55,9 +63,18 @@ function jwtAuth(req, res, next) {
 async function loadDynamicConfig() {
   try {
     const content = await fs.readFile(dynamicConfigPath, "utf8");
-    return content ? yaml.parse(content) : {};
+    return content
+      ? yaml.parse(content)
+      : {
+          http: { routers: {}, services: {} },
+          tcp: { routers: {}, services: {} },
+        };
   } catch (err) {
-    return {};
+    console.error("Error loading dynamic config:", err.message);
+    return {
+      http: { routers: {}, services: {} },
+      tcp: { routers: {}, services: {} },
+    };
   }
 }
 
@@ -67,10 +84,11 @@ async function loadDynamicConfig() {
 async function saveDynamicConfig(config) {
   const yamlStr = yaml.stringify(config);
   await fs.writeFile(dynamicConfigPath, yamlStr, "utf8");
+  console.log("Dynamic configuration saved successfully");
 }
 
 /**
- * (Optional) Trigger Traefik reload using the Docker API.
+ * Trigger Traefik reload using the Docker API.
  */
 async function triggerTraefikReload() {
   try {
@@ -79,8 +97,11 @@ async function triggerTraefikReload() {
     );
     if (!container) throw new Error("Traefik container not found");
     await container.kill({ signal: "SIGHUP" });
+    console.log("Traefik reload triggered successfully");
+    return true;
   } catch (err) {
-    throw new Error(`Failed to trigger Traefik reload: ${err.message}`);
+    console.error("Failed to trigger Traefik reload:", err.message);
+    return false;
   }
 }
 
@@ -105,20 +126,66 @@ function validateAppInput(subdomain, targetUrl) {
 }
 
 /**
+ * API status endpoint
+ */
+app.get("/api/status", (req, res) => {
+  res.json({
+    status: "ok",
+    version: "1.0.0",
+    config: {
+      APP_DOMAIN,
+      MONGO_DOMAIN,
+    },
+  });
+});
+
+/**
  * Endpoint for adding a MongoDB subdomain.
  */
 app.post("/api/frontdoor/add-subdomain", jwtAuth, async (req, res) => {
   try {
+    console.log("[DEBUG] Received add-subdomain request:", req.body);
     const { subdomain, targetIp } = req.body;
+
+    if (!subdomain || !targetIp) {
+      return res.status(400).json({
+        error:
+          "Missing required parameters: subdomain and targetIp are required",
+        received: { subdomain, targetIp },
+      });
+    }
+
     if (!validateMongoInput(subdomain, targetIp)) {
-      return res
-        .status(400)
-        .json({ error: "Invalid subdomain or target IP format." });
+      return res.status(400).json({
+        error: "Invalid subdomain or target IP format.",
+        validationDetails: {
+          subdomain: {
+            value: subdomain,
+            valid: /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(subdomain),
+            pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          },
+          targetIp: {
+            value: targetIp,
+            valid:
+              /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(
+                targetIp
+              ),
+            pattern:
+              "^(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)(\\.(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)){3}$",
+          },
+        },
+      });
     }
 
     // Load current dynamic configuration
     const config = await loadDynamicConfig();
     config.tcp = config.tcp || { routers: {}, services: {} };
+
+    console.log(
+      "[DEBUG] Setting up configuration for domain:",
+      `${subdomain}.${MONGO_DOMAIN}`
+    );
+
     config.tcp.routers[subdomain] = {
       rule: `HostSNI(\`${subdomain}.${MONGO_DOMAIN}\`)`,
       service: `${subdomain}-service`,
@@ -130,12 +197,16 @@ app.post("/api/frontdoor/add-subdomain", jwtAuth, async (req, res) => {
     };
 
     await saveDynamicConfig(config);
-    // Optionally trigger a Traefik reload:
-    // await triggerTraefikReload();
+    const reloadTriggered = await triggerTraefikReload();
 
     res.json({
       success: true,
       message: "MongoDB subdomain added successfully.",
+      details: {
+        domain: `${subdomain}.${MONGO_DOMAIN}`,
+        targetIp: targetIp,
+        reloadTriggered,
+      },
     });
   } catch (err) {
     console.error(err);
@@ -144,29 +215,68 @@ app.post("/api/frontdoor/add-subdomain", jwtAuth, async (req, res) => {
 });
 
 /**
- * New Endpoint for adding an HTTP app subdomain.
+ * Endpoint for adding an HTTP app subdomain.
  * This endpoint configures Traefik to route HTTP/HTTPS traffic.
  */
 app.post("/api/frontdoor/add-app", jwtAuth, async (req, res) => {
   try {
     console.log("[DEBUG] Received add-app request:", req.body);
+    console.log("[DEBUG] Headers:", req.headers);
+
     const { subdomain, targetUrl } = req.body;
+
+    if (!subdomain || !targetUrl) {
+      return res.status(400).json({
+        error:
+          "Missing required parameters: subdomain and targetUrl are required",
+        received: { subdomain, targetUrl },
+      });
+    }
+
     if (!validateAppInput(subdomain, targetUrl)) {
-      return res
-        .status(400)
-        .json({ error: "Invalid subdomain or target URL format." });
+      return res.status(400).json({
+        error: "Invalid subdomain or target URL format.",
+        validationDetails: {
+          subdomain: {
+            value: subdomain,
+            valid: /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(subdomain),
+            pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          },
+          targetUrl: {
+            value: targetUrl,
+            valid: /^https?:\/\/[a-zA-Z0-9.-]+(?::\d+)?(\/.*)?$/.test(
+              targetUrl
+            ),
+            pattern: "^https?://[a-zA-Z0-9.-]+(?::\\d+)?(/.*)?$",
+          },
+        },
+      });
     }
 
     // Load current dynamic configuration
-    const config = await loadDynamicConfig();
+    console.log(
+      "[DEBUG] Loading dynamic configuration from:",
+      dynamicConfigPath
+    );
+    let config;
+    try {
+      config = await loadDynamicConfig();
+      console.log("[DEBUG] Current config loaded:", config);
+    } catch (loadErr) {
+      console.error("[ERROR] Failed to load dynamic config:", loadErr);
+      config = {
+        http: { routers: {}, services: {} },
+        tcp: { routers: {}, services: {} },
+      };
+    }
+
+    // Ensure http structure exists
     config.http = config.http || { routers: {}, services: {} };
 
     console.log(
-      "[DEBUG] Current dynamic configuration:",
-      JSON.stringify(config, null, 2)
+      "[DEBUG] Setting up configuration for domain:",
+      `${subdomain}.${APP_DOMAIN}`
     );
-
-    console.log("🚀 ~ app.post ~ APP_DOMAIN:", APP_DOMAIN);
 
     // Create an HTTP router for the subdomain
     config.http.routers[subdomain] = {
@@ -191,18 +301,47 @@ app.post("/api/frontdoor/add-app", jwtAuth, async (req, res) => {
       },
     };
 
-    await saveDynamicConfig(config);
-    console.log(
-      "[DEBUG] Updated dynamic configuration:",
-      JSON.stringify(config, null, 2)
-    );
+    console.log("[DEBUG] About to save dynamic configuration:", config);
 
-    // Optionally trigger a Traefik reload:
-    // await triggerTraefikReload();
+    try {
+      await saveDynamicConfig(config);
+      console.log("[DEBUG] Dynamic configuration saved successfully");
+    } catch (saveErr) {
+      console.error("[ERROR] Failed to save dynamic config:", saveErr);
+      return res.status(500).json({
+        error: "Failed to save configuration",
+        details: saveErr.message,
+      });
+    }
 
-    res.json({ success: true, message: "App subdomain added successfully." });
+    // Try to trigger a reload, but continue even if it fails
+    const reloadTriggered = await triggerTraefikReload();
+
+    res.json({
+      success: true,
+      message: "App subdomain added successfully.",
+      details: {
+        domain: `${subdomain}.${APP_DOMAIN}`,
+        targetUrl: targetUrl.startsWith("http")
+          ? targetUrl
+          : `http://${targetUrl}`,
+        reloadTriggered,
+      },
+    });
   } catch (err) {
-    console.error(err);
+    console.error("[ERROR] Unexpected error in add-app endpoint:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Endpoint to retrieve current configuration
+ */
+app.get("/api/frontdoor/config", jwtAuth, async (req, res) => {
+  try {
+    const config = await loadDynamicConfig();
+    res.json({ success: true, config });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
@@ -218,6 +357,9 @@ app.get("/health", (req, res) => res.json({ status: "ok" }));
 app.post("/api/agent/register", async (req, res) => {
   try {
     const { agentId } = req.body;
+    if (!agentId) {
+      return res.status(400).json({ error: "agentId is required" });
+    }
     const token = generateAgentToken({ agentId });
     res.json({ token });
   } catch (err) {
@@ -229,7 +371,7 @@ app.post("/api/agent/register", async (req, res) => {
  * Generate JWT for an agent.
  */
 function generateAgentToken(payload) {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: "24h" });
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: "30d" });
 }
 
 // Start the server.

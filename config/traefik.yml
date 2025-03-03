@@ -25,7 +25,7 @@ certificatesResolvers:
 providers:
   file:
     filename: /config/dynamic.yml
-    watch: true # Automatically reload when file changes
+    watch: true # Explicitly enable watching for file changes
   docker:
     endpoint: "unix:///var/run/docker.sock"
     exposedByDefault: false

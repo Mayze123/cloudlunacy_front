@@ -57,6 +57,13 @@ entryPoints:
   mongodb:
     address: ":27017"
 
+# Enable debug logging
+log:
+  level: "DEBUG"
+
+# Access logs
+accessLog: {}
+
 certificatesResolvers:
   letsencrypt:
     acme:
@@ -69,19 +76,49 @@ certificatesResolvers:
 providers:
   file:
     filename: /config/dynamic.yml
+    watch: true  # Explicitly enable watching for file changes
   docker:
     endpoint: "unix:///var/run/docker.sock"
     exposedByDefault: false
+    watch: true
 
 api:
   dashboard: true
+  insecure: true  # Only for debugging - remove in production
 EOF
 
 log "Creating Traefik dynamic configuration..."
-touch "${CONFIG_DIR}/dynamic.yml"
+cat > "${CONFIG_DIR}/dynamic.yml" <<'EOF'
+# Initial dynamic configuration
+http:
+  routers: {}
+  services: {}
+tcp:
+  routers: {}
+  services: {}
+EOF
+
+# Create empty acme.json file with proper permissions
+log "Setting up acme.json with correct permissions..."
+touch "${CERTS_DIR}/acme.json"
+chmod 600 "${CERTS_DIR}/acme.json"
+
+# Create traefik-network if it doesn't exist
+log "Ensuring traefik-network exists..."
+if ! docker network ls | grep -q traefik-network; then
+  docker network create traefik-network || error_exit "Failed to create traefik-network."
+fi
 
 log "Starting Docker containers..."
 cd "${BASE_DIR}" || error_exit "Failed to change directory"
 docker-compose up -d --build --force-recreate || error_exit "Failed to start Docker containers."
 
+log "Waiting for services to start..."
+sleep 10
+
+log "Checking service status..."
+docker ps | grep -E 'traefik|node-app'
+
 log "Installation completed successfully!"
+log "You can access the Traefik dashboard at: http://localhost:8080/dashboard/"
+log "To check logs: docker logs -f traefik"
