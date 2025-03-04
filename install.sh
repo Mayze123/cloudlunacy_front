@@ -19,7 +19,7 @@ if [ -z "$JWT_SECRET" ]; then
   JWT_SECRET=$(openssl rand -base64 32)
 fi
 
-BASE_DIR="/opt/cloudlunacy-front"
+BASE_DIR="/opt/cloudlunacy_front"
 CONFIG_DIR="${BASE_DIR}/config"
 CERTS_DIR="${BASE_DIR}/traefik-certs"
 
