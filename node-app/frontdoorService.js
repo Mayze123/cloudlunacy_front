@@ -31,6 +31,116 @@ console.log("APP_DOMAIN:", APP_DOMAIN);
 console.log("MONGO_DOMAIN:", MONGO_DOMAIN);
 console.log("DYNAMIC_CONFIG_PATH:", dynamicConfigPath);
 
+/**
+ * Initialize the configuration file with proper structure
+ */
+async function initializeConfigFile() {
+  try {
+    console.log("[STARTUP] Checking dynamic config file...");
+
+    // Check if the directory exists, if not create it
+    const configDir = path.dirname(dynamicConfigPath);
+    try {
+      await fs.access(configDir);
+    } catch (dirErr) {
+      console.log(`[STARTUP] Creating directory: ${configDir}`);
+      await fs.mkdir(configDir, { recursive: true });
+    }
+
+    // Check if the file exists
+    try {
+      await fs.access(dynamicConfigPath);
+      console.log("[STARTUP] Dynamic config file exists");
+
+      // Check if it has the correct structure
+      const content = await fs.readFile(dynamicConfigPath, "utf8");
+      let config;
+
+      try {
+        config = yaml.parse(content) || {};
+      } catch (parseErr) {
+        console.error(
+          "[STARTUP] Error parsing existing config file:",
+          parseErr.message
+        );
+        console.log(
+          "[STARTUP] Creating backup of corrupted file and creating new one"
+        );
+
+        // Backup the corrupted file
+        const backupPath = `${dynamicConfigPath}.corrupted.${Date.now()}`;
+        await fs.copyFile(dynamicConfigPath, backupPath);
+
+        // Create a new config with proper structure
+        config = {
+          http: { routers: {}, services: {} },
+          tcp: { routers: {}, services: {} },
+        };
+      }
+
+      let needsUpdate = false;
+
+      // Make sure required sections exist
+      if (!config.http) {
+        config.http = { routers: {}, services: {} };
+        needsUpdate = true;
+      }
+
+      if (!config.tcp) {
+        config.tcp = { routers: {}, services: {} };
+        needsUpdate = true;
+      }
+
+      if (needsUpdate) {
+        console.log(
+          "[STARTUP] Updating dynamic config file with proper structure"
+        );
+        const yamlStr = yaml.stringify(config);
+        await fs.writeFile(dynamicConfigPath, yamlStr, "utf8");
+      }
+    } catch (accessErr) {
+      // File doesn't exist, create it
+      console.log(
+        "[STARTUP] Creating dynamic config file with initial structure"
+      );
+      const initialConfig = {
+        http: { routers: {}, services: {} },
+        tcp: { routers: {}, services: {} },
+      };
+
+      const yamlStr = yaml.stringify(initialConfig);
+      await fs.writeFile(dynamicConfigPath, yamlStr, "utf8");
+    }
+
+    // Verify file permissions
+    try {
+      // Try to create a temporary file in the same directory
+      const configDir = path.dirname(dynamicConfigPath);
+      const testFilePath = path.join(configDir, "test-write.tmp");
+      await fs.writeFile(testFilePath, "test", "utf8");
+      await fs.unlink(testFilePath);
+      console.log("[STARTUP] Write permissions verified for config directory");
+    } catch (permErr) {
+      console.error(
+        "[ERROR] No write permissions to config directory:",
+        permErr.message
+      );
+      console.warn(
+        "[WARN] Node app may not be able to update dynamic configuration!"
+      );
+    }
+
+    console.log("[STARTUP] Dynamic config file initialized successfully");
+  } catch (err) {
+    console.error("[STARTUP] Failed to initialize dynamic config file:", err);
+  }
+}
+
+// Call initialization function at startup
+initializeConfigFile().catch((err) => {
+  console.error("[STARTUP] Initialization error:", err);
+});
+
 app.use(express.json());
 
 /**
@@ -58,128 +168,143 @@ function jwtAuth(req, res, next) {
 }
 
 /**
- * Enhanced loadDynamicConfig function with better error handling and defaults
+ * Load dynamic configuration from dynamic.yml.
  */
 async function loadDynamicConfig() {
   try {
-    // First try to read the existing configuration
-    const content = await fs.readFile(dynamicConfigPath, "utf8");
+    console.log("[DEBUG] Loading dynamic config from:", dynamicConfigPath);
 
-    if (!content || content.trim() === "") {
-      // If file is empty, return default structure
+    // First check if the file exists
+    try {
+      await fs.access(dynamicConfigPath);
+    } catch (accessErr) {
+      console.log(
+        "[DEBUG] Dynamic config file does not exist, creating with default structure"
+      );
       const defaultConfig = {
-        http: { routers: {}, services: {}, middlewares: {} },
+        http: { routers: {}, services: {} },
         tcp: { routers: {}, services: {} },
       };
-
-      // Write this default structure to the file to ensure consistency
       await fs.writeFile(
         dynamicConfigPath,
         yaml.stringify(defaultConfig),
         "utf8"
       );
-      console.log("Created default dynamic configuration structure");
-
       return defaultConfig;
     }
 
+    // Read the file
+    const content = await fs.readFile(dynamicConfigPath, "utf8");
+    if (!content || content.trim() === "") {
+      console.log(
+        "[DEBUG] Dynamic config file is empty, returning default structure"
+      );
+      return {
+        http: { routers: {}, services: {} },
+        tcp: { routers: {}, services: {} },
+      };
+    }
+
+    // Parse the content
     try {
-      // Parse the YAML content
       const config = yaml.parse(content);
 
       // Ensure the expected structure exists
-      config.http = config.http || {
-        routers: {},
-        services: {},
-        middlewares: {},
-      };
+      config.http = config.http || { routers: {}, services: {} };
       config.tcp = config.tcp || { routers: {}, services: {} };
 
+      console.log("[DEBUG] Successfully loaded and parsed dynamic config");
       return config;
-    } catch (parseError) {
-      console.error("Error parsing dynamic config YAML:", parseError.message);
-
-      // If parsing fails, backup the broken file and create a new one
-      const backupPath = `${dynamicConfigPath}.broken.${Date.now()}`;
-      await fs.copyFile(dynamicConfigPath, backupPath);
-      console.warn(`Backed up broken config to ${backupPath}`);
-
-      // Return and write default structure
-      const defaultConfig = {
-        http: { routers: {}, services: {}, middlewares: {} },
-        tcp: { routers: {}, services: {} },
-      };
-      await fs.writeFile(
-        dynamicConfigPath,
-        yaml.stringify(defaultConfig),
-        "utf8"
+    } catch (parseErr) {
+      console.error(
+        "[ERROR] Failed to parse dynamic config:",
+        parseErr.message
       );
 
-      return defaultConfig;
+      // Create a backup of the corrupted file
+      const backupPath = `${dynamicConfigPath}.corrupted.${Date.now()}`;
+      await fs.copyFile(dynamicConfigPath, backupPath);
+      console.log(
+        `[DEBUG] Created backup of corrupted config at ${backupPath}`
+      );
+
+      // Return default structure
+      return {
+        http: { routers: {}, services: {} },
+        tcp: { routers: {}, services: {} },
+      };
     }
   } catch (err) {
-    console.error("Error loading dynamic config:", err.message);
-
-    // Create default config if file does not exist
-    const defaultConfig = {
-      http: { routers: {}, services: {}, middlewares: {} },
+    console.error("[ERROR] Error loading dynamic config:", err.message);
+    return {
+      http: { routers: {}, services: {} },
       tcp: { routers: {}, services: {} },
     };
-
-    // Ensure the directory exists
-    await fs.mkdir(path.dirname(dynamicConfigPath), { recursive: true });
-
-    // Write the default config
-    await fs.writeFile(
-      dynamicConfigPath,
-      yaml.stringify(defaultConfig),
-      "utf8"
-    );
-    console.log(
-      "Created new dynamic configuration file with default structure"
-    );
-
-    return defaultConfig;
   }
 }
 
 /**
- * Enhanced saveDynamicConfig function with file locking and validation
+ * Save dynamic configuration to dynamic.yml.
  */
 async function saveDynamicConfig(config) {
-  // Validate the configuration structure
-  if (!config.http || !config.tcp) {
-    throw new Error(
-      "Invalid configuration structure: missing http or tcp sections"
-    );
-  }
-
-  // Create a temporary file first
-  const tempPath = `${dynamicConfigPath}.tmp.${Date.now()}`;
-
   try {
-    // Convert to YAML
+    console.log("[DEBUG] Saving dynamic config...");
+
+    // Ensure the config object has the expected structure
+    config.http = config.http || { routers: {}, services: {} };
+    config.tcp = config.tcp || { routers: {}, services: {} };
+
+    // Create a temporary file to avoid partial writes
+    const tempPath = `${dynamicConfigPath}.tmp`;
     const yamlStr = yaml.stringify(config);
 
-    // Write to temp file first
     await fs.writeFile(tempPath, yamlStr, "utf8");
-
-    // Move temp file to actual file (atomic operation)
     await fs.rename(tempPath, dynamicConfigPath);
 
-    console.log("Dynamic configuration saved successfully");
-    return true;
-  } catch (err) {
-    console.error("Error saving dynamic config:", err.message);
-
-    // Clean up temp file if it exists
+    // Verify the file was written correctly
     try {
-      await fs.unlink(tempPath);
-    } catch (unlinkErr) {
-      // Ignore error if file doesn't exist
+      const verifyContent = await fs.readFile(dynamicConfigPath, "utf8");
+      const verifyConfig = yaml.parse(verifyContent);
+
+      if (!verifyConfig.http || !verifyConfig.tcp) {
+        console.warn(
+          "[WARN] Verification found missing sections in saved config"
+        );
+      } else {
+        console.log(
+          "[DEBUG] Dynamic configuration saved and verified successfully"
+        );
+      }
+    } catch (verifyErr) {
+      console.warn(
+        "[WARN] Could not verify saved configuration:",
+        verifyErr.message
+      );
     }
 
-    throw err;
+    return true;
+  } catch (err) {
+    console.error("[ERROR] Failed to save dynamic config:", err.message);
+    console.error("[ERROR] Error stack:", err.stack);
+
+    // Try to diagnose the issue
+    try {
+      const configDir = path.dirname(dynamicConfigPath);
+      const dirStat = await fs.stat(configDir);
+      console.log("[DEBUG] Config directory info:", {
+        isDirectory: dirStat.isDirectory(),
+        mode: dirStat.mode.toString(8),
+        uid: dirStat.uid,
+        gid: dirStat.gid,
+      });
+    } catch (statErr) {
+      console.error(
+        "[ERROR] Could not get config directory info:",
+        statErr.message
+      );
+    }
+
+    throw err; // Re-throw to handle in the calling function
   }
 }
 
@@ -188,15 +313,46 @@ async function saveDynamicConfig(config) {
  */
 async function triggerTraefikReload() {
   try {
-    const container = docker.getContainer(
-      process.env.TRAEFIK_CONTAINER || "traefik"
+    const containerName = process.env.TRAEFIK_CONTAINER || "traefik";
+    console.log(
+      `[DEBUG] Attempting to reload Traefik container: ${containerName}`
     );
+
+    const container = docker.getContainer(containerName);
     if (!container) throw new Error("Traefik container not found");
+
     await container.kill({ signal: "SIGHUP" });
-    console.log("Traefik reload triggered successfully");
+    console.log("[DEBUG] Traefik reload triggered successfully");
     return true;
   } catch (err) {
-    console.error("Failed to trigger Traefik reload:", err.message);
+    console.error("[ERROR] Failed to trigger Traefik reload:", err.message);
+
+    // Try to get more diagnostic information
+    try {
+      const containerName = process.env.TRAEFIK_CONTAINER || "traefik";
+      const containers = await docker.listContainers();
+      const traefik = containers.find((c) =>
+        c.Names.some((name) => name.includes(containerName))
+      );
+
+      if (traefik) {
+        console.log("[DEBUG] Traefik container exists:", {
+          id: traefik.Id.substring(0, 12),
+          status: traefik.Status,
+          names: traefik.Names,
+        });
+      } else {
+        console.error(
+          "[ERROR] Traefik container not found in running containers"
+        );
+      }
+    } catch (diagErr) {
+      console.error(
+        "[ERROR] Failed to get container diagnostic info:",
+        diagErr.message
+      );
+    }
+
     return false;
   }
 }
@@ -305,7 +461,7 @@ app.post("/api/frontdoor/add-subdomain", jwtAuth, async (req, res) => {
       },
     });
   } catch (err) {
-    console.error(err);
+    console.error("[ERROR] Failed to add MongoDB subdomain:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -354,6 +510,7 @@ app.post("/api/frontdoor/add-app", jwtAuth, async (req, res) => {
       "[DEBUG] Loading dynamic configuration from:",
       dynamicConfigPath
     );
+
     let config;
     try {
       config = await loadDynamicConfig();
@@ -412,6 +569,7 @@ app.post("/api/frontdoor/add-app", jwtAuth, async (req, res) => {
 
     // Try to trigger a reload, but continue even if it fails
     const reloadTriggered = await triggerTraefikReload();
+    console.log("[DEBUG] Traefik reload triggered:", reloadTriggered);
 
     res.json({
       success: true,
@@ -471,4 +629,20 @@ function generateAgentToken(payload) {
 }
 
 // Start the server.
-app.listen(PORT, () => console.log(`Frontdoor API listening on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Frontdoor API listening on port ${PORT}`);
+
+  // Final configuration file check
+  fs.access(dynamicConfigPath, fs.constants.R_OK | fs.constants.W_OK)
+    .then(() => {
+      console.log(
+        `[STARTUP] Dynamic config file at ${dynamicConfigPath} is accessible`
+      );
+    })
+    .catch((err) => {
+      console.error(
+        `[STARTUP] Cannot access dynamic config file at ${dynamicConfigPath}:`,
+        err.message
+      );
+    });
+});
