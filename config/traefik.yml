@@ -1,13 +1,7 @@
-# Enhanced traefik.yml with fallback HTTP challenge
+# Fixed traefik.yml with proper HTTP handling
 entryPoints:
   web:
     address: ":80"
-    # Enable HTTP to HTTPS redirection
-    http:
-      redirections:
-        entryPoint:
-          to: websecure
-          scheme: https
   websecure:
     address: ":443"
   mongodb:
@@ -17,20 +11,26 @@ entryPoints:
 log:
   level: "DEBUG"
 
-# Access logs
-accessLog: {}
+# Access logs with detailed configuration
+accessLog:
+  filePath: "/var/log/traefik/access.log"
+  format: "json"
+  bufferingSize: 100
+  fields:
+    headers:
+      defaultMode: "keep"
 
 certificatesResolvers:
   letsencrypt:
     acme:
       email: "${CF_EMAIL}"
       storage: /traefik-certs/acme.json
-      # Add HTTP challenge as fallback if DNS challenge fails
+      # Add HTTP challenge as primary, with DNS as fallback
+      httpChallenge:
+        entryPoint: web
       dnsChallenge:
         provider: cloudflare
         delayBeforeCheck: 0
-      httpChallenge:
-        entryPoint: web
 
 providers:
   file:

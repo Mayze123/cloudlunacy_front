@@ -535,15 +535,16 @@ app.post("/api/frontdoor/add-app", jwtAuth, async (req, res) => {
     config.http.routers[subdomain] = {
       rule: `Host(\`${subdomain}.${APP_DOMAIN}\`)`,
       service: `${subdomain}-service`,
-      entryPoints: ["web", "websecure"],
+      entryPoints: ["web", "websecure"], // Add both entrypoints
       tls: {
         certResolver: "letsencrypt",
       },
     };
 
-    // Create the service definition
+    // Create the service definition with passHostHeader
     config.http.services[`${subdomain}-service`] = {
       loadBalancer: {
+        passHostHeader: true, // Important: Properly pass host header
         servers: [
           {
             url: targetUrl.startsWith("http")
