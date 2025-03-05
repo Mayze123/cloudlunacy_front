@@ -10,8 +10,6 @@ IFS=$'\n\t'
 : "${FRONT_REPO_URL:=https://github.com/Mayze123/cloudlunacy_front}"
 : "${MONGO_DOMAIN:=mongodb.cloudlunacy.uk}"
 : "${APP_DOMAIN:=apps.cloudlunacy.uk}"
-: "${CF_EMAIL:?Need to set CF_EMAIL (Cloudflare email)}"
-: "${CF_API_KEY:?Need to set CF_API_KEY (Cloudflare API key)}"
 : "${NODE_PORT:=3005}"
 : "${JWT_SECRET:=}"
 if [ -z "$JWT_SECRET" ]; then
@@ -37,8 +35,6 @@ mkdir -p "${CERTS_DIR}" "${CONFIG_DIR}" || error_exit "Failed to create director
 
 log "Creating .env file..."
 cat > "${BASE_DIR}/.env" <<EOF
-CF_EMAIL=${CF_EMAIL}
-CF_API_KEY=${CF_API_KEY}
 MONGO_DOMAIN=${MONGO_DOMAIN}
 APP_DOMAIN=${APP_DOMAIN}
 NODE_PORT=${NODE_PORT}
