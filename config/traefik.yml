@@ -1,6 +1,13 @@
+# Enhanced traefik.yml with fallback HTTP challenge
 entryPoints:
   web:
     address: ":80"
+    # Enable HTTP to HTTPS redirection
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
   websecure:
     address: ":443"
   mongodb:
@@ -18,14 +25,17 @@ certificatesResolvers:
     acme:
       email: "${CF_EMAIL}"
       storage: /traefik-certs/acme.json
+      # Add HTTP challenge as fallback if DNS challenge fails
       dnsChallenge:
         provider: cloudflare
         delayBeforeCheck: 0
+      httpChallenge:
+        entryPoint: web
 
 providers:
   file:
     filename: /config/dynamic.yml
-    watch: true # Explicitly enable watching for file changes
+    watch: true
   docker:
     endpoint: "unix:///var/run/docker.sock"
     exposedByDefault: false
@@ -33,4 +43,15 @@ providers:
 
 api:
   dashboard: true
-  insecure: true # Only for debugging - remove in production
+  # For production, replace with proper authentication
+  insecure: false
+  middlewares:
+    - auth
+
+# Add a basic auth middleware for securing the dashboard
+http:
+  middlewares:
+    auth:
+      basicAuth:
+        users:
+          - "admin:$apr1$ruca84Hq$mbjdMZBAG.KWn7vfN/SNK/" # admin:password

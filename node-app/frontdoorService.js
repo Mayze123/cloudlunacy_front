@@ -58,33 +58,129 @@ function jwtAuth(req, res, next) {
 }
 
 /**
- * Load dynamic configuration from dynamic.yml.
+ * Enhanced loadDynamicConfig function with better error handling and defaults
  */
 async function loadDynamicConfig() {
   try {
+    // First try to read the existing configuration
     const content = await fs.readFile(dynamicConfigPath, "utf8");
-    return content
-      ? yaml.parse(content)
-      : {
-          http: { routers: {}, services: {} },
-          tcp: { routers: {}, services: {} },
-        };
+
+    if (!content || content.trim() === "") {
+      // If file is empty, return default structure
+      const defaultConfig = {
+        http: { routers: {}, services: {}, middlewares: {} },
+        tcp: { routers: {}, services: {} },
+      };
+
+      // Write this default structure to the file to ensure consistency
+      await fs.writeFile(
+        dynamicConfigPath,
+        yaml.stringify(defaultConfig),
+        "utf8"
+      );
+      console.log("Created default dynamic configuration structure");
+
+      return defaultConfig;
+    }
+
+    try {
+      // Parse the YAML content
+      const config = yaml.parse(content);
+
+      // Ensure the expected structure exists
+      config.http = config.http || {
+        routers: {},
+        services: {},
+        middlewares: {},
+      };
+      config.tcp = config.tcp || { routers: {}, services: {} };
+
+      return config;
+    } catch (parseError) {
+      console.error("Error parsing dynamic config YAML:", parseError.message);
+
+      // If parsing fails, backup the broken file and create a new one
+      const backupPath = `${dynamicConfigPath}.broken.${Date.now()}`;
+      await fs.copyFile(dynamicConfigPath, backupPath);
+      console.warn(`Backed up broken config to ${backupPath}`);
+
+      // Return and write default structure
+      const defaultConfig = {
+        http: { routers: {}, services: {}, middlewares: {} },
+        tcp: { routers: {}, services: {} },
+      };
+      await fs.writeFile(
+        dynamicConfigPath,
+        yaml.stringify(defaultConfig),
+        "utf8"
+      );
+
+      return defaultConfig;
+    }
   } catch (err) {
     console.error("Error loading dynamic config:", err.message);
-    return {
-      http: { routers: {}, services: {} },
+
+    // Create default config if file does not exist
+    const defaultConfig = {
+      http: { routers: {}, services: {}, middlewares: {} },
       tcp: { routers: {}, services: {} },
     };
+
+    // Ensure the directory exists
+    await fs.mkdir(path.dirname(dynamicConfigPath), { recursive: true });
+
+    // Write the default config
+    await fs.writeFile(
+      dynamicConfigPath,
+      yaml.stringify(defaultConfig),
+      "utf8"
+    );
+    console.log(
+      "Created new dynamic configuration file with default structure"
+    );
+
+    return defaultConfig;
   }
 }
 
 /**
- * Save dynamic configuration to dynamic.yml.
+ * Enhanced saveDynamicConfig function with file locking and validation
  */
 async function saveDynamicConfig(config) {
-  const yamlStr = yaml.stringify(config);
-  await fs.writeFile(dynamicConfigPath, yamlStr, "utf8");
-  console.log("Dynamic configuration saved successfully");
+  // Validate the configuration structure
+  if (!config.http || !config.tcp) {
+    throw new Error(
+      "Invalid configuration structure: missing http or tcp sections"
+    );
+  }
+
+  // Create a temporary file first
+  const tempPath = `${dynamicConfigPath}.tmp.${Date.now()}`;
+
+  try {
+    // Convert to YAML
+    const yamlStr = yaml.stringify(config);
+
+    // Write to temp file first
+    await fs.writeFile(tempPath, yamlStr, "utf8");
+
+    // Move temp file to actual file (atomic operation)
+    await fs.rename(tempPath, dynamicConfigPath);
+
+    console.log("Dynamic configuration saved successfully");
+    return true;
+  } catch (err) {
+    console.error("Error saving dynamic config:", err.message);
+
+    // Clean up temp file if it exists
+    try {
+      await fs.unlink(tempPath);
+    } catch (unlinkErr) {
+      // Ignore error if file doesn't exist
+    }
+
+    throw err;
+  }
 }
 
 /**

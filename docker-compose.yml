@@ -5,11 +5,11 @@ services:
     image: traefik:latest
     container_name: traefik
     restart: always
-    network_mode: "host"
     ports:
-      - "80:80" # Explicitly binding to port 80
+      - "80:80"
       - "443:443"
       - "8080:8080" # Expose dashboard port
+      - "27017:27017" # MongoDB port
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik-certs:/traefik-certs
