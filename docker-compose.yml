@@ -14,6 +14,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik-certs:/traefik-certs
       - ./config:/config
+      - /var/log/traefik:/var/log/traefik
     env_file:
       - ./.env
     environment:
