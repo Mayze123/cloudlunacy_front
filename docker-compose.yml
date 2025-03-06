@@ -35,8 +35,6 @@ services:
     build: ./node-app
     container_name: node-app
     restart: always
-    container_name: node-app
-    restart: always
     ports:
       - "${NODE_PORT:-3005}:3005"
     volumes:
