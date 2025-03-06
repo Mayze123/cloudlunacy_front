@@ -95,7 +95,7 @@ async function initializeConfigFile() {
         console.log(
           "[STARTUP] Updating dynamic config file with proper structure"
         );
-        const yamlStr = yaml.stringify(config);
+        const yamlStr = yaml.stringify(config, { indent: 2 });
         await fs.writeFile(dynamicConfigPath, yamlStr, "utf8");
       }
     } catch (accessErr) {
@@ -108,7 +108,7 @@ async function initializeConfigFile() {
         tcp: { routers: {}, services: {} },
       };
 
-      const yamlStr = yaml.stringify(initialConfig);
+      const yamlStr = yaml.stringify(initialConfig, { indent: 2 });
       await fs.writeFile(dynamicConfigPath, yamlStr, "utf8");
     }
 
@@ -187,7 +187,7 @@ async function loadDynamicConfig() {
       };
       await fs.writeFile(
         dynamicConfigPath,
-        yaml.stringify(defaultConfig),
+        yaml.stringify(defaultConfig, { indent: 2 }),
         "utf8"
       );
       return defaultConfig;
@@ -256,7 +256,9 @@ async function saveDynamicConfig(config) {
 
     // Create a temporary file to avoid partial writes
     const tempPath = `${dynamicConfigPath}.tmp`;
-    const yamlStr = yaml.stringify(config);
+
+    // Add the indent:2 option to ensure proper YAML formatting
+    const yamlStr = yaml.stringify(config, { indent: 2 });
 
     await fs.writeFile(tempPath, yamlStr, "utf8");
     await fs.rename(tempPath, dynamicConfigPath);
