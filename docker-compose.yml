@@ -32,9 +32,9 @@ services:
       start_period: 10s
 
   node-app:
-    build:
-      context: ./node-app
-      dockerfile: node-app/Dockerfile
+    build: ./node-app
+    container_name: node-app
+    restart: always
     container_name: node-app
     restart: always
     ports:
