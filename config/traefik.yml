@@ -14,7 +14,7 @@ entryPoints:
   mongodb:
     address: ":27017"
   dashboard:
-    address: ":8080"
+    address: ":8081"
 
 # API and dashboard configuration
 api:

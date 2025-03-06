@@ -9,7 +9,7 @@ services:
       - "80:80" # HTTP
       - "443:443" # HTTPS
       - "27017:27017" # MongoDB
-      - "8080:8080" # Dashboard
+      - "8081:8081" # Dashboard
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ${CONFIG_DIR:-./config}:/config
