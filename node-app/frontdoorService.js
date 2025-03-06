@@ -254,33 +254,65 @@ async function saveDynamicConfig(config) {
     config.http = config.http || { routers: {}, services: {} };
     config.tcp = config.tcp || { routers: {}, services: {} };
 
+    // Ensure routers and services exist in both http and tcp
+    config.http.routers = config.http.routers || {};
+    config.http.services = config.http.services || {};
+    config.tcp.routers = config.tcp.routers || {};
+    config.tcp.services = config.tcp.services || {};
+
     // Create a temporary file to avoid partial writes
     const tempPath = `${dynamicConfigPath}.tmp`;
 
-    // Add the indent:2 option to ensure proper YAML formatting
-    const yamlStr = yaml.stringify(config, { indent: 2 });
+    // Convert to YAML with explicit formatting options
+    const yamlStr = yaml.stringify(config, {
+      indent: 2,
+      lineWidth: -1, // Prevent line wrapping
+      noRefs: true, // Avoid YAML references
+      noCompatMode: true,
+    });
 
+    // Write to temp file first
     await fs.writeFile(tempPath, yamlStr, "utf8");
+
+    // Verify the temp file content is valid YAML before replacing the actual file
+    try {
+      const tempContent = await fs.readFile(tempPath, "utf8");
+      yaml.parse(tempContent); // This will throw if YAML is invalid
+    } catch (verifyErr) {
+      console.error(
+        "[ERROR] Generated YAML is invalid, aborting save:",
+        verifyErr.message
+      );
+      await fs.unlink(tempPath); // Clean up temp file
+      throw new Error("Generated invalid YAML configuration");
+    }
+
+    // Replace the actual file atomically
     await fs.rename(tempPath, dynamicConfigPath);
 
     // Verify the file was written correctly
-    try {
-      const verifyContent = await fs.readFile(dynamicConfigPath, "utf8");
-      const verifyConfig = yaml.parse(verifyContent);
+    const verifyContent = await fs.readFile(dynamicConfigPath, "utf8");
+    const verifyConfig = yaml.parse(verifyContent);
 
-      if (!verifyConfig.http || !verifyConfig.tcp) {
-        console.warn(
-          "[WARN] Verification found missing sections in saved config"
-        );
-      } else {
-        console.log(
-          "[DEBUG] Dynamic configuration saved and verified successfully"
-        );
-      }
-    } catch (verifyErr) {
+    if (!verifyConfig.http || !verifyConfig.tcp) {
       console.warn(
-        "[WARN] Could not verify saved configuration:",
-        verifyErr.message
+        "[WARN] Verification found missing sections in saved config"
+      );
+    } else {
+      console.log(
+        "[DEBUG] Dynamic configuration saved and verified successfully"
+      );
+      console.log(
+        "[DEBUG] Config sections:",
+        Object.keys(verifyConfig).join(", ")
+      );
+      console.log(
+        "[DEBUG] HTTP routers:",
+        Object.keys(verifyConfig.http.routers || {}).length
+      );
+      console.log(
+        "[DEBUG] TCP routers:",
+        Object.keys(verifyConfig.tcp.routers || {}).length
       );
     }
 
@@ -320,41 +352,49 @@ async function triggerTraefikReload() {
       `[DEBUG] Attempting to reload Traefik container: ${containerName}`
     );
 
-    const container = docker.getContainer(containerName);
-    if (!container) throw new Error("Traefik container not found");
+    // First check if container exists and is running
+    const containers = await docker.listContainers();
+    const traefik = containers.find((c) =>
+      c.Names.some((name) => name.includes(`/${containerName}`))
+    );
 
-    await container.kill({ signal: "SIGHUP" });
-    console.log("[DEBUG] Traefik reload triggered successfully");
-    return true;
-  } catch (err) {
-    console.error("[ERROR] Failed to trigger Traefik reload:", err.message);
-
-    // Try to get more diagnostic information
-    try {
-      const containerName = process.env.TRAEFIK_CONTAINER || "traefik";
-      const containers = await docker.listContainers();
-      const traefik = containers.find((c) =>
-        c.Names.some((name) => name.includes(containerName))
-      );
-
-      if (traefik) {
-        console.log("[DEBUG] Traefik container exists:", {
-          id: traefik.Id.substring(0, 12),
-          status: traefik.Status,
-          names: traefik.Names,
-        });
-      } else {
-        console.error(
-          "[ERROR] Traefik container not found in running containers"
-        );
-      }
-    } catch (diagErr) {
+    if (!traefik) {
       console.error(
-        "[ERROR] Failed to get container diagnostic info:",
-        diagErr.message
+        `[ERROR] Traefik container '${containerName}' not found or not running`
       );
+
+      // List all running containers to help with debugging
+      console.log(
+        "[DEBUG] Running containers:",
+        containers.map((c) => ({
+          name: c.Names[0],
+          image: c.Image,
+          status: c.Status,
+        }))
+      );
+
+      return false;
     }
 
+    // Get full container info
+    const container = docker.getContainer(traefik.Id);
+
+    // Send SIGHUP signal to reload config without restarting
+    await container.kill({ signal: "SIGHUP" });
+
+    // Verify Traefik is still running after reload
+    const checkStatus = await container.inspect();
+    if (checkStatus.State.Running) {
+      console.log(
+        "[DEBUG] Traefik reload triggered successfully and container is still running"
+      );
+      return true;
+    } else {
+      console.error("[ERROR] Traefik container stopped after reload signal");
+      return false;
+    }
+  } catch (err) {
+    console.error("[ERROR] Failed to trigger Traefik reload:", err.message);
     return false;
   }
 }
