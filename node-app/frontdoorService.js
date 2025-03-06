@@ -171,177 +171,58 @@ function jwtAuth(req, res, next) {
  * Load dynamic configuration from dynamic.yml.
  */
 async function loadDynamicConfig() {
+  let config;
   try {
-    console.log("[DEBUG] Loading dynamic config from:", dynamicConfigPath);
-
-    // First check if the file exists
-    try {
-      await fs.access(dynamicConfigPath);
-    } catch (accessErr) {
-      console.log(
-        "[DEBUG] Dynamic config file does not exist, creating with default structure"
-      );
-      const defaultConfig = {
-        http: { routers: {}, services: {} },
-        tcp: { routers: {}, services: {} },
-      };
-      await fs.writeFile(
-        dynamicConfigPath,
-        yaml.stringify(defaultConfig, { indent: 2 }),
-        "utf8"
-      );
-      return defaultConfig;
-    }
-
-    // Read the file
     const content = await fs.readFile(dynamicConfigPath, "utf8");
-    if (!content || content.trim() === "") {
-      console.log(
-        "[DEBUG] Dynamic config file is empty, returning default structure"
-      );
-      return {
-        http: { routers: {}, services: {} },
-        tcp: { routers: {}, services: {} },
-      };
-    }
+    config = yaml.parse(content) || {};
 
-    // Parse the content
-    try {
-      const config = yaml.parse(content);
-
-      // Ensure the expected structure exists
-      config.http = config.http || { routers: {}, services: {} };
-      config.tcp = config.tcp || { routers: {}, services: {} };
-
-      console.log("[DEBUG] Successfully loaded and parsed dynamic config");
-      return config;
-    } catch (parseErr) {
-      console.error(
-        "[ERROR] Failed to parse dynamic config:",
-        parseErr.message
-      );
-
-      // Create a backup of the corrupted file
-      const backupPath = `${dynamicConfigPath}.corrupted.${Date.now()}`;
-      await fs.copyFile(dynamicConfigPath, backupPath);
-      console.log(
-        `[DEBUG] Created backup of corrupted config at ${backupPath}`
-      );
-
-      // Return default structure
-      return {
-        http: { routers: {}, services: {} },
-        tcp: { routers: {}, services: {} },
-      };
-    }
+    // Remove root-level invalid keys
+    delete config.routers;
+    delete config.services;
+    delete config.tls;
   } catch (err) {
-    console.error("[ERROR] Error loading dynamic config:", err.message);
-    return {
+    config = {
       http: { routers: {}, services: {} },
       tcp: { routers: {}, services: {} },
     };
   }
+
+  // Ensure proper structure
+  config.http = config.http || { routers: {}, services: {} };
+  config.tcp = config.tcp || { routers: {}, services: {} };
+
+  // Clean nested sections
+  config.http.routers = config.http.routers || {};
+  config.http.services = config.http.services || {};
+  config.tcp.routers = config.tcp.routers || {};
+  config.tcp.services = config.tcp.services || {};
+
+  return config;
 }
 
 /**
  * Save dynamic configuration to dynamic.yml.
  */
 async function saveDynamicConfig(config) {
-  try {
-    console.log("[DEBUG] Saving dynamic config...");
+  // Sanitize configuration
+  const sanitizedConfig = {
+    http: {
+      routers: config.http.routers,
+      services: config.http.services,
+    },
+    tcp: {
+      routers: config.tcp.routers,
+      services: config.tcp.services,
+    },
+  };
 
-    // Ensure the config object has the expected structure
-    config.http = config.http || { routers: {}, services: {} };
-    config.tcp = config.tcp || { routers: {}, services: {} };
+  const yamlStr = yaml.stringify(sanitizedConfig, {
+    indent: 2,
+    aliasDuplicateObjects: false,
+  });
 
-    // Ensure routers and services exist in both http and tcp
-    config.http.routers = config.http.routers || {};
-    config.http.services = config.http.services || {};
-    config.tcp.routers = config.tcp.routers || {};
-    config.tcp.services = config.tcp.services || {};
-
-    // Create a temporary file to avoid partial writes
-    const tempPath = `${dynamicConfigPath}.tmp`;
-
-    // Convert to YAML with explicit formatting options
-    const yamlStr = yaml.stringify(config, {
-      indent: 2,
-      lineWidth: -1, // Prevent line wrapping
-      noRefs: true, // Avoid YAML references
-      noCompatMode: true,
-    });
-
-    // Write to temp file first
-    await fs.writeFile(tempPath, yamlStr, "utf8");
-
-    // Verify the temp file content is valid YAML before replacing the actual file
-    try {
-      const tempContent = await fs.readFile(tempPath, "utf8");
-      yaml.parse(tempContent); // This will throw if YAML is invalid
-    } catch (verifyErr) {
-      console.error(
-        "[ERROR] Generated YAML is invalid, aborting save:",
-        verifyErr.message
-      );
-      await fs.unlink(tempPath); // Clean up temp file
-      throw new Error("Generated invalid YAML configuration");
-    }
-
-    // Replace the actual file atomically
-    await fs.rename(tempPath, dynamicConfigPath);
-
-    // Verify the file was written correctly
-    const verifyContent = await fs.readFile(dynamicConfigPath, "utf8");
-    const verifyConfig = yaml.parse(verifyContent);
-
-    if (!verifyConfig.http || !verifyConfig.tcp) {
-      console.warn(
-        "[WARN] Verification found missing sections in saved config"
-      );
-    } else {
-      console.log(
-        "[DEBUG] Dynamic configuration saved and verified successfully"
-      );
-      console.log(
-        "[DEBUG] Config sections:",
-        Object.keys(verifyConfig).join(", ")
-      );
-      console.log(
-        "[DEBUG] HTTP routers:",
-        Object.keys(verifyConfig.http.routers || {}).length
-      );
-      console.log(
-        "[DEBUG] TCP routers:",
-        Object.keys(verifyConfig.tcp.routers || {}).length
-      );
-    }
-
-    return true;
-  } catch (err) {
-    console.error("[ERROR] Failed to save dynamic config:", err.message);
-    console.error("[ERROR] Error stack:", err.stack);
-
-    // Try to diagnose the issue
-    try {
-      const configDir = path.dirname(dynamicConfigPath);
-      const dirStat = await fs.stat(configDir);
-      console.log("[DEBUG] Config directory info:", {
-        isDirectory: dirStat.isDirectory(),
-        mode: dirStat.mode.toString(8),
-        uid: dirStat.uid,
-        gid: dirStat.gid,
-      });
-    } catch (statErr) {
-      console.error(
-        "[ERROR] Could not get config directory info:",
-        statErr.message
-      );
-    }
-
-    throw err; // Re-throw to handle in the calling function
-  }
+  await fs.writeFile(dynamicConfigPath, yamlStr);
 }
-
 /**
  * Trigger Traefik reload using the Docker API.
  */
