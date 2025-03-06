@@ -44,7 +44,7 @@ providers:
 api:
   dashboard: true
   # For production, replace with proper authentication
-  insecure: false
+  insecure: true
   middlewares:
     - auth
 
