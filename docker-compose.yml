@@ -5,6 +5,7 @@ services:
     image: traefik:latest
     container_name: traefik
     restart: always
+    hostname: traefik
     ports:
       - "80:80"
       - "443:443"
