@@ -2,63 +2,66 @@ version: "3.8"
 
 services:
   traefik:
-    image: traefik:latest
+    image: traefik:v2.10
     container_name: traefik
     restart: always
-    hostname: traefik
     ports:
-      - "80:80"
-      - "443:443"
-      - "8080:8080" # Expose dashboard port
-      - "27017:27017" # MongoDB port
+      - "80:80" # HTTP
+      - "443:443" # HTTPS
+      - "27017:27017" # MongoDB
+      - "8080:8080" # Dashboard
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./traefik-certs:/traefik-certs
-      - ./config:/config
-      - /var/log/traefik:/var/log/traefik
+      - ${CONFIG_DIR:-./config}:/config
+      - ${CERTS_DIR:-./traefik-certs}:/traefik-certs
     env_file:
       - ./.env
     environment:
-      - CF_EMAIL=${CF_EMAIL}
-      - CF_API_KEY=${CF_API_KEY}
+      - CF_EMAIL=${CF_EMAIL:-demo@example.com}
+      - CF_API_KEY=${CF_API_KEY:-}
+    command:
+      - "--configFile=/config/traefik.yml"
+    networks:
+      - traefik-network
+    # Improved health check that matches actual configuration
     healthcheck:
-      test:
-        ["CMD", "wget", "-q", "--spider", "http://localhost:8080/api/rawdata"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80"]
       interval: 30s
       timeout: 10s
       retries: 3
-    networks:
-      - traefik_network
+      start_period: 10s
 
   node-app:
-    build: ./node-app
+    build:
+      context: .
+      dockerfile: node-app/Dockerfile
     container_name: node-app
     restart: always
-    depends_on:
-      - traefik
     ports:
       - "${NODE_PORT:-3005}:3005"
     volumes:
-      - ./config:/config
       - /var/run/docker.sock:/var/run/docker.sock
+      - ${CONFIG_DIR:-./config}:/app/config
     env_file:
       - ./.env
     environment:
       - JWT_SECRET=${JWT_SECRET}
-      - DYNAMIC_CONFIG_PATH=/config/dynamic.yml
-      - TRAEFIK_CONTAINER=traefik
       - APP_DOMAIN=${APP_DOMAIN:-apps.cloudlunacy.uk}
       - MONGO_DOMAIN=${MONGO_DOMAIN:-mongodb.cloudlunacy.uk}
-      - DOCKER_NETWORK=${DOCKER_NETWORK:-traefik-network}
+      - DYNAMIC_CONFIG_PATH=/app/config/dynamic.yml
+      - NODE_PORT=3005
+      - TRAEFIK_CONTAINER=traefik
+    depends_on:
+      - traefik
+    networks:
+      - traefik-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3005/health"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3005/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-    networks:
-      - traefik_network
 
 networks:
-  traefik_network:
-    name: ${DOCKER_NETWORK:-traefik-network}
+  traefik-network:
+    name: traefik-network
     external: true

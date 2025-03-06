@@ -1,4 +1,11 @@
-# Fixed traefik.yml with proper HTTP handling
+# config/traefik.yml
+
+# Global settings
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+# Entry points definition - explicitly define all needed ports
 entryPoints:
   web:
     address: ":80"
@@ -6,52 +13,37 @@ entryPoints:
     address: ":443"
   mongodb:
     address: ":27017"
+  dashboard:
+    address: ":8080"
 
-# Enable debug logging
+# API and dashboard configuration
+api:
+  dashboard: true
+  insecure: true
+
+# Log configuration
 log:
-  level: "DEBUG"
+  level: "INFO" # Set to DEBUG for more detailed logs during troubleshooting
 
-# Access logs with detailed configuration
-accessLog:
-  filePath: "/var/log/traefik/access.log"
-  format: "json"
-  bufferingSize: 100
-  fields:
-    headers:
-      defaultMode: "keep"
+# Access logs
+accessLog: {}
 
-certificatesResolvers:
-  letsencrypt:
-    acme:
-      email: "${CF_EMAIL}"
-      storage: /traefik-certs/acme.json
-      # Add HTTP challenge as primary, with DNS as fallback
-      httpChallenge:
-        entryPoint: web
-      dnsChallenge:
-        provider: cloudflare
-        delayBeforeCheck: 0
-
+# Configure providers
 providers:
   file:
-    filename: /config/dynamic.yml
+    filename: "/config/dynamic.yml"
     watch: true
   docker:
     endpoint: "unix:///var/run/docker.sock"
     exposedByDefault: false
     watch: true
 
-api:
-  dashboard: true
-  # For production, replace with proper authentication
-  insecure: true
-  middlewares:
-    - auth
-
-# Add a basic auth middleware for securing the dashboard
-http:
-  middlewares:
-    auth:
-      basicAuth:
-        users:
-          - "admin:$apr1$ruca84Hq$mbjdMZBAG.KWn7vfN/SNK/" # admin:password
+# Certificate resolver for HTTPS
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: "${CF_EMAIL}"
+      storage: "/traefik-certs/acme.json"
+      # Use HTTP challenge - more reliable for initial setup
+      httpChallenge:
+        entryPoint: "web"
