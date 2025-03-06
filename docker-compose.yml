@@ -33,7 +33,7 @@ services:
 
   node-app:
     build:
-      context: .
+      context: ./node-app
       dockerfile: node-app/Dockerfile
     container_name: node-app
     restart: always
