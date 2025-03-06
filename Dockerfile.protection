@@ -1,0 +1,12 @@
+FROM alpine:latest
+
+# Install required tools
+RUN apk add --no-cache bash curl docker-cli 
+
+# Create log directory
+RUN mkdir -p /var/log
+
+WORKDIR /app
+
+# We'll mount the script from the host
+CMD ["sh", "/app/traefik-protection.sh"]

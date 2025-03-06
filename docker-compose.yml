@@ -5,61 +5,83 @@ services:
     image: traefik:v2.10
     container_name: traefik
     restart: always
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      - node-app
     ports:
-      - "80:80" # HTTP
-      - "443:443" # HTTPS
-      - "27017:27017" # MongoDB
-      - "8081:8081" # Dashboard
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ${CONFIG_DIR:-./config}:/config
-      - ${CERTS_DIR:-./traefik-certs}:/traefik-certs
-    env_file:
-      - ./.env
-    environment:
-      - CF_EMAIL=${CF_EMAIL:-demo@example.com}
-      - CF_API_KEY=${CF_API_KEY:-}
-    command:
-      - "--configFile=/config/traefik.yml"
+      - "80:80"
+      - "443:443"
+      - "8081:8081"
+      - "27017:27017"
     networks:
       - traefik-network
-    # Improved health check that matches actual configuration
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./config/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./config/dynamic.yml:/config/dynamic.yml:rw
+      - ./traefik-certs:/traefik-certs
+    environment:
+      - TZ=UTC
+      - CF_EMAIL=${CF_EMAIL:-admin@example.com}
+      - CF_API_KEY=${CF_API_KEY:-none}
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80"]
+      test: ["CMD", "traefik", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.dashboard.rule=Host(`traefik.localhost`)"
+      - "traefik.http.routers.dashboard.service=api@internal"
+      - "traefik.http.routers.dashboard.entrypoints=dashboard"
+
+  node-app:
+    build:
+      context: .
+      dockerfile: node-app/Dockerfile
+    container_name: node-app
+    restart: always
+    networks:
+      - traefik-network
+    ports:
+      - "${NODE_PORT:-3005}:3005"
+    environment:
+      - NODE_PORT=${NODE_PORT:-3005}
+      - JWT_SECRET=${JWT_SECRET}
+      - MONGO_DOMAIN=${MONGO_DOMAIN:-mongodb.cloudlunacy.uk}
+      - APP_DOMAIN=${APP_DOMAIN:-apps.cloudlunacy.uk}
+      - DYNAMIC_CONFIG_PATH=/config/dynamic.yml
+      - TRAEFIK_CONTAINER=traefik
+    volumes:
+      - ./config:/config
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3005/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
 
-  node-app:
-    build: ./node-app
-    container_name: node-app
+  traefik-protection:
+    build:
+      context: .
+      dockerfile: Dockerfile.protection
+    container_name: traefik-protection
     restart: always
-    ports:
-      - "${NODE_PORT:-3005}:3005"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ${CONFIG_DIR:-./config}:/app/config
-    env_file:
-      - ./.env
-    environment:
-      - JWT_SECRET=${JWT_SECRET}
-      - APP_DOMAIN=${APP_DOMAIN:-apps.cloudlunacy.uk}
-      - MONGO_DOMAIN=${MONGO_DOMAIN:-mongodb.cloudlunacy.uk}
-      - DYNAMIC_CONFIG_PATH=/app/config/dynamic.yml
-      - NODE_PORT=3005
-      - TRAEFIK_CONTAINER=traefik
-    depends_on:
-      - traefik
     networks:
       - traefik-network
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3005/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./config:/config
+      - ./traefik-protection.sh:/app/traefik-protection.sh
+    command: ["sh", "/app/traefik-protection.sh"]
+    depends_on:
+      - traefik
+      - node-app
 
 networks:
   traefik-network:
     name: traefik-network
-    external: true
+    driver: bridge
