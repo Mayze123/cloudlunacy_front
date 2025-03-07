@@ -1,5 +1,3 @@
-# config/traefik.yml
-
 # Global settings
 global:
   checkNewVersion: false
@@ -20,6 +18,10 @@ entryPoints:
 api:
   dashboard: true
   insecure: true
+
+# Add ping endpoint for health checks
+ping:
+  entryPoint: "web"
 
 # Log configuration
 log:

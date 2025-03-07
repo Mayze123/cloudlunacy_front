@@ -1,2 +1,7 @@
-# config/dynamic.yml
-# Initial dynamic configuration for Traefik.
+# Dynamic configuration for Traefik
+http:
+  routers: {}
+  services: {}
+  middlewares:
+    pingMiddleware:
+      ping: {}
