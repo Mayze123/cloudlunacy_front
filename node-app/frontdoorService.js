@@ -247,6 +247,59 @@ async function saveDynamicConfig(config) {
   }
 }
 
+function executeCommand(command, args = [], options = {}) {
+  const { spawn } = require("child_process");
+  const { cwd = process.cwd() } = options;
+
+  console.log(`Executing command: ${command} ${args.join(" ")}`);
+
+  return new Promise((resolve, reject) => {
+    const cmd = spawn(command, args, {
+      cwd,
+      stdio: ["inherit", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    cmd.stdout.on("data", (data) => {
+      const output = data.toString();
+      stdout += output;
+      console.log(`[stdout] ${output.trim()}`);
+    });
+
+    cmd.stderr.on("data", (data) => {
+      const output = data.toString();
+      stderr += output;
+      console.error(`[stderr] ${output.trim()}`);
+    });
+
+    cmd.on("close", (code) => {
+      if (code !== 0) {
+        const error = new Error(`Command failed with exit code ${code}`);
+        error.code = code;
+        error.stdout = stdout.trim();
+        error.stderr = stderr.trim();
+        console.error(`Command failed: ${command} ${args.join(" ")}`);
+        console.error(`Exit code: ${code}`);
+        if (stderr) {
+          console.error(`Error output: ${stderr.trim()}`);
+        }
+        reject(error);
+      } else {
+        console.log(`Command succeeded: ${command} ${args.join(" ")}`);
+        resolve({ stdout: stdout.trim(), stderr: stderr.trim() });
+      }
+    });
+
+    cmd.on("error", (error) => {
+      console.error(`Failed to start command: ${command} ${args.join(" ")}`);
+      console.error(`Error: ${error.message}`);
+      reject(error);
+    });
+  });
+}
+
 /**
  * Trigger Traefik reload using the Docker API.
  */
