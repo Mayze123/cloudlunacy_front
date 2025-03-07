@@ -37,7 +37,6 @@ providers:
     endpoint: "unix:///var/run/docker.sock"
     exposedByDefault: false
     watch: true
-    disablePermID: true
 
 # Certificate resolver for HTTPS
 certificatesResolvers:
