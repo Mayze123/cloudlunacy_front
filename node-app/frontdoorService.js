@@ -191,33 +191,60 @@ async function loadDynamicConfig() {
 
 /**
  * Save dynamic configuration to dynamic.yml.
+ * This function has been fixed to ensure proper YAML indentation and structure.
  */
 async function saveDynamicConfig(config) {
-  // Always include the HTTP section
+  // Always include the HTTP section with proper structure
   const sanitizedConfig = {
     http: {
-      routers: config.http.routers,
-      services: config.http.services,
+      routers: config.http.routers || {},
+      services: config.http.services || {},
+      middlewares: config.http.middlewares || {},
     },
   };
 
   // Only include TCP if there is any content
   if (
     config.tcp &&
-    (Object.keys(config.tcp.routers).length > 0 ||
-      Object.keys(config.tcp.services).length > 0)
+    (Object.keys(config.tcp.routers || {}).length > 0 ||
+      Object.keys(config.tcp.services || {}).length > 0)
   ) {
     sanitizedConfig.tcp = {
-      routers: config.tcp.routers,
-      services: config.tcp.services,
+      routers: config.tcp.routers || {},
+      services: config.tcp.services || {},
     };
   }
 
+  // Ensure we use proper indentation (2 spaces) and disable alias duplication
   const yamlStr = yaml.stringify(sanitizedConfig, {
     indent: 2,
     aliasDuplicateObjects: false,
   });
-  await fs.writeFile(dynamicConfigPath, yamlStr);
+
+  try {
+    await fs.writeFile(dynamicConfigPath, yamlStr, "utf8");
+    console.log(
+      `[DEBUG] Successfully wrote ${yamlStr.length} bytes to ${dynamicConfigPath}`
+    );
+
+    // Validate the YAML after writing (optional, for debugging)
+    try {
+      const writtenContent = await fs.readFile(dynamicConfigPath, "utf8");
+      const parsedContent = yaml.parse(writtenContent);
+      console.log("[DEBUG] YAML validation successful");
+    } catch (validateErr) {
+      console.error(
+        "[ERROR] Written YAML failed validation:",
+        validateErr.message
+      );
+    }
+  } catch (writeErr) {
+    console.error(
+      `[ERROR] Failed to write to ${dynamicConfigPath}:`,
+      writeErr.message
+    );
+    throw writeErr;
+  }
 }
 
 /**
@@ -395,8 +422,8 @@ app.post("/api/frontdoor/add-subdomain", jwtAuth, async (req, res) => {
 });
 
 /**
- * Endpoint for adding an HTTP app subdomain.
- * This endpoint configures Traefik to route HTTP/HTTPS traffic.
+ * Modified code for the /api/frontdoor/add-app endpoint to ensure proper
+ * middleware setup for Host header rewriting.
  */
 app.post("/api/frontdoor/add-app", jwtAuth, async (req, res) => {
   try {
@@ -433,6 +460,16 @@ app.post("/api/frontdoor/add-app", jwtAuth, async (req, res) => {
       });
     }
 
+    // Extract target host:port from the URL for use in the Host header
+    let targetHost = targetUrl;
+    try {
+      const url = new URL(targetUrl);
+      targetHost = url.host; // This gives "hostname:port" or just "hostname" if no port
+    } catch (err) {
+      console.warn(`[WARN] Failed to parse URL ${targetUrl}: ${err.message}`);
+      // If parsing fails, just keep the original targetUrl
+    }
+
     // Load current dynamic configuration
     console.log(
       "[DEBUG] Loading dynamic configuration from:",
@@ -465,7 +502,7 @@ app.post("/api/frontdoor/add-app", jwtAuth, async (req, res) => {
     config.http.middlewares[middlewareName] = {
       headers: {
         customRequestHeaders: {
-          Host: targetUrl.replace(/^https?:\/\//, ""), // Extract just the host:port part
+          Host: targetHost,
         },
       },
     };
