@@ -44,7 +44,7 @@ providers:
 certificatesResolvers:
   letsencrypt:
     acme:
-      email: "${CF_EMAIL}"
+      email: "m.taibou.i@gmail.com"
       storage: "/traefik-certs/acme.json"
       # Use HTTP challenge - more reliable for initial setup
       httpChallenge:
