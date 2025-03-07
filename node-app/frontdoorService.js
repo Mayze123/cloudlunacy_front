@@ -305,15 +305,84 @@ function executeCommand(command, args = [], options = {}) {
  */
 async function triggerTraefikReload() {
   try {
-    // Using docker-compose is more reliable than just sending a SIGHUP signal
-    const { stdout } = await executeCommand("docker-compose", [
-      "-f",
-      "/opt/cloudlunacy_front/docker-compose.yml",
-      "restart",
-      "traefik",
-    ]);
-    console.log("Traefik restarted successfully:", stdout);
-    return true;
+    // Try using "docker compose" (new format without hyphen)
+    const { spawn } = require("child_process");
+    console.log("Restarting Traefik using docker compose...");
+
+    // Using spawn directly for more control
+    const process = spawn(
+      "docker",
+      [
+        "compose",
+        "-f",
+        "/opt/cloudlunacy_front/docker-compose.yml",
+        "restart",
+        "traefik",
+      ],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+      }
+    );
+
+    let stdout = "";
+    let stderr = "";
+
+    process.stdout.on("data", (data) => {
+      stdout += data.toString();
+      console.log(`[Traefik restart stdout] ${data.toString().trim()}`);
+    });
+
+    process.stderr.on("data", (data) => {
+      stderr += data.toString();
+      console.error(`[Traefik restart stderr] ${data.toString().trim()}`);
+    });
+
+    const exitCode = await new Promise((resolve, reject) => {
+      process.on("close", resolve);
+      process.on("error", (err) => {
+        console.error("Process error:", err);
+        reject(err);
+      });
+    });
+
+    if (exitCode === 0) {
+      console.log("Traefik restarted successfully");
+      return true;
+    } else {
+      console.error(`Traefik restart failed with exit code ${exitCode}`);
+      console.error(`Error output: ${stderr}`);
+
+      // Try alternative method as fallback: use dockerode
+      console.log("Trying alternative restart method via Dockerode...");
+      try {
+        const Docker = require("dockerode");
+        const docker = new Docker({ socketPath: "/var/run/docker.sock" });
+
+        const containers = await docker.listContainers({
+          filters: { name: ["traefik"] },
+        });
+
+        if (containers.length === 0) {
+          console.error("No Traefik container found");
+          return false;
+        }
+
+        const traefikContainer = docker.getContainer(containers[0].Id);
+
+        // Restart the container
+        console.log(`Restarting Traefik container ${containers[0].Id}...`);
+        await traefikContainer.restart({ t: 10 }); // 10 seconds timeout
+
+        console.log("Traefik restarted successfully via Dockerode");
+        return true;
+      } catch (dockerodeError) {
+        console.error(
+          "Alternative restart also failed:",
+          dockerodeError.message
+        );
+        return false;
+      }
+    }
   } catch (error) {
     console.error("Failed to restart Traefik:", error.message);
     return false;
