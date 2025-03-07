@@ -353,82 +353,6 @@ app.post("/api/frontdoor/add-subdomain", jwtAuth, async (req, res) => {
       });
     }
 
-    // Load current dynamic configuration
-    const config = await loadDynamicConfig();
-    config.tcp = config.tcp || { routers: {}, services: {} };
-
-    console.log(
-      "[DEBUG] Setting up configuration for domain:",
-      `${subdomain}.${MONGO_DOMAIN}`
-    );
-
-    config.tcp.routers[subdomain] = {
-      rule: `HostSNI(\`${subdomain}.${MONGO_DOMAIN}\`)`,
-      service: `${subdomain}-service`,
-    };
-    config.tcp.services[`${subdomain}-service`] = {
-      loadBalancer: {
-        servers: [{ address: `${targetIp}:27017` }],
-      },
-    };
-
-    await saveDynamicConfig(config);
-    const reloadTriggered = await triggerTraefikReload();
-
-    res.json({
-      success: true,
-      message: "MongoDB subdomain added successfully.",
-      details: {
-        domain: `${subdomain}.${MONGO_DOMAIN}`,
-        targetIp: targetIp,
-        reloadTriggered,
-      },
-    });
-  } catch (err) {
-    console.error("[ERROR] Failed to add MongoDB subdomain:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/**
- * Endpoint for adding an HTTP app subdomain.
- * This endpoint configures Traefik to route HTTP/HTTPS traffic.
- */
-app.post("/api/frontdoor/add-subdomain", jwtAuth, async (req, res) => {
-  try {
-    console.log("[DEBUG] Received add-subdomain request:", req.body);
-    const { subdomain, targetIp } = req.body;
-
-    if (!subdomain || !targetIp) {
-      return res.status(400).json({
-        error:
-          "Missing required parameters: subdomain and targetIp are required",
-        received: { subdomain, targetIp },
-      });
-    }
-
-    if (!validateMongoInput(subdomain, targetIp)) {
-      return res.status(400).json({
-        error: "Invalid subdomain or target IP format.",
-        validationDetails: {
-          subdomain: {
-            value: subdomain,
-            valid: /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(subdomain),
-            pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$",
-          },
-          targetIp: {
-            value: targetIp,
-            valid:
-              /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(
-                targetIp
-              ),
-            pattern:
-              "^(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)(\\.(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)){3}$",
-          },
-        },
-      });
-    }
-
     // Load the current dynamic configuration
     const config = await loadDynamicConfig();
     // Ensure the TCP section exists only when needed
@@ -466,6 +390,129 @@ app.post("/api/frontdoor/add-subdomain", jwtAuth, async (req, res) => {
     });
   } catch (err) {
     console.error("[ERROR] Failed to add MongoDB subdomain:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Endpoint for adding an HTTP app subdomain.
+ * This endpoint configures Traefik to route HTTP/HTTPS traffic.
+ */
+app.post("/api/frontdoor/add-app", jwtAuth, async (req, res) => {
+  try {
+    console.log("[DEBUG] Received add-app request:", req.body);
+    console.log("[DEBUG] Headers:", req.headers);
+
+    const { subdomain, targetUrl } = req.body;
+
+    if (!subdomain || !targetUrl) {
+      return res.status(400).json({
+        error:
+          "Missing required parameters: subdomain and targetUrl are required",
+        received: { subdomain, targetUrl },
+      });
+    }
+
+    if (!validateAppInput(subdomain, targetUrl)) {
+      return res.status(400).json({
+        error: "Invalid subdomain or target URL format.",
+        validationDetails: {
+          subdomain: {
+            value: subdomain,
+            valid: /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(subdomain),
+            pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          },
+          targetUrl: {
+            value: targetUrl,
+            valid: /^https?:\/\/[a-zA-Z0-9.-]+(?::\d+)?(\/.*)?$/.test(
+              targetUrl
+            ),
+            pattern: "^https?://[a-zA-Z0-9.-]+(?::\\d+)?(/.*)?$",
+          },
+        },
+      });
+    }
+
+    // Load current dynamic configuration
+    console.log(
+      "[DEBUG] Loading dynamic configuration from:",
+      dynamicConfigPath
+    );
+
+    let config;
+    try {
+      config = await loadDynamicConfig();
+      console.log("[DEBUG] Current config loaded:", config);
+    } catch (loadErr) {
+      console.error("[ERROR] Failed to load dynamic config:", loadErr);
+      config = {
+        http: { routers: {}, services: {} },
+        tcp: { routers: {}, services: {} },
+      };
+    }
+
+    // Ensure http structure exists
+    config.http = config.http || { routers: {}, services: {} };
+
+    console.log(
+      "[DEBUG] Setting up configuration for domain:",
+      `${subdomain}.${APP_DOMAIN}`
+    );
+
+    // Create an HTTP router for the subdomain
+    config.http.routers[subdomain] = {
+      rule: `Host(\`${subdomain}.${APP_DOMAIN}\`)`,
+      service: `${subdomain}-service`,
+      entryPoints: ["web", "websecure"], // Add both entrypoints
+      tls: {
+        certResolver: "letsencrypt",
+      },
+    };
+
+    // Create the service definition with passHostHeader
+    config.http.services[`${subdomain}-service`] = {
+      loadBalancer: {
+        passHostHeader: true, // Important: Properly pass host header
+        servers: [
+          {
+            url: targetUrl.startsWith("http")
+              ? targetUrl
+              : `http://${targetUrl}`,
+          },
+        ],
+      },
+    };
+
+    console.log("[DEBUG] About to save dynamic configuration:", config);
+
+    try {
+      await saveDynamicConfig(config);
+      console.log("[DEBUG] Dynamic configuration saved successfully");
+    } catch (saveErr) {
+      console.error("[ERROR] Failed to save dynamic config:", saveErr);
+      return res.status(500).json({
+        error: "Failed to save configuration",
+        details: saveErr.message,
+      });
+    }
+
+    // Try to trigger a reload, but continue even if it fails
+    const reloadTriggered = await triggerTraefikReload();
+    console.log("[DEBUG] Traefik reload triggered:", reloadTriggered);
+
+    res.json({
+      success: true,
+      message: "App subdomain added successfully.",
+      details: {
+        domain: `${subdomain}.${APP_DOMAIN}`,
+        targetUrl: targetUrl.startsWith("http")
+          ? targetUrl
+          : `http://${targetUrl}`,
+        reloadTriggered,
+      },
+    });
+  } catch (err) {
+    console.error("[ERROR] Unexpected error in add-app endpoint:", err);
     res.status(500).json({ error: err.message });
   }
 });
