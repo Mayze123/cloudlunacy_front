@@ -259,10 +259,10 @@ async function triggerTraefikReload() {
       "restart",
       "traefik",
     ]);
-    logger.info("Traefik restarted successfully:", stdout);
+    console.log("Traefik restarted successfully:", stdout);
     return true;
   } catch (error) {
-    logger.error("Failed to restart Traefik:", error.message);
+    console.error("Failed to restart Traefik:", error.message);
     return false;
   }
 }
