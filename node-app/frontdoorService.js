@@ -251,61 +251,20 @@ async function saveDynamicConfig(config) {
  * Trigger Traefik reload using the Docker API.
  */
 async function triggerTraefikReload() {
-  //   try {
-  //     const containerName = process.env.TRAEFIK_CONTAINER || "traefik";
-  //     console.log(
-  //       `[DEBUG] Attempting to reload Traefik container: ${containerName}`
-  //     );
-
-  //     // First check if container exists and is running
-  //     const containers = await docker.listContainers();
-  //     const traefik = containers.find((c) =>
-  //       c.Names.some((name) => name.includes(`/${containerName}`))
-  //     );
-
-  //     if (!traefik) {
-  //       console.error(
-  //         `[ERROR] Traefik container '${containerName}' not found or not running`
-  //       );
-
-  //       // List all running containers to help with debugging
-  //       console.log(
-  //         "[DEBUG] Running containers:",
-  //         containers.map((c) => ({
-  //           name: c.Names[0],
-  //           image: c.Image,
-  //           status: c.Status,
-  //         }))
-  //       );
-
-  //       return false;
-  //     }
-
-  //     // Get full container info
-  //     const container = docker.getContainer(traefik.Id);
-
-  //     // Send SIGHUP signal to reload config without restarting
-  //     await container.kill({ signal: "SIGHUP" });
-
-  //     // Verify Traefik is still running after reload
-  //     const checkStatus = await container.inspect();
-  //     if (checkStatus.State.Running) {
-  //       console.log(
-  //         "[DEBUG] Traefik reload triggered successfully and container is still running"
-  //       );
-  //       return true;
-  //     } else {
-  //       console.error("[ERROR] Traefik container stopped after reload signal");
-  //       return false;
-  //     }
-  //   } catch (err) {
-  //     console.error("[ERROR] Failed to trigger Traefik reload:", err.message);
-  //     return false;
-  //   }
-  console.log(
-    "[DEBUG] Skipping manual Traefik reload; relying on auto-reload via file provider."
-  );
-  return true;
+  try {
+    // Using docker-compose is more reliable than just sending a SIGHUP signal
+    const { stdout } = await executeCommand("docker-compose", [
+      "-f",
+      "/opt/cloudlunacy_front/docker-compose.yml",
+      "restart",
+      "traefik",
+    ]);
+    logger.info("Traefik restarted successfully:", stdout);
+    return true;
+  } catch (error) {
+    logger.error("Failed to restart Traefik:", error.message);
+    return false;
+  }
 }
 
 /**
