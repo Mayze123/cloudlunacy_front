@@ -427,7 +427,7 @@ app.post("/api/frontdoor/add-app", jwtAuth, async (req, res) => {
             valid: /^https?:\/\/[a-zA-Z0-9.-]+(?::\d+)?(\/.*)?$/.test(
               targetUrl
             ),
-            pattern: "^https?://[a-zA-Z0-9.-]+(?::\\d+)?(/.*)?$",
+            pattern: "^https?://[a-zA-Z0-9.-]+(?:\\d+)?(/.*)?$",
           },
         },
       });
@@ -446,33 +446,44 @@ app.post("/api/frontdoor/add-app", jwtAuth, async (req, res) => {
     } catch (loadErr) {
       console.error("[ERROR] Failed to load dynamic config:", loadErr);
       config = {
-        http: { routers: {}, services: {} },
+        http: { routers: {}, services: {}, middlewares: {} },
         tcp: { routers: {}, services: {} },
       };
     }
 
-    // Ensure http structure exists
-    config.http = config.http || { routers: {}, services: {} };
+    // Ensure http structure exists with middlewares
+    config.http = config.http || { routers: {}, services: {}, middlewares: {} };
+    config.http.middlewares = config.http.middlewares || {};
 
     console.log(
       "[DEBUG] Setting up configuration for domain:",
       `${subdomain}.${APP_DOMAIN}`
     );
 
-    // Create an HTTP router for the subdomain
+    // Create a host rewrite middleware specifically for this service
+    const middlewareName = `${subdomain}-host-rewrite`;
+    config.http.middlewares[middlewareName] = {
+      headers: {
+        customRequestHeaders: {
+          Host: targetUrl.replace(/^https?:\/\//, ""), // Extract just the host:port part
+        },
+      },
+    };
+
+    // Create an HTTP router for the subdomain with TLS
     config.http.routers[subdomain] = {
       rule: `Host(\`${subdomain}.${APP_DOMAIN}\`)`,
       service: `${subdomain}-service`,
-      entryPoints: ["web", "websecure"], // Add both entrypoints
+      entryPoints: ["web", "websecure"],
+      middlewares: [middlewareName],
       tls: {
         certResolver: "letsencrypt",
       },
     };
 
-    // Create the service definition with passHostHeader
+    // Create the service definition
     config.http.services[`${subdomain}-service`] = {
       loadBalancer: {
-        passHostHeader: true, // Important: Properly pass host header
         servers: [
           {
             url: targetUrl.startsWith("http")

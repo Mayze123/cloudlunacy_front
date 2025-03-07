@@ -7,6 +7,11 @@ global:
 entryPoints:
   web:
     address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
   websecure:
     address: ":443"
   mongodb:
@@ -23,12 +28,14 @@ api:
 ping:
   entryPoint: "web"
 
-# Log configuration
+# Log configuration - increase to DEBUG for troubleshooting
 log:
-  level: "INFO" # Set to DEBUG for more detailed logs during troubleshooting
+  level: "DEBUG"
+  filePath: "/var/log/traefik/traefik.log"
 
 # Access logs
-accessLog: {}
+accessLog:
+  filePath: "/var/log/traefik/access.log"
 
 # Configure providers
 providers:
@@ -46,6 +53,5 @@ certificatesResolvers:
     acme:
       email: "m.taibou.i@gmail.com"
       storage: "/traefik-certs/acme.json"
-      # Use HTTP challenge - more reliable for initial setup
       httpChallenge:
         entryPoint: "web"
