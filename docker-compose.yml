@@ -21,9 +21,11 @@ services:
       - ./config/traefik.yml:/etc/traefik/traefik.yml:ro
       - ./config/dynamic.yml:/config/dynamic.yml:rw
       - ./traefik-certs:/traefik-certs
+    env_file:
+      - ./.env
     environment:
       - TZ=UTC
-      - CF_EMAIL=${CF_EMAIL:-admin@example.com}
+      - CF_EMAIL=${CF_EMAIL:m.taibou.i@gmail.com.com}
       - CF_API_KEY=${CF_API_KEY:-none}
     healthcheck:
       test: ["CMD", "traefik", "healthcheck"]
@@ -47,6 +49,8 @@ services:
       - traefik-network
     ports:
       - "${NODE_PORT:-3005}:3005"
+    env_file:
+      - ./.env
     environment:
       - NODE_PORT=${NODE_PORT:-3005}
       - JWT_SECRET=${JWT_SECRET}
