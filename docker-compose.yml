@@ -67,24 +67,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
-
-  traefik-protection:
-    build:
-      context: .
-      dockerfile: Dockerfile.protection
-    container_name: traefik-protection
-    restart: always
-    networks:
-      - traefik-network
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./config:/config
-      - ./traefik-protection.sh:/app/traefik-protection.sh
-    command: ["sh", "/app/traefik-protection.sh"]
-    depends_on:
-      - traefik
-      - node-app
-
 networks:
   traefik-network:
     name: traefik-network
