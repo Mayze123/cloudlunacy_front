@@ -25,8 +25,8 @@ services:
       - ./.env
     environment:
       - TZ=UTC
-      - CF_EMAIL=${CF_EMAIL:m.taibou.i@gmail.com.com}
-      - CF_API_KEY=${CF_API_KEY:-none}
+      - CF_EMAIL=${CF_EMAIL}
+      - CF_API_KEY=${CF_API_KEY}
     healthcheck:
       test: ["CMD", "traefik", "healthcheck"]
       interval: 10s
