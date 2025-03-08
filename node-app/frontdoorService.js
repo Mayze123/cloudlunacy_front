@@ -262,14 +262,38 @@ async function loadDynamicConfig() {
 async function checkMongoDBConnectivity() {
   try {
     logger.info("Checking MongoDB connectivity via Docker network...");
-    const { execSync } = require("child_process");
 
-    // Run a simple test command from inside the node-app container
-    const testCmd = `docker exec node-app sh -c "wget -O- mongodb-agent:27017 --timeout=2 -q"`;
-    execSync(testCmd);
+    // Use a simple socket connection check rather than HTTP
+    const net = require("net");
 
-    logger.info("MongoDB container is accessible through Docker network");
-    return true;
+    return new Promise((resolve) => {
+      const socket = net.createConnection({
+        host: "mongodb-agent", // Container name on the Docker network
+        port: 27017,
+      });
+
+      // Set a timeout
+      socket.setTimeout(2000);
+
+      socket.on("connect", () => {
+        logger.info("MongoDB container is accessible through Docker network");
+        socket.end();
+        resolve(true);
+      });
+
+      socket.on("timeout", () => {
+        logger.warn("MongoDB connectivity test timed out");
+        socket.destroy();
+        resolve(false);
+      });
+
+      socket.on("error", (err) => {
+        logger.warn("MongoDB connectivity test failed:", {
+          error: err.message,
+        });
+        resolve(false);
+      });
+    });
   } catch (err) {
     logger.warn("MongoDB connectivity test failed:", { error: err.message });
     logger.info("This is normal if MongoDB is not yet running");

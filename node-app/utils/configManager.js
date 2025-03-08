@@ -96,7 +96,8 @@ class ConfigManager {
 
   async updateTraefikConfig() {
     // Update the Traefik static config to include the agents directory
-    const traefikConfigPath = path.join(this.baseConfigPath, "traefik.yml");
+    const traefikConfigPath =
+      process.env.TRAEFIK_CONFIG_PATH || "/config/traefik.yml";
 
     try {
       let traefikConfig;
