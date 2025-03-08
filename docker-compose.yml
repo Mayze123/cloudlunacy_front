@@ -20,6 +20,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./config/traefik.yml:/etc/traefik/traefik.yml:ro
       - ./config/dynamic.yml:/config/dynamic.yml:rw
+      - ./utils:/usr/src/app/utils
       - ./traefik-certs:/traefik-certs
     env_file:
       - ./.env
@@ -61,6 +62,7 @@ services:
       - TRAEFIK_CONTAINER=traefik
     volumes:
       - ./config:/config
+      - ./utils:/usr/src/app/utils
       - /var/run/docker.sock:/var/run/docker.sock:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3005/health"]
