@@ -26,9 +26,9 @@ api:
 ping:
   entryPoint: "web"
 
-# Log configuration - increase to DEBUG for troubleshooting
+# Log configuration
 log:
-  level: "DEBUG"
+  level: "INFO" # Set to DEBUG only when troubleshooting
   filePath: "/var/log/traefik/traefik.log"
 
 # Access logs
@@ -37,9 +37,17 @@ accessLog:
 
 # Configure providers
 providers:
+  # Main dynamic configuration file
   file:
     filename: "/config/dynamic.yml"
     watch: true
+
+  # Per-agent configuration directory
+  directory:
+    directory: "/config/agents"
+    watch: true
+
+  # Docker provider for container discovery
   docker:
     endpoint: "unix:///var/run/docker.sock"
     exposedByDefault: false

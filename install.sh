@@ -8,11 +8,9 @@ IFS=$'\n\t'
 
 # Environment variables must be set or defaulted
 # : "${FRONT_REPO_URL:=https://github.com/Mayze123/cloudlunacy_front}"
-: "${DOMAIN:=cloudlunacy.local}" # Changed to use a default value
+: "${DOMAIN:=cloudlunacy.local}" 
 : "${MONGO_DOMAIN:=mongodb.cloudlunacy.uk}"
 : "${APP_DOMAIN:=apps.cloudlunacy.uk}"
-# : "${CF_EMAIL:?Need to set CF_EMAIL (Cloudflare email)}"
-# : "${CF_API_KEY:?Need to set CF_API_KEY (Cloudflare API key)}"
 : "${NODE_PORT:=3005}"
 : "${JWT_SECRET:=}"
 : "${SHARED_NETWORK:=cloudlunacy-network}"
@@ -22,6 +20,7 @@ fi
 
 BASE_DIR="/opt/cloudlunacy_front"
 CONFIG_DIR="${BASE_DIR}/config"
+AGENTS_CONFIG_DIR="${CONFIG_DIR}/agents"
 CERTS_DIR="${BASE_DIR}/traefik-certs"
 TRAEFIK_NETWORK="traefik-network"
 
@@ -36,7 +35,7 @@ log "Cloning front server repository..."
 git clone "$FRONT_REPO_URL" "${BASE_DIR}" || error_exit "Failed to clone repository."
 
 log "Creating directories..."
-mkdir -p "${CERTS_DIR}" "${CONFIG_DIR}" || error_exit "Failed to create directories."
+mkdir -p "${CERTS_DIR}" "${CONFIG_DIR}" "${AGENTS_CONFIG_DIR}" || error_exit "Failed to create directories."
 
 log "Creating .env file..."
 cat > "${BASE_DIR}/.env" <<EOF
@@ -48,6 +47,7 @@ APP_DOMAIN=${APP_DOMAIN}
 NODE_PORT=${NODE_PORT}
 JWT_SECRET=${JWT_SECRET}
 SHARED_NETWORK=${SHARED_NETWORK}
+CONFIG_BASE_PATH=${CONFIG_DIR}
 EOF
 
 log "Creating Traefik static configuration..."
@@ -57,7 +57,7 @@ global:
   checkNewVersion: false
   sendAnonymousUsage: false
 
-# Entry points definition - explicitly define all needed ports
+# Entry points definition
 entryPoints:
   web:
     address: ":80"
@@ -80,9 +80,9 @@ api:
 ping:
   entryPoint: "web"
 
-# Log configuration - increase to DEBUG for troubleshooting
+# Log configuration
 log:
-  level: "DEBUG"
+  level: "INFO"
   filePath: "/var/log/traefik/traefik.log"
 
 # Access logs
@@ -91,9 +91,17 @@ accessLog:
 
 # Configure providers
 providers:
+  # Main dynamic configuration file
   file:
     filename: "/config/dynamic.yml"
     watch: true
+  
+  # Per-agent configuration directory
+  directory:
+    directory: "/config/agents"
+    watch: true
+  
+  # Docker provider for container discovery
   docker:
     endpoint: "unix:///var/run/docker.sock"
     exposedByDefault: false
@@ -103,7 +111,7 @@ providers:
 certificatesResolvers:
   letsencrypt:
     acme:
-      email: "m.taibou.i@gmail.com"
+      email: "admin@example.com"  # Replace with your email
       storage: "/traefik-certs/acme.json"
       httpChallenge:
         entryPoint: "web"
@@ -123,6 +131,16 @@ http:
       redirectScheme:
         scheme: https
         permanent: true
+EOF
+
+# Create a sample agent configuration file
+log "Creating sample agent configuration..."
+cat > "${AGENTS_CONFIG_DIR}/default.yml" <<'EOF'
+# Default agent configuration
+http:
+  routers: {}
+  services: {}
+  middlewares: {}
 EOF
 
 # Create empty acme.json file with proper permissions
@@ -153,6 +171,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./config:/config
       - ./traefik-certs:/traefik-certs
+      - /var/log/traefik:/var/log/traefik
     command:
       - "--configfile=/config/traefik.yml"
     networks:
@@ -169,9 +188,19 @@ services:
       - ./.env
     ports:
       - "${NODE_PORT}:3005"
+    volumes:
+      - ./config:/app/config
     networks:
       - traefik-network
       - ${SHARED_NETWORK}
+    depends_on:
+      - traefik
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.node-app.rule=Host(\`front.${DOMAIN}\`)"
+      - "traefik.http.routers.node-app.entrypoints=web,websecure"
+      - "traefik.http.routers.node-app.tls.certresolver=letsencrypt"
+      - "traefik.http.services.node-app.loadbalancer.server.port=3005"
 
 networks:
   traefik-network:
@@ -179,6 +208,11 @@ networks:
   ${SHARED_NETWORK}:
     external: true
 EOF
+
+# Create log directories
+log "Creating log directories..."
+mkdir -p /var/log/traefik
+chmod 755 /var/log/traefik
 
 # Create shared network if it doesn't exist
 log "Ensuring Docker networks exist..."
