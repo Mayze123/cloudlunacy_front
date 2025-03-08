@@ -12,8 +12,8 @@ const morgan = require("morgan");
 const jwt = require("jsonwebtoken");
 const Docker = require("dockerode");
 const yaml = require("yaml");
-const logger = require("../utils/logger").getLogger("frontdoor");
-const configManager = require("../utils/configManager");
+const logger = require("./utils/logger").getLogger("frontdoor");
+const configManager = require("./utils/configManager");
 
 const app = express();
 const PORT = process.env.NODE_PORT || 3005;
@@ -153,7 +153,7 @@ async function initializeConfigFile() {
 }
 
 // HTTP request logging middleware
-app.use(morgan("combined", { stream: require("../utils/logger").stream }));
+app.use(morgan("combined", { stream: require("./utils/logger").stream }));
 
 // Initialize the config manager
 app.on("ready", async () => {
