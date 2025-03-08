@@ -15,6 +15,7 @@ IFS=$'\n\t'
 # : "${CF_API_KEY:?Need to set CF_API_KEY (Cloudflare API key)}"
 : "${NODE_PORT:=3005}"
 : "${JWT_SECRET:=}"
+: "${SHARED_NETWORK:=cloudlunacy-network}"
 if [ -z "$JWT_SECRET" ]; then
   JWT_SECRET=$(openssl rand -base64 32)
 fi
@@ -22,7 +23,7 @@ fi
 BASE_DIR="/opt/cloudlunacy_front"
 CONFIG_DIR="${BASE_DIR}/config"
 CERTS_DIR="${BASE_DIR}/traefik-certs"
-NETWORK_NAME="traefik-network"
+TRAEFIK_NETWORK="traefik-network"
 
 log() { echo "[INFO] $1"; }
 error_exit() { echo "[ERROR] $1" >&2; exit 1; }
@@ -46,57 +47,82 @@ MONGO_DOMAIN=${MONGO_DOMAIN}
 APP_DOMAIN=${APP_DOMAIN}
 NODE_PORT=${NODE_PORT}
 JWT_SECRET=${JWT_SECRET}
+SHARED_NETWORK=${SHARED_NETWORK}
 EOF
 
 log "Creating Traefik static configuration..."
 cat > "${CONFIG_DIR}/traefik.yml" <<'EOF'
+# Global settings
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+# Entry points definition - explicitly define all needed ports
 entryPoints:
   web:
     address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
   websecure:
     address: ":443"
-  mongodb:
-    address: ":27017"
+  dashboard:
+    address: ":8081"
 
-# Enable debug logging
+# API and dashboard configuration
+api:
+  dashboard: true
+  insecure: true
+
+# Add ping endpoint for health checks
+ping:
+  entryPoint: "web"
+
+# Log configuration - increase to DEBUG for troubleshooting
 log:
   level: "DEBUG"
+  filePath: "/var/log/traefik/traefik.log"
 
 # Access logs
-accessLog: {}
+accessLog:
+  filePath: "/var/log/traefik/access.log"
 
-certificatesResolvers:
-  letsencrypt:
-    acme:
-      email: "${CF_EMAIL}"
-      storage: /traefik-certs/acme.json
-      dnsChallenge:
-        provider: cloudflare
-        delayBeforeCheck: 0
-
+# Configure providers
 providers:
   file:
-    filename: /config/dynamic.yml
-    watch: true  # Explicitly enable watching for file changes
+    filename: "/config/dynamic.yml"
+    watch: true
   docker:
     endpoint: "unix:///var/run/docker.sock"
     exposedByDefault: false
     watch: true
 
-api:
-  dashboard: true
-  insecure: true  # Only for debugging - remove in production
+# Certificate resolver for HTTPS
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: "m.taibou.i@gmail.com"
+      storage: "/traefik-certs/acme.json"
+      httpChallenge:
+        entryPoint: "web"
 EOF
 
 log "Creating Traefik dynamic configuration..."
 cat > "${CONFIG_DIR}/dynamic.yml" <<'EOF'
-# Initial dynamic configuration
+# Dynamic configuration for Traefik
 http:
   routers: {}
   services: {}
-tcp:
-  routers: {}
-  services: {}
+  middlewares:
+    pingMiddleware:
+      ping: {}
+    # Global redirection middleware - web to websecure
+    web-to-websecure:
+      redirectScheme:
+        scheme: https
+        permanent: true
 EOF
 
 # Create empty acme.json file with proper permissions
@@ -109,13 +135,65 @@ if ! command -v docker &> /dev/null; then
   error_exit "Docker is not installed. Please install Docker before continuing."
 fi
 
-# Create traefik-network if it doesn't exist
-log "Ensuring traefik-network exists..."
-if ! docker network ls | grep -q "$NETWORK_NAME"; then
-  log "Creating $NETWORK_NAME network..."
-  docker network create "$NETWORK_NAME" || error_exit "Failed to create $NETWORK_NAME network."
+# Create docker-compose.yml with network configuration
+log "Creating docker-compose.yml..."
+cat > "${BASE_DIR}/docker-compose.yml" <<EOF
+version: '3.8'
+
+services:
+  traefik:
+    image: traefik:v2.9
+    container_name: traefik
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8081:8081"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./config:/config
+      - ./traefik-certs:/traefik-certs
+    command:
+      - "--configfile=/config/traefik.yml"
+    networks:
+      - traefik-network
+      - ${SHARED_NETWORK}
+
+  node-app:
+    build:
+      context: ./node-app
+      dockerfile: Dockerfile
+    container_name: node-app
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    ports:
+      - "${NODE_PORT}:3005"
+    networks:
+      - traefik-network
+      - ${SHARED_NETWORK}
+
+networks:
+  traefik-network:
+    name: traefik-network
+  ${SHARED_NETWORK}:
+    external: true
+EOF
+
+# Create shared network if it doesn't exist
+log "Ensuring Docker networks exist..."
+if ! docker network ls | grep -q "${TRAEFIK_NETWORK}"; then
+  log "Creating ${TRAEFIK_NETWORK} network..."
+  docker network create "${TRAEFIK_NETWORK}" || error_exit "Failed to create ${TRAEFIK_NETWORK} network."
 else
-  log "$NETWORK_NAME network already exists."
+  log "${TRAEFIK_NETWORK} network already exists."
+fi
+
+if ! docker network ls | grep -q "${SHARED_NETWORK}"; then
+  log "Creating ${SHARED_NETWORK} network..."
+  docker network create "${SHARED_NETWORK}" || error_exit "Failed to create ${SHARED_NETWORK} network."
+else
+  log "${SHARED_NETWORK} network already exists."
 fi
 
 log "Starting Docker containers..."
@@ -129,5 +207,5 @@ log "Checking service status..."
 docker ps | grep -E 'traefik|node-app'
 
 log "Installation completed successfully!"
-log "You can access the Traefik dashboard at: http://localhost:8080/dashboard/"
+log "You can access the Traefik dashboard at: http://localhost:8081/dashboard/"
 log "To check logs: docker logs -f traefik"

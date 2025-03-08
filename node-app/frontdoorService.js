@@ -22,6 +22,8 @@ const docker = new Docker({ socketPath: "/var/run/docker.sock" });
 // Ensure required environment variables are available
 const APP_DOMAIN = process.env.APP_DOMAIN || "apps.cloudlunacy.uk";
 const MONGO_DOMAIN = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
+const SHARED_NETWORK = process.env.SHARED_NETWORK || "cloudlunacy-network";
+console.log("SHARED_NETWORK:", SHARED_NETWORK);
 
 // Log environment variables at startup for debugging
 console.log("Environment variables:");
@@ -76,6 +78,8 @@ async function initializeConfigFile() {
           http: { routers: {}, services: {} },
         };
       }
+
+      await checkMongoDBConnectivity().catch(console.error);
 
       let needsUpdate = false;
 
@@ -187,6 +191,32 @@ async function loadDynamicConfig() {
   config.http.services = config.http.services || {};
 
   return config;
+}
+
+/**
+ * MongoDB accessibility check:
+ * Add this function to test MongoDB connectivity through Docker networking
+ */
+async function checkMongoDBConnectivity() {
+  try {
+    console.log(
+      "[STARTUP] Checking MongoDB connectivity via Docker network..."
+    );
+    const { execSync } = require("child_process");
+
+    // Run a simple test command from inside the node-app container
+    const testCmd = `docker exec node-app sh -c "wget -O- mongodb-agent:27017 --timeout=2 -q"`;
+    execSync(testCmd);
+
+    console.log(
+      "[STARTUP] MongoDB container is accessible through Docker network"
+    );
+    return true;
+  } catch (err) {
+    console.log("[STARTUP] MongoDB connectivity test failed:", err.message);
+    console.log("[STARTUP] This is normal if MongoDB is not yet running");
+    return false;
+  }
 }
 
 /**
@@ -424,7 +454,7 @@ app.post("/api/frontdoor/add-subdomain", jwtAuth, async (req, res) => {
     };
     config.tcp.services[`${subdomain}-service`] = {
       loadBalancer: {
-        servers: [{ address: `${targetIp}:27017` }],
+        servers: [{ address: `mongodb-agent:27017` }],
       },
     };
 

@@ -3,7 +3,7 @@ global:
   checkNewVersion: false
   sendAnonymousUsage: false
 
-# Entry points definition - explicitly define all needed ports
+# Entry points definition
 entryPoints:
   web:
     address: ":80"
@@ -14,8 +14,6 @@ entryPoints:
           scheme: https
   websecure:
     address: ":443"
-  mongodb:
-    address: ":27017"
   dashboard:
     address: ":8081"
 
