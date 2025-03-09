@@ -226,9 +226,97 @@ class ConfigManager {
     const configPath = await this.getAgentConfigPath(agentId);
     await this.saveConfig(configPath, config);
 
-    // No need to update traefik config as it's using dynamic file provider
-    // that watches the directory
+    // Now merge all agent configs into the main dynamic.yml
+    await this.mergeAgentConfigsIntoMain();
+
     return true;
+  }
+
+  async mergeAgentConfigsIntoMain() {
+    try {
+      // First, get the main configuration
+      const mainConfig = await this.getMainConfig();
+
+      // Now get all agent configurations and merge them
+      const agentFiles = await fs.readdir(this.agentsConfigDir);
+      for (const file of agentFiles) {
+        if (file.endsWith(".yml")) {
+          const agentPath = path.join(this.agentsConfigDir, file);
+          const agentContent = await fs.readFile(agentPath, "utf8");
+          const agentConfig = yaml.parse(agentContent);
+
+          // Merge HTTP routers, services, middlewares
+          if (agentConfig.http) {
+            if (agentConfig.http.routers) {
+              mainConfig.http.routers = {
+                ...mainConfig.http.routers,
+                ...agentConfig.http.routers,
+              };
+            }
+
+            if (agentConfig.http.services) {
+              mainConfig.http.services = {
+                ...mainConfig.http.services,
+                ...agentConfig.http.services,
+              };
+            }
+
+            if (agentConfig.http.middlewares) {
+              mainConfig.http.middlewares = {
+                ...mainConfig.http.middlewares,
+                ...agentConfig.http.middlewares,
+              };
+            }
+          }
+
+          // Merge TCP configuration if present
+          if (agentConfig.tcp) {
+            if (!mainConfig.tcp) {
+              mainConfig.tcp = { routers: {}, services: {} };
+            }
+
+            if (agentConfig.tcp.routers) {
+              mainConfig.tcp.routers = {
+                ...mainConfig.tcp.routers,
+                ...agentConfig.tcp.routers,
+              };
+            }
+
+            if (agentConfig.tcp.services) {
+              mainConfig.tcp.services = {
+                ...mainConfig.tcp.services,
+                ...agentConfig.tcp.services,
+              };
+            }
+          }
+        }
+      }
+
+      // Save the merged configuration back to the main file
+      await this.saveConfig(this.mainDynamicConfigPath, mainConfig);
+      logger.info(`Merged agent configurations into main dynamic config`);
+
+      return true;
+    } catch (err) {
+      logger.error(`Failed to merge agent configs: ${err.message}`);
+      return false;
+    }
+  }
+
+  async getMainConfig() {
+    try {
+      const content = await fs.readFile(this.mainDynamicConfigPath, "utf8");
+      return (
+        yaml.parse(content) || {
+          http: { routers: {}, services: {}, middlewares: {} },
+        }
+      );
+    } catch (err) {
+      if (err.code === "ENOENT") {
+        return { http: { routers: {}, services: {}, middlewares: {} } };
+      }
+      throw err;
+    }
   }
 
   async saveConfig(configPath, config) {

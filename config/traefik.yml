@@ -28,27 +28,21 @@ ping:
 
 # Log configuration
 log:
-  level: "INFO" # Set to DEBUG only when troubleshooting
+  level: "INFO"
   filePath: "/var/log/traefik/traefik.log"
 
 # Access logs
 accessLog:
   filePath: "/var/log/traefik/access.log"
 
-# Configure providers
+# Configure providers - SIMPLIFIED VERSION
 providers:
-  # Main dynamic configuration file
+  # Main dynamic configuration file only
   file:
-    # Single file configuration
     filename: "/config/dynamic.yml"
     watch: true
 
-  # Per-agent configuration directory - Updated to different syntax
-  # The "providers.file.directory" syntax is not valid in Traefik v2.10
-  # Instead, we use the "providers.providersThreshold" as a workaround
-  providersThreshold: 0
-
-  # Use Docker provider
+  # Docker provider
   docker:
     endpoint: "unix:///var/run/docker.sock"
     exposedByDefault: false
