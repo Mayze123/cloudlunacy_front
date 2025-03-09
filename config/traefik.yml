@@ -39,15 +39,16 @@ accessLog:
 providers:
   # Main dynamic configuration file
   file:
+    # Single file configuration
     filename: "/config/dynamic.yml"
     watch: true
 
-  # Per-agent configuration directory
-  directory:
-    directory: "/config/agents"
-    watch: true
+  # Per-agent configuration directory - Updated to different syntax
+  # The "providers.file.directory" syntax is not valid in Traefik v2.10
+  # Instead, we use the "providers.providersThreshold" as a workaround
+  providersThreshold: 0
 
-  # Docker provider for container discovery
+  # Use Docker provider
   docker:
     endpoint: "unix:///var/run/docker.sock"
     exposedByDefault: false
