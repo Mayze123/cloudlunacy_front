@@ -522,21 +522,24 @@ app.post("/api/frontdoor/add-subdomain", jwtAuth, async (req, res) => {
       config.tcp = { routers: {}, services: {} };
     }
 
+    // Check if we should use the agentId as part of the subdomain
+    const finalSubdomain =
+      subdomain === "mongodb" ? effectiveAgentId : subdomain;
+
     logger.info("Setting up MongoDB configuration", {
-      domain: `${subdomain}.${MONGO_DOMAIN}`,
+      domain: `${finalSubdomain}.${MONGO_DOMAIN}`,
       agentId: effectiveAgentId,
     });
 
     // Add TCP router and service for the MongoDB deployment
-    // Note: We retain the original approach of routing to mongodb-agent
-    config.tcp.routers[subdomain] = {
-      rule: `HostSNI(\`${subdomain}.${MONGO_DOMAIN}\`)`,
-      service: `${subdomain}-service`,
+    config.tcp.routers[finalSubdomain] = {
+      rule: `HostSNI(\`${finalSubdomain}.${MONGO_DOMAIN}\`)`,
+      service: `${finalSubdomain}-mongodb-service`,
     };
 
-    config.tcp.services[`${subdomain}-service`] = {
+    config.tcp.services[`${finalSubdomain}-mongodb-service`] = {
       loadBalancer: {
-        servers: [{ address: `mongodb-agent:27017` }],
+        servers: [{ address: `${targetIp}:27017` }],
       },
     };
 
@@ -545,8 +548,8 @@ app.post("/api/frontdoor/add-subdomain", jwtAuth, async (req, res) => {
 
     const reloadTriggered = await triggerTraefikReload();
     logger.info("MongoDB subdomain added", {
-      subdomain,
-      domain: `${subdomain}.${MONGO_DOMAIN}`,
+      subdomain: finalSubdomain,
+      domain: `${finalSubdomain}.${MONGO_DOMAIN}`,
       targetIp,
       agentId: effectiveAgentId,
       reloadTriggered,
@@ -556,7 +559,7 @@ app.post("/api/frontdoor/add-subdomain", jwtAuth, async (req, res) => {
       success: true,
       message: "MongoDB subdomain added successfully.",
       details: {
-        domain: `${subdomain}.${MONGO_DOMAIN}`,
+        domain: `${finalSubdomain}.${MONGO_DOMAIN}`,
         targetIp: targetIp,
         agentId: effectiveAgentId,
         reloadTriggered,
@@ -814,12 +817,70 @@ app.post("/api/agent/register", async (req, res) => {
     await configManager.saveAgentConfig(agentId, initialConfig);
     logger.info("Created initial configuration for agent", { agentId });
 
+    // Generate token for the agent
     const token = generateAgentToken({ agentId });
     logger.info("Agent registered successfully", { agentId });
+
+    // Now automatically register MongoDB for this agent
+    try {
+      // Get the agent's IP address from the request
+      const agentIP =
+        req.headers["x-forwarded-for"] || req.connection.remoteAddress;
+      const cleanIP = agentIP.replace(/^.*:/, ""); // Handle IPv6 format if present
+
+      logger.info("Automatically registering MongoDB for agent", {
+        agentId,
+        agentIP: cleanIP,
+      });
+
+      // Create a MongoDB subdomain with the agentId pattern
+      const mongoSubdomain = `${agentId}`;
+
+      // Load or create MongoDB configuration
+      const config = await configManager.getAgentConfig(agentId);
+
+      // Ensure the TCP section exists for MongoDB routing
+      if (!config.tcp) {
+        config.tcp = { routers: {}, services: {} };
+      }
+
+      // Add TCP router and service for the MongoDB deployment
+      config.tcp.routers[mongoSubdomain] = {
+        rule: `HostSNI(\`${mongoSubdomain}.${MONGO_DOMAIN}\`)`,
+        service: `${mongoSubdomain}-mongodb-service`,
+      };
+
+      config.tcp.services[`${mongoSubdomain}-mongodb-service`] = {
+        loadBalancer: {
+          servers: [{ address: `${cleanIP}:27017` }],
+        },
+      };
+
+      // Save the updated configuration
+      await configManager.saveAgentConfig(agentId, config);
+
+      // Attempt to trigger Traefik reload
+      const reloadTriggered = await triggerTraefikReload();
+
+      logger.info("MongoDB automatically registered for agent", {
+        agentId,
+        subdomain: mongoSubdomain,
+        domain: `${mongoSubdomain}.${MONGO_DOMAIN}`,
+        agentIP: cleanIP,
+        reloadTriggered,
+      });
+    } catch (mongoErr) {
+      // Log error but don't fail the agent registration
+      logger.error("Failed to automatically register MongoDB", {
+        error: mongoErr.message,
+        agentId,
+      });
+    }
 
     res.json({
       token,
       message: `Agent ${agentId} registered successfully`,
+      mongodbUrl: `${agentId}.${MONGO_DOMAIN}`,
     });
   } catch (err) {
     logger.error("Agent registration failed:", {
