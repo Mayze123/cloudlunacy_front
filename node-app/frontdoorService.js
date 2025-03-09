@@ -839,63 +839,59 @@ function generateAgentToken(payload) {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: "30d" });
 }
 
-// Start the server.
-const server = app.listen(PORT, () => {
-  logger.info(`Frontdoor API listening on port ${PORT}`);
+async function startServer() {
+  try {
+    // First initialize config
+    logger.info("Initializing configuration system...");
+    await initializeConfigFile();
+    await configManager.initialize();
+    logger.info("Configuration system initialized successfully");
 
-  // Final configuration file check
-  fs.access(dynamicConfigPath, fs.constants.R_OK | fs.constants.W_OK)
-    .then(() => {
-      logger.info(`Dynamic config file at ${dynamicConfigPath} is accessible`);
+    // Then start the server
+    const server = app.listen(PORT, () => {
+      logger.info(`Frontdoor API listening on port ${PORT}`);
 
-      // Signal that app is fully initialized
-      app.emit("ready");
-    })
-    .catch((err) => {
-      logger.error(
-        `Cannot access dynamic config file at ${dynamicConfigPath}:`,
-        {
-          error: err.message,
-        }
-      );
+      // Check if config file is accessible
+      fs.access(dynamicConfigPath, fs.constants.R_OK | fs.constants.W_OK)
+        .then(() => {
+          logger.info(
+            `Dynamic config file at ${dynamicConfigPath} is accessible`
+          );
+          app.emit("ready");
+        })
+        .catch((err) => {
+          logger.error(
+            `Cannot access dynamic config file at ${dynamicConfigPath}:`,
+            {
+              error: err.message,
+            }
+          );
+        });
     });
-});
 
-// Handle graceful shutdown
-process.on("SIGTERM", () => {
-  logger.info("SIGTERM signal received. Shutting down gracefully...");
-  server.close(() => {
-    logger.info("HTTP server closed.");
-    process.exit(0);
-  });
-});
+    // Handle graceful shutdown
+    process.on("SIGTERM", () => {
+      logger.info("SIGTERM signal received. Shutting down gracefully...");
+      server.close(() => {
+        logger.info("HTTP server closed.");
+        process.exit(0);
+      });
+    });
 
-process.on("SIGINT", () => {
-  logger.info("SIGINT signal received. Shutting down gracefully...");
-  server.close(() => {
-    logger.info("HTTP server closed.");
-    process.exit(0);
-  });
-});
-
-// Handle uncaught exceptions
-process.on("uncaughtException", (err) => {
-  logger.error("Uncaught exception:", {
-    error: err.message,
-    stack: err.stack,
-  });
-
-  // Exit in a controlled manner, but not immediately
-  // to allow logs to be written
-  setTimeout(() => {
+    process.on("SIGINT", () => {
+      logger.info("SIGINT signal received. Shutting down gracefully...");
+      server.close(() => {
+        logger.info("HTTP server closed.");
+        process.exit(0);
+      });
+    });
+  } catch (err) {
+    logger.error("Failed to start server:", {
+      error: err.message,
+      stack: err.stack,
+    });
     process.exit(1);
-  }, 1000);
-});
+  }
+}
 
-// Handle unhandled promise rejections
-process.on("unhandledRejection", (reason, promise) => {
-  logger.error("Unhandled promise rejection:", {
-    reason: reason instanceof Error ? reason.message : reason,
-    stack: reason instanceof Error ? reason.stack : undefined,
-  });
-});
+startServer();

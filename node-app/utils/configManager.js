@@ -14,37 +14,185 @@ class ConfigManager {
 
   async initialize() {
     try {
-      // Ensure the agents directory exists
-      await fs.mkdir(this.agentsConfigDir, { recursive: true });
+      // Add more detailed logging
+      logger.info(
+        `Initializing config manager with base path: ${this.baseConfigPath}`
+      );
+      logger.info(`Agents config directory: ${this.agentsConfigDir}`);
+
+      // Check if base config path exists before trying to create it
+      try {
+        const baseStats = await fs.stat(this.baseConfigPath);
+        if (!baseStats.isDirectory()) {
+          logger.error(
+            `Base config path ${this.baseConfigPath} exists but is not a directory`
+          );
+          throw new Error(`${this.baseConfigPath} is not a directory`);
+        }
+        logger.info(`Base config directory exists: ${this.baseConfigPath}`);
+      } catch (err) {
+        if (err.code === "ENOENT") {
+          logger.info(`Creating base config directory: ${this.baseConfigPath}`);
+          await fs.mkdir(this.baseConfigPath, { recursive: true });
+        } else {
+          logger.error(`Error checking base config path: ${err.message}`);
+          throw err;
+        }
+      }
+
+      // Now ensure the agents directory exists
+      try {
+        const agentsStats = await fs.stat(this.agentsConfigDir);
+        if (!agentsStats.isDirectory()) {
+          logger.error(
+            `Agents directory ${this.agentsConfigDir} exists but is not a directory`
+          );
+          throw new Error(`${this.agentsConfigDir} is not a directory`);
+        }
+        logger.info(`Agents directory exists: ${this.agentsConfigDir}`);
+      } catch (err) {
+        if (err.code === "ENOENT") {
+          logger.info(`Creating agents directory: ${this.agentsConfigDir}`);
+          await fs.mkdir(this.agentsConfigDir, { recursive: true });
+        } else {
+          logger.error(`Error checking agents directory: ${err.message}`);
+          throw err;
+        }
+      }
 
       // Ensure main config exists with correct structure
       let mainConfig;
       try {
         const content = await fs.readFile(this.mainDynamicConfigPath, "utf8");
-        mainConfig = yaml.parse(content) || {};
-      } catch (err) {
-        mainConfig = {
-          http: {
-            routers: {},
-            services: {},
-            middlewares: {
-              pingMiddleware: { ping: {} },
-              "web-to-websecure": {
-                redirectScheme: {
-                  scheme: "https",
-                  permanent: true,
+        logger.info(`Main dynamic config file read successfully`);
+        try {
+          mainConfig = yaml.parse(content) || {};
+          logger.info(`Main dynamic config file parsed successfully`);
+        } catch (parseErr) {
+          logger.error(`Error parsing main config file: ${parseErr.message}`);
+          // Create a backup of the corrupted file
+          const backupPath = `${
+            this.mainDynamicConfigPath
+          }.corrupted.${Date.now()}`;
+          await fs.copyFile(this.mainDynamicConfigPath, backupPath);
+          logger.info(`Corrupted config backed up to ${backupPath}`);
+
+          // Create a new config
+          mainConfig = {
+            http: {
+              routers: {},
+              services: {},
+              middlewares: {
+                pingMiddleware: { ping: {} },
+                "web-to-websecure": {
+                  redirectScheme: {
+                    scheme: "https",
+                    permanent: true,
+                  },
                 },
               },
             },
-          },
-        };
-
-        await this.saveConfig(this.mainDynamicConfigPath, mainConfig);
+          };
+        }
+      } catch (err) {
+        if (err.code === "ENOENT") {
+          logger.info(
+            `Main dynamic config file does not exist, creating default config`
+          );
+          // File doesn't exist, create a default one
+          mainConfig = {
+            http: {
+              routers: {},
+              services: {},
+              middlewares: {
+                pingMiddleware: { ping: {} },
+                "web-to-websecure": {
+                  redirectScheme: {
+                    scheme: "https",
+                    permanent: true,
+                  },
+                },
+              },
+            },
+          };
+        } else {
+          logger.error(`Error reading main config file: ${err.message}`);
+          throw err;
+        }
       }
 
-      // Create traefik config to include all agent configs
-      await this.updateTraefikConfig();
+      // Save the main config if we had to create or fix it
+      try {
+        await this.saveConfig(this.mainDynamicConfigPath, mainConfig);
+        logger.info(`Main dynamic config file saved successfully`);
+      } catch (saveErr) {
+        logger.error(`Error saving main config file: ${saveErr.message}`);
+        throw saveErr;
+      }
 
+      // Scan for existing agent configs to ensure they're valid
+      try {
+        const agentFiles = await fs.readdir(this.agentsConfigDir);
+        logger.info(`Found ${agentFiles.length} agent configuration files`);
+
+        for (const file of agentFiles) {
+          if (file.endsWith(".yml")) {
+            const agentPath = path.join(this.agentsConfigDir, file);
+            try {
+              const agentContent = await fs.readFile(agentPath, "utf8");
+              try {
+                const agentConfig = yaml.parse(agentContent);
+                logger.info(`Agent config ${file} is valid`);
+              } catch (parseErr) {
+                logger.error(
+                  `Error parsing agent config ${file}: ${parseErr.message}`
+                );
+                // Create a backup and fix
+                const backupPath = `${agentPath}.corrupted.${Date.now()}`;
+                await fs.copyFile(agentPath, backupPath);
+                logger.info(
+                  `Corrupted agent config backed up to ${backupPath}`
+                );
+
+                // Create a new default config for this agent
+                const defaultAgentConfig = {
+                  http: { routers: {}, services: {}, middlewares: {} },
+                };
+                await this.saveConfig(agentPath, defaultAgentConfig);
+                logger.info(`Reset agent config ${file} to defaults`);
+              }
+            } catch (readErr) {
+              logger.error(
+                `Error reading agent config ${file}: ${readErr.message}`
+              );
+            }
+          }
+        }
+      } catch (err) {
+        // If there's an error listing files, it might be because the directory was just created
+        if (err.code !== "ENOENT") {
+          logger.error(`Error scanning agent configs: ${err.message}`);
+        }
+      }
+
+      // Create a test agent config file to verify write access
+      try {
+        const testAgentPath = path.join(this.agentsConfigDir, "test-agent.yml");
+        const testConfig = {
+          http: { routers: {}, services: {}, middlewares: {} },
+        };
+        await this.saveConfig(testAgentPath, testConfig);
+        logger.info(`Test agent config created successfully`);
+
+        // Remove the test file
+        await fs.unlink(testAgentPath);
+        logger.info(`Test agent config removed successfully`);
+      } catch (testErr) {
+        logger.error(`Failed to create test agent config: ${testErr.message}`);
+        throw testErr;
+      }
+
+      logger.info("Configuration manager initialized successfully");
       return true;
     } catch (err) {
       logger.error("Failed to initialize config manager:", err);
