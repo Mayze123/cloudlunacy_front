@@ -24,10 +24,6 @@ api:
   dashboard: true
   insecure: true
 
-# Add ping endpoint for health checks
-ping:
-  entryPoint: "web"
-
 # Log configuration
 log:
   level: "INFO"
