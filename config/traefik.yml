@@ -41,11 +41,6 @@ providers:
     filename: "/config/dynamic.yml"
     watch: true
 
-  # Per-agent configuration directory - Updated to different syntax
-  # The "providers.file.directory" syntax is not valid in Traefik v2.10
-  # Instead, we use the "providers.providersThreshold" as a workaround
-  providersThreshold: 0
-
   # Use Docker provider
   docker:
     endpoint: "unix:///var/run/docker.sock"
