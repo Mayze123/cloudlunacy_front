@@ -919,12 +919,12 @@ app.post("/api/agent/register", async (req, res) => {
 
     try {
       // Register MongoDB for this agent
-      const mongoRegistration = await registerMongoDB(agentId, cleanIP);
+      const result = await mongoRegistration.registerMongoDB(agentId, cleanIP);
 
       res.json({
         token,
         message: `Agent ${agentId} registered successfully`,
-        mongodbUrl: mongoRegistration.mongodbUrl,
+        mongodbUrl: result.mongodbUrl,
       });
     } catch (mongoErr) {
       // Log but don't fail the registration
