@@ -449,6 +449,77 @@ function validateAppInput(subdomain, targetUrl) {
 }
 
 /**
+ * Function to ensure the MongoDB entrypoint is properly configured
+ */
+async function ensureMongoDBEntrypoint() {
+  try {
+    // Use Docker API to check if Traefik is exposing port 27017
+    const containers = await docker.listContainers({
+      filters: { name: ["traefik"] },
+    });
+
+    if (containers.length === 0) {
+      logger.error("No Traefik container found");
+      return false;
+    }
+
+    const traefikContainer = containers[0];
+    const ports = traefikContainer.Ports || [];
+
+    // Check if port 27017 is exposed
+    const mongoPortExposed = ports.some((port) => port.PublicPort === 27017);
+
+    if (!mongoPortExposed) {
+      logger.warn("MongoDB port 27017 is not exposed in Traefik container");
+      logger.info("Adding TCP entrypoint for MongoDB in dynamic configuration");
+
+      // Get current dynamic config
+      const config = await loadDynamicConfig();
+
+      // Ensure TCP section exists
+      if (!config.tcp) {
+        config.tcp = { routers: {}, services: {} };
+      }
+
+      // Add a default MongoDB router that handles all MongoDB subdomains
+      config.tcp.routers["mongodb-default"] = {
+        rule: `HostSNI(\`*.${MONGO_DOMAIN}\`)`,
+        service: "mongodb-default-service",
+        tls: {
+          passthrough: true,
+        },
+      };
+
+      // Empty service as a placeholder (will be updated by specific routes)
+      config.tcp.services["mongodb-default-service"] = {
+        loadBalancer: {
+          servers: [],
+        },
+      };
+
+      // Save the updated configuration
+      await saveDynamicConfig(config);
+
+      logger.info("MongoDB default router added to dynamic configuration");
+      logger.info(
+        "You need to modify your Traefik container to expose port 27017"
+      );
+      logger.info(
+        "Recommended command: docker-compose down && docker-compose up -d"
+      );
+
+      return false;
+    }
+
+    logger.info("MongoDB port 27017 is properly exposed in Traefik container");
+    return true;
+  } catch (err) {
+    logger.error("Error checking MongoDB entrypoint:", err);
+    return false;
+  }
+}
+
+/**
  * API status endpoint
  */
 app.get("/api/status", (req, res) => {
@@ -531,23 +602,38 @@ app.post("/api/frontdoor/add-subdomain", jwtAuth, async (req, res) => {
       agentId: effectiveAgentId,
     });
 
-    // Add TCP router with TLS termination for the MongoDB deployment
+    // Check if Traefik has port 27017 exposed
+    const containers = await docker.listContainers({
+      filters: { name: ["traefik"] },
+    });
+
+    const traefik = containers.length > 0 ? containers[0] : null;
+    const ports = traefik ? traefik.Ports || [] : [];
+    const mongoPortExposed = ports.some((port) => port.PublicPort === 27017);
+
+    if (!mongoPortExposed) {
+      logger.warn(
+        "MongoDB port 27017 is not exposed in Traefik. TCP routing may not work.",
+        {
+          traefikContainer: traefik ? traefik.Id.substring(0, 12) : "not found",
+          exposedPorts: ports
+            .map((p) => `${p.PublicPort}:${p.PrivatePort}`)
+            .join(", "),
+        }
+      );
+    }
+
+    // Add TCP router for the MongoDB deployment
     config.tcp.routers[`mongodb-${finalSubdomain}`] = {
       rule: `HostSNI(\`${finalSubdomain}.${MONGO_DOMAIN}\`)`,
       entryPoints: ["mongodb"],
       service: `mongodb-${finalSubdomain}-service`,
       tls: {
-        certResolver: "letsencrypt",
-        domains: [
-          {
-            main: "mongodb.cloudlunacy.uk",
-            sans: ["*.mongodb.cloudlunacy.uk"],
-          },
-        ],
+        passthrough: true,
       },
     };
 
-    // Create the service that forwards to the MongoDB instance (plaintext)
+    // Create the service that forwards to the MongoDB instance
     config.tcp.services[`mongodb-${finalSubdomain}-service`] = {
       loadBalancer: {
         servers: [{ address: `${targetIp}:27017` }],
@@ -557,23 +643,58 @@ app.post("/api/frontdoor/add-subdomain", jwtAuth, async (req, res) => {
     // Save the agent-specific configuration
     await configManager.saveAgentConfig(effectiveAgentId, config);
 
+    // Also update the main dynamic config to ensure the mongodb entrypoint is defined
+    const mainConfig = await loadDynamicConfig();
+    if (!mainConfig.tcp) {
+      mainConfig.tcp = { routers: {}, services: {} };
+    }
+
+    // Add a catchall router if it doesn't exist
+    if (!mainConfig.tcp.routers["mongodb-catchall"]) {
+      mainConfig.tcp.routers["mongodb-catchall"] = {
+        rule: `HostSNI(\`*.${MONGO_DOMAIN}\`)`,
+        service: "mongodb-catchall-service",
+        entryPoints: ["mongodb"],
+        tls: {
+          passthrough: true,
+        },
+      };
+
+      mainConfig.tcp.services["mongodb-catchall-service"] = {
+        loadBalancer: {
+          servers: [],
+        },
+      };
+
+      await saveDynamicConfig(mainConfig);
+    }
+
     const reloadTriggered = await triggerTraefikReload();
-    logger.info("MongoDB subdomain added with TLS termination", {
+
+    logger.info("MongoDB subdomain added with TLS passthrough", {
       subdomain: finalSubdomain,
       domain: `${finalSubdomain}.${MONGO_DOMAIN}`,
       targetIp,
       agentId: effectiveAgentId,
       reloadTriggered,
+      portExposed: mongoPortExposed,
     });
 
     res.json({
       success: true,
-      message: "MongoDB subdomain added successfully with TLS termination.",
+      message: mongoPortExposed
+        ? "MongoDB subdomain added successfully with TLS passthrough."
+        : "MongoDB subdomain configured, but port 27017 is not exposed in Traefik.",
       details: {
         domain: `${finalSubdomain}.${MONGO_DOMAIN}`,
         targetIp: targetIp,
         agentId: effectiveAgentId,
         reloadTriggered,
+        portExposed: mongoPortExposed,
+        additionalSetupNeeded: !mongoPortExposed,
+        setupInstructions: !mongoPortExposed
+          ? "Add port 27017:27017 to your Traefik container in docker-compose.yml and restart with docker-compose down && docker-compose up -d"
+          : undefined,
       },
     });
   } catch (err) {
@@ -918,6 +1039,14 @@ async function startServer() {
     await initializeConfigFile();
     await configManager.initialize();
     logger.info("Configuration system initialized successfully");
+
+    // Check MongoDB entrypoint
+    const mongodbReady = await ensureMongoDBEntrypoint();
+    if (!mongodbReady) {
+      logger.warn(
+        "MongoDB entrypoint not fully configured - TCP routing may not work correctly"
+      );
+    }
 
     // Then start the server
     const server = app.listen(PORT, () => {
