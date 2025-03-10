@@ -42,7 +42,7 @@ providers:
 
   # Per-agent configuration directory
   directory:
-    directory: "/config/agents"
+    path: "/config/agents"
     watch: true
 
   # Docker provider for container discovery
