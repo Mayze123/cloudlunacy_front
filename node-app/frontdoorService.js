@@ -14,6 +14,7 @@ const Docker = require("dockerode");
 const yaml = require("yaml");
 const logger = require("./utils/logger").getLogger("frontdoor");
 const configManager = require("./utils/configManager");
+const mongoRegistration = require("./utils/mongoRegistration");
 
 const app = express();
 const PORT = process.env.NODE_PORT || 3005;
@@ -616,138 +617,49 @@ app.post("/api/frontdoor/add-subdomain", jwtAuth, async (req, res) => {
     // Get the agent ID either from the request body or from the JWT token
     const effectiveAgentId = agentId || req.user.agentId || "default";
 
-    if (!validateMongoInput(subdomain, targetIp)) {
+    // Use the validation method from mongoRegistration
+    const validation = mongoRegistration.validateMongoDBInputs(
+      subdomain,
+      targetIp
+    );
+    if (!validation.isValid) {
       return res.status(400).json({
         error: "Invalid subdomain or target IP format.",
-        validationDetails: {
-          subdomain: {
-            value: subdomain,
-            valid: /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(subdomain),
-            pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$",
-          },
-          targetIp: {
-            value: targetIp,
-            valid:
-              /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(
-                targetIp
-              ),
-            pattern:
-              "^(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)(\\.(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)){3}$",
-          },
-        },
+        validationDetails: validation.details,
       });
     }
 
-    // Load the agent-specific configuration
-    const config = await configManager.getAgentConfig(effectiveAgentId);
-
-    // Ensure the TCP section exists for MongoDB routing
-    if (!config.tcp) {
-      config.tcp = { routers: {}, services: {} };
-    }
-
-    // Check if we should use the agentId as part of the subdomain
-    const finalSubdomain =
-      subdomain === "mongodb" ? effectiveAgentId : subdomain;
-
-    logger.info("Setting up MongoDB configuration with TLS termination", {
-      domain: `${finalSubdomain}.${MONGO_DOMAIN}`,
-      agentId: effectiveAgentId,
-    });
-
-    // Check if Traefik has port 27017 exposed
-    const containers = await docker.listContainers({
-      filters: { name: ["traefik"] },
-    });
-
-    const traefik = containers.length > 0 ? containers[0] : null;
-    const ports = traefik ? traefik.Ports || [] : [];
-    const mongoPortExposed = ports.some((port) => port.PublicPort === 27017);
-
-    if (!mongoPortExposed) {
+    // Ensure MongoDB entrypoint is configured
+    const entrypointReady = await mongoRegistration.ensureMongoDBEntrypoint();
+    if (!entrypointReady) {
       logger.warn(
-        "MongoDB port 27017 is not exposed in Traefik. TCP routing may not work.",
-        {
-          traefikContainer: traefik ? traefik.Id.substring(0, 12) : "not found",
-          exposedPorts: ports
-            .map((p) => `${p.PublicPort}:${p.PrivatePort}`)
-            .join(", "),
-        }
+        "MongoDB entrypoint is not fully configured, but proceeding with registration"
       );
     }
 
-    // Add TCP router for the MongoDB deployment
-    config.tcp.routers[`mongodb-${finalSubdomain}`] = {
-      rule: `HostSNI(\`${finalSubdomain}.${MONGO_DOMAIN}\`)`,
-      entryPoints: ["mongodb"],
-      service: `mongodb-${finalSubdomain}-service`,
-      tls: {
-        passthrough: true,
-      },
-    };
-
-    // Create the service that forwards to the MongoDB instance
-    config.tcp.services[`mongodb-${finalSubdomain}-service`] = {
-      loadBalancer: {
-        servers: [{ address: `${targetIp}:27017` }],
-      },
-    };
-
-    // Save the agent-specific configuration
-    await configManager.saveAgentConfig(effectiveAgentId, config);
-
-    // Also update the main dynamic config to ensure the mongodb entrypoint is defined
-    const mainConfig = await loadDynamicConfig();
-    if (!mainConfig.tcp) {
-      mainConfig.tcp = { routers: {}, services: {} };
+    // Check if Traefik has port 27017 exposed
+    const portExposed = await mongoRegistration.checkTraefikMongoPort();
+    if (!portExposed) {
+      logger.warn(
+        "MongoDB port 27017 is not exposed in Traefik. Registration may not work correctly."
+      );
     }
 
-    // Add a catchall router if it doesn't exist
-    if (!mainConfig.tcp.routers["mongodb-catchall"]) {
-      mainConfig.tcp.routers["mongodb-catchall"] = {
-        rule: `HostSNI(\`*.${MONGO_DOMAIN}\`)`,
-        service: "mongodb-catchall-service",
-        entryPoints: ["mongodb"],
-        tls: {
-          passthrough: true,
-        },
-      };
+    // Register the MongoDB instance
+    const result = await mongoRegistration.registerMongoDB(
+      effectiveAgentId,
+      targetIp
+    );
 
-      mainConfig.tcp.services["mongodb-catchall-service"] = {
-        loadBalancer: {
-          servers: [],
-        },
-      };
-
-      await saveDynamicConfig(mainConfig);
-    }
-
-    const reloadTriggered = await triggerTraefikReload();
-
-    logger.info("MongoDB subdomain added with TLS passthrough", {
-      subdomain: finalSubdomain,
-      domain: `${finalSubdomain}.${MONGO_DOMAIN}`,
-      targetIp,
-      agentId: effectiveAgentId,
-      reloadTriggered,
-      portExposed: mongoPortExposed,
-    });
-
+    // Return the result to the client
     res.json({
       success: true,
-      message: mongoPortExposed
-        ? "MongoDB subdomain added successfully with TLS passthrough."
-        : "MongoDB subdomain configured, but port 27017 is not exposed in Traefik.",
+      message: "MongoDB subdomain added successfully with TLS passthrough.",
       details: {
-        domain: `${finalSubdomain}.${MONGO_DOMAIN}`,
-        targetIp: targetIp,
+        domain: `${result.mongodbUrl}`,
+        targetIp: result.targetIp,
         agentId: effectiveAgentId,
-        reloadTriggered,
-        portExposed: mongoPortExposed,
-        additionalSetupNeeded: !mongoPortExposed,
-        setupInstructions: !mongoPortExposed
-          ? "Add port 27017:27017 to your Traefik container in docker-compose.yml and restart with docker-compose down && docker-compose up -d"
-          : undefined,
+        portExposed: portExposed,
       },
     });
   } catch (err) {
@@ -989,84 +901,44 @@ app.post("/api/agent/register", async (req, res) => {
       return res.status(400).json({ error: "agentId is required" });
     }
 
-    // Create an initial config file for this agent
-    const initialConfig = {
-      http: {
-        routers: {},
-        services: {},
-        middlewares: {},
-      },
-    };
+    // Create initial agent config
+    await configManager.saveAgentConfig(agentId, {
+      http: { routers: {}, services: {}, middlewares: {} },
+      tcp: { routers: {}, services: {} },
+    });
 
-    // Save the initial config
-    await configManager.saveAgentConfig(agentId, initialConfig);
-    logger.info("Created initial configuration for agent", { agentId });
-
-    // Generate token for the agent
+    // Generate agent token
     const token = generateAgentToken({ agentId });
-    logger.info("Agent registered successfully", { agentId });
 
-    // Now automatically register MongoDB for this agent
+    // Get agent IP from the request
+    const agentIP =
+      req.headers["x-forwarded-for"] ||
+      req.headers["x-real-ip"] ||
+      req.connection.remoteAddress;
+    const cleanIP = agentIP.replace(/^.*:/, ""); // Handle IPv6 format
+
     try {
-      // Get the agent's IP address from the request
-      const agentIP =
-        req.headers["x-forwarded-for"] || req.connection.remoteAddress;
-      const cleanIP = agentIP.replace(/^.*:/, ""); // Handle IPv6 format if present
+      // Register MongoDB for this agent
+      const mongoRegistration = await registerMongoDB(agentId, cleanIP);
 
-      logger.info("Automatically registering MongoDB for agent", {
-        agentId,
-        agentIP: cleanIP,
-      });
-
-      // Create a MongoDB subdomain with the agentId pattern
-      const mongoSubdomain = `${agentId}`;
-
-      // Load or create MongoDB configuration
-      const config = await configManager.getAgentConfig(agentId);
-
-      // Ensure the TCP section exists for MongoDB routing
-      if (!config.tcp) {
-        config.tcp = { routers: {}, services: {} };
-      }
-
-      // Add TCP router and service for the MongoDB deployment
-      config.tcp.routers[mongoSubdomain] = {
-        rule: `HostSNI(\`${mongoSubdomain}.${MONGO_DOMAIN}\`)`,
-        service: `${mongoSubdomain}-mongodb-service`,
-      };
-
-      config.tcp.services[`${mongoSubdomain}-mongodb-service`] = {
-        loadBalancer: {
-          servers: [{ address: `${cleanIP}:27017` }],
-        },
-      };
-
-      // Save the updated configuration
-      await configManager.saveAgentConfig(agentId, config);
-
-      // Attempt to trigger Traefik reload
-      const reloadTriggered = await triggerTraefikReload();
-
-      logger.info("MongoDB automatically registered for agent", {
-        agentId,
-        subdomain: mongoSubdomain,
-        domain: `${mongoSubdomain}.${MONGO_DOMAIN}`,
-        agentIP: cleanIP,
-        reloadTriggered,
+      res.json({
+        token,
+        message: `Agent ${agentId} registered successfully`,
+        mongodbUrl: mongoRegistration.mongodbUrl,
       });
     } catch (mongoErr) {
-      // Log error but don't fail the agent registration
-      logger.error("Failed to automatically register MongoDB", {
+      // Log but don't fail the registration
+      logger.error("Failed to register MongoDB for agent", {
         error: mongoErr.message,
         agentId,
       });
-    }
 
-    res.json({
-      token,
-      message: `Agent ${agentId} registered successfully`,
-      mongodbUrl: `${agentId}.${MONGO_DOMAIN}`,
-    });
+      res.json({
+        token,
+        message: `Agent ${agentId} registered successfully but MongoDB registration failed`,
+        error: mongoErr.message,
+      });
+    }
   } catch (err) {
     logger.error("Agent registration failed:", {
       error: err.message,
@@ -1087,58 +959,26 @@ function generateAgentToken(payload) {
 
 async function startServer() {
   try {
-    // First initialize config
-    logger.info("Initializing configuration system...");
+    // Initialize configuration
     await initializeConfigFile();
     await configManager.initialize();
-    logger.info("Configuration system initialized successfully");
 
-    // Check MongoDB entrypoint
-    const mongodbReady = await ensureMongoDBEntrypoint();
+    // Ensure MongoDB entrypoint is configured
+    const mongodbReady = await mongoRegistration.ensureMongoDBEntrypoint();
     if (!mongodbReady) {
       logger.warn(
         "MongoDB entrypoint not fully configured - TCP routing may not work correctly"
       );
     }
 
-    // Then start the server
+    // Start server
     const server = app.listen(PORT, () => {
       logger.info(`Frontdoor API listening on port ${PORT}`);
-
-      // Check if config file is accessible
-      fs.access(dynamicConfigPath, fs.constants.R_OK | fs.constants.W_OK)
-        .then(() => {
-          logger.info(
-            `Dynamic config file at ${dynamicConfigPath} is accessible`
-          );
-          app.emit("ready");
-        })
-        .catch((err) => {
-          logger.error(
-            `Cannot access dynamic config file at ${dynamicConfigPath}:`,
-            {
-              error: err.message,
-            }
-          );
-        });
+      app.emit("ready");
     });
 
-    // Handle graceful shutdown
-    process.on("SIGTERM", () => {
-      logger.info("SIGTERM signal received. Shutting down gracefully...");
-      server.close(() => {
-        logger.info("HTTP server closed.");
-        process.exit(0);
-      });
-    });
-
-    process.on("SIGINT", () => {
-      logger.info("SIGINT signal received. Shutting down gracefully...");
-      server.close(() => {
-        logger.info("HTTP server closed.");
-        process.exit(0);
-      });
-    });
+    // Setup shutdown handlers
+    setupGracefulShutdown(server);
   } catch (err) {
     logger.error("Failed to start server:", {
       error: err.message,

@@ -1,13 +1,29 @@
 # Dynamic configuration for Traefik
 http:
-  routers: {}
-  services: {}
+  routers:
+    # Example router for dashboard
+    dashboard:
+      rule: "Host(`traefik.localhost`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))"
+      service: "api@internal"
+      entryPoints:
+        - "dashboard"
+      middlewares:
+        - "auth"
+
   middlewares:
-    # Global redirection middleware - web to websecure
+    # Authentication middleware for dashboard
+    auth:
+      basicAuth:
+        users:
+          - "admin:$apr1$H6uskkkW$IgXLP6ewTrSuBkTrqE8wj/" # admin:admin - PLEASE CHANGE IN PRODUCTION
+
+    # Global redirection middleware
     web-to-websecure:
       redirectScheme:
         scheme: https
         permanent: true
+
+  services: {}
 
 # TCP configuration for MongoDB
 tcp:
@@ -19,6 +35,7 @@ tcp:
       service: "mongodb-catchall-service"
       tls:
         passthrough: true
+
   services:
     mongodb-catchall-service:
       loadBalancer:

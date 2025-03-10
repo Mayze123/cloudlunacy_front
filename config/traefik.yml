@@ -22,30 +22,44 @@ entryPoints:
 # API and dashboard configuration
 api:
   dashboard: true
-  insecure: true
+  insecure: true # Consider setting to false in production and use proper authentication
+  debug: false
+
+# Ping for healthcheck
+ping:
+  entryPoint: "dashboard"
 
 # Log configuration
 log:
-  level: "INFO" # Set to DEBUG only when troubleshooting
+  level: "INFO"
   filePath: "/var/log/traefik/traefik.log"
+  format: "json"
 
 # Access logs
 accessLog:
   filePath: "/var/log/traefik/access.log"
+  format: "json"
+  bufferingSize: 100
 
 # Configure providers
 providers:
   # Main dynamic configuration file
   file:
-    # Single file configuration
-    filename: "/config/dynamic.yml"
+    filename: "/etc/traefik/dynamic.yml"
     watch: true
 
-  # Use Docker provider
+  # Per-agent configuration directory
+  directory:
+    directory: "/etc/traefik/agents"
+    watch: true
+
+  # Docker provider for container discovery
   docker:
     endpoint: "unix:///var/run/docker.sock"
     exposedByDefault: false
     watch: true
+    network: "traefik-network"
+    swarmMode: false
 
 # Certificate resolver for HTTPS
 certificatesResolvers:
@@ -58,3 +72,11 @@ certificatesResolvers:
         resolvers:
           - "1.1.1.1:53"
           - "8.8.8.8:53"
+
+# Enable tracing for debugging issues
+tracing:
+  serviceName: "traefik"
+  jaeger:
+    samplingServerURL: ""
+    samplingType: "const"
+    samplingParam: 1.0
