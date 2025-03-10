@@ -465,7 +465,7 @@ app.get("/api/status", (req, res) => {
 });
 
 /**
- * Endpoint for adding a MongoDB subdomain.
+ * Endpoint for adding a MongoDB subdomain with TLS termination at the front.
  */
 app.post("/api/frontdoor/add-subdomain", jwtAuth, async (req, res) => {
   try {
@@ -526,18 +526,29 @@ app.post("/api/frontdoor/add-subdomain", jwtAuth, async (req, res) => {
     const finalSubdomain =
       subdomain === "mongodb" ? effectiveAgentId : subdomain;
 
-    logger.info("Setting up MongoDB configuration", {
+    logger.info("Setting up MongoDB configuration with TLS termination", {
       domain: `${finalSubdomain}.${MONGO_DOMAIN}`,
       agentId: effectiveAgentId,
     });
 
-    // Add TCP router and service for the MongoDB deployment
-    config.tcp.routers[finalSubdomain] = {
+    // Add TCP router with TLS termination for the MongoDB deployment
+    config.tcp.routers[`mongodb-${finalSubdomain}`] = {
       rule: `HostSNI(\`${finalSubdomain}.${MONGO_DOMAIN}\`)`,
-      service: `${finalSubdomain}-mongodb-service`,
+      entryPoints: ["mongodb"],
+      service: `mongodb-${finalSubdomain}-service`,
+      tls: {
+        certResolver: "letsencrypt",
+        domains: [
+          {
+            main: "mongodb.cloudlunacy.uk",
+            sans: ["*.mongodb.cloudlunacy.uk"],
+          },
+        ],
+      },
     };
 
-    config.tcp.services[`${finalSubdomain}-mongodb-service`] = {
+    // Create the service that forwards to the MongoDB instance (plaintext)
+    config.tcp.services[`mongodb-${finalSubdomain}-service`] = {
       loadBalancer: {
         servers: [{ address: `${targetIp}:27017` }],
       },
@@ -547,7 +558,7 @@ app.post("/api/frontdoor/add-subdomain", jwtAuth, async (req, res) => {
     await configManager.saveAgentConfig(effectiveAgentId, config);
 
     const reloadTriggered = await triggerTraefikReload();
-    logger.info("MongoDB subdomain added", {
+    logger.info("MongoDB subdomain added with TLS termination", {
       subdomain: finalSubdomain,
       domain: `${finalSubdomain}.${MONGO_DOMAIN}`,
       targetIp,
@@ -557,7 +568,7 @@ app.post("/api/frontdoor/add-subdomain", jwtAuth, async (req, res) => {
 
     res.json({
       success: true,
-      message: "MongoDB subdomain added successfully.",
+      message: "MongoDB subdomain added successfully with TLS termination.",
       details: {
         domain: `${finalSubdomain}.${MONGO_DOMAIN}`,
         targetIp: targetIp,

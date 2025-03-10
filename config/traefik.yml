@@ -1,4 +1,4 @@
-# Global settings
+# Global settings remain the same
 global:
   checkNewVersion: false
   sendAnonymousUsage: false
@@ -37,24 +37,33 @@ log:
 accessLog:
   filePath: "/var/log/traefik/access.log"
 
-# Configure providers - SIMPLIFIED VERSION
+# Configure providers
 providers:
-  # Main dynamic configuration file only
+  # Main dynamic configuration file
   file:
     filename: "/config/dynamic.yml"
     watch: true
 
-  # Docker provider
+  # Directory provider for agent configs
+  directory:
+    directory: "/config/agents"
+    watch: true
+
+  # Docker provider for container discovery
   docker:
     endpoint: "unix:///var/run/docker.sock"
     exposedByDefault: false
     watch: true
 
-# Certificate resolver for HTTPS
+# Certificate resolver for HTTPS and MongoDB
 certificatesResolvers:
   letsencrypt:
     acme:
       email: "m.taibou.i@gmail.com"
       storage: "/traefik-certs/acme.json"
-      httpChallenge:
-        entryPoint: "web"
+      # DNS challenge is required for wildcard certificates
+      dnsChallenge:
+        provider: cloudflare
+        resolvers:
+          - "1.1.1.1:53"
+          - "8.8.8.8:53"
