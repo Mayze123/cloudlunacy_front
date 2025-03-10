@@ -957,6 +957,64 @@ function generateAgentToken(payload) {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: "30d" });
 }
 
+/**
+ * Set up graceful shutdown handlers
+ * @param {http.Server} server - The HTTP server instance
+ */
+function setupGracefulShutdown(server) {
+  // Handle SIGTERM signal (e.g., from Docker or Kubernetes)
+  process.on("SIGTERM", () => {
+    logger.info("SIGTERM signal received. Shutting down gracefully...");
+    performGracefulShutdown(server);
+  });
+
+  // Handle SIGINT signal (e.g., Ctrl+C)
+  process.on("SIGINT", () => {
+    logger.info("SIGINT signal received. Shutting down gracefully...");
+    performGracefulShutdown(server);
+  });
+
+  // Handle uncaught exceptions
+  process.on("uncaughtException", (error) => {
+    logger.error("Uncaught exception:", {
+      error: error.message,
+      stack: error.stack,
+    });
+    performGracefulShutdown(server);
+  });
+
+  // Handle unhandled promise rejections
+  process.on("unhandledRejection", (reason, promise) => {
+    logger.error("Unhandled Promise rejection:", { reason });
+    performGracefulShutdown(server);
+  });
+}
+
+/**
+ * Perform the actual graceful shutdown process
+ * @param {http.Server} server - The HTTP server instance
+ */
+function performGracefulShutdown(server) {
+  logger.info("Starting graceful shutdown...");
+
+  // Close the HTTP server
+  server.close(() => {
+    logger.info("HTTP server closed.");
+
+    // Perform any cleanup operations here
+    // For example, close database connections, etc.
+
+    logger.info("Graceful shutdown completed.");
+    process.exit(0);
+  });
+
+  // Force exit after timeout if server.close() hangs
+  setTimeout(() => {
+    logger.error("Forced shutdown after timeout");
+    process.exit(1);
+  }, 30000); // 30 seconds timeout
+}
+
 async function startServer() {
   try {
     // Initialize configuration
