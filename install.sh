@@ -70,6 +70,8 @@ entryPoints:
     address: ":443"
   dashboard:
     address: ":8081"
+  mongodb:
+    address: ":27017"  # MongoDB entrypoint explicitly defined
 
 # API and dashboard configuration
 api:
@@ -131,6 +133,21 @@ http:
       redirectScheme:
         scheme: https
         permanent: true
+
+# TCP configuration for MongoDB routing
+tcp:
+  routers:
+    mongodb-catchall:
+      rule: "HostSNI(`*.mongodb.cloudlunacy.uk`)"
+      entryPoints:
+        - "mongodb"
+      service: "mongodb-catchall-service"
+      tls:
+        passthrough: true
+  services:
+    mongodb-catchall-service:
+      loadBalancer:
+        servers: []
 EOF
 
 # Create a sample agent configuration file
@@ -167,6 +184,7 @@ services:
       - "80:80"
       - "443:443"
       - "8081:8081"
+      - "27017:27017"  # MongoDB port explicitly exposed
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./config:/config

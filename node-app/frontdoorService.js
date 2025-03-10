@@ -449,7 +449,7 @@ function validateAppInput(subdomain, targetUrl) {
 }
 
 /**
- * Function to ensure the MongoDB entrypoint is properly configured
+ * Ensure the MongoDB entrypoint is properly configured
  */
 async function ensureMongoDBEntrypoint() {
   try {
@@ -471,12 +471,71 @@ async function ensureMongoDBEntrypoint() {
 
     if (!mongoPortExposed) {
       logger.warn("MongoDB port 27017 is not exposed in Traefik container");
-      logger.info("Adding TCP entrypoint for MongoDB in dynamic configuration");
+      logger.info("Attempting to reconfigure Traefik for MongoDB support...");
+
+      // Get Docker client
+      const docker = new Docker({ socketPath: "/var/run/docker.sock" });
+      const traefikContainerId = traefikContainer.Id;
+      const traefikContainerObj = docker.getContainer(traefikContainerId);
+
+      // Get container info
+      const containerInfo = await traefikContainerObj.inspect();
+      const currentConfig = containerInfo.Config;
+
+      // Check if we can modify the container in place
+      if (containerInfo.HostConfig && containerInfo.HostConfig.RestartPolicy) {
+        // We need to recreate the container with the new port mapping
+        logger.info(
+          "Need to recreate Traefik container to expose MongoDB port"
+        );
+
+        // Stop container gracefully
+        await traefikContainerObj.stop({ t: 10 });
+
+        // Remove container
+        await traefikContainerObj.remove();
+
+        // Prepare docker-compose command to recreate with new config
+        const { execSync } = require("child_process");
+        const baseDir = process.env.BASE_DIR || "/opt/cloudlunacy_front";
+
+        // Update the docker-compose.yml file to include port 27017
+        const fs = require("fs");
+        const path = require("path");
+        const composeFile = path.join(baseDir, "docker-compose.yml");
+
+        try {
+          // Read compose file
+          let composeContent = fs.readFileSync(composeFile, "utf8");
+
+          // Check if port 27017 is already in the file
+          if (!composeContent.includes('"27017:27017"')) {
+            // Add the port to ports section
+            composeContent = composeContent.replace(
+              /ports:([^\]]*?)(\s+-)(\s+)"8081:8081"/s,
+              'ports:$1$2$3"8081:8081"$2$3"27017:27017"'
+            );
+
+            // Write the updated file
+            fs.writeFileSync(composeFile, composeContent);
+            logger.info("Updated docker-compose.yml to include MongoDB port");
+          }
+
+          // Execute docker-compose to recreate the containers
+          execSync("cd " + baseDir + " && docker-compose up -d", {
+            stdio: "inherit",
+          });
+          logger.info("Traefik container recreated with MongoDB port exposed");
+        } catch (fsError) {
+          logger.error("Failed to update docker-compose file:", fsError);
+          return false;
+        }
+      }
 
       // Get current dynamic config
       const config = await loadDynamicConfig();
 
-      // Ensure TCP section exists
+      // Ensure TCP section exists for MongoDB
       if (!config.tcp) {
         config.tcp = { routers: {}, services: {} };
       }
@@ -485,6 +544,7 @@ async function ensureMongoDBEntrypoint() {
       config.tcp.routers["mongodb-default"] = {
         rule: `HostSNI(\`*.${MONGO_DOMAIN}\`)`,
         service: "mongodb-default-service",
+        entryPoints: ["mongodb"],
         tls: {
           passthrough: true,
         },
@@ -501,14 +561,8 @@ async function ensureMongoDBEntrypoint() {
       await saveDynamicConfig(config);
 
       logger.info("MongoDB default router added to dynamic configuration");
-      logger.info(
-        "You need to modify your Traefik container to expose port 27017"
-      );
-      logger.info(
-        "Recommended command: docker-compose down && docker-compose up -d"
-      );
 
-      return false;
+      return false; // Return false to indicate reconfiguration was needed
     }
 
     logger.info("MongoDB port 27017 is properly exposed in Traefik container");

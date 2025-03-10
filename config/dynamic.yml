@@ -10,3 +10,18 @@ http:
       redirectScheme:
         scheme: https
         permanent: true
+
+# TCP configuration for MongoDB
+tcp:
+  routers:
+    mongodb-catchall:
+      rule: "HostSNI(`*.mongodb.cloudlunacy.uk`)"
+      entryPoints:
+        - "mongodb"
+      service: "mongodb-catchall-service"
+      tls:
+        passthrough: true
+  services:
+    mongodb-catchall-service:
+      loadBalancer:
+        servers: []

@@ -1,4 +1,4 @@
-# Global settings remain the same
+# Global settings
 global:
   checkNewVersion: false
   sendAnonymousUsage: false
@@ -44,7 +44,7 @@ providers:
     filename: "/config/dynamic.yml"
     watch: true
 
-  # Directory provider for agent configs
+  # Per-agent configuration directory
   directory:
     directory: "/config/agents"
     watch: true
@@ -55,13 +55,12 @@ providers:
     exposedByDefault: false
     watch: true
 
-# Certificate resolver for HTTPS and MongoDB
+# Certificate resolver for HTTPS
 certificatesResolvers:
   letsencrypt:
     acme:
       email: "m.taibou.i@gmail.com"
       storage: "/traefik-certs/acme.json"
-      # DNS challenge is required for wildcard certificates
       dnsChallenge:
         provider: cloudflare
         resolvers:
