@@ -169,42 +169,55 @@ async function fixTraefikMongoPortExposure() {
 /**
  * Register a MongoDB instance with Traefik
  */
+// In node-app/utils/mongoRegistration.js
 async function registerMongoDB(agentId, targetIp) {
   try {
     logger.info(`Registering MongoDB for agent ${agentId} at ${targetIp}`);
 
-    // Ensure MongoDB entrypoint is properly configured
-    await ensureMongoDBEntrypoint();
-
     // Get the agent's configuration
     const config = await configManager.getAgentConfig(agentId);
 
-    // Ensure TCP section exists
-    if (!config.tcp) {
-      config.tcp = { routers: {}, services: {} };
-    }
+    // Add MongoDB routing configuration
+    if (!config.tcp) config.tcp = { routers: {}, services: {} };
 
-    // Add TCP router for this agent's MongoDB
     config.tcp.routers[`mongodb-${agentId}`] = {
       rule: `HostSNI(\`${agentId}.${MONGO_DOMAIN}\`)`,
       entryPoints: ["mongodb"],
       service: `mongodb-${agentId}-service`,
-      tls: {
-        passthrough: true,
-      },
+      tls: { passthrough: true },
     };
 
-    // Add the service that points to the agent's MongoDB
     config.tcp.services[`mongodb-${agentId}-service`] = {
       loadBalancer: {
         servers: [{ address: `${targetIp}:27017` }],
       },
     };
 
-    // Save the updated configuration
+    // Save the configuration and verify it worked
+    const configPath = await configManager.getAgentConfigPath(agentId);
+    logger.info(`Saving MongoDB configuration to: ${configPath}`);
+
     await configManager.saveAgentConfig(agentId, config);
 
-    logger.info(`MongoDB registered for agent ${agentId} at ${targetIp}`);
+    // Verify the file exists after saving
+    try {
+      const fs = require("fs").promises;
+      await fs.access(configPath);
+      logger.info(`Successfully verified config file exists at: ${configPath}`);
+    } catch (accessErr) {
+      logger.error(
+        `Failed to verify config file at ${configPath}: ${accessErr.message}`
+      );
+      // Try writing directly to the file as a fallback
+      try {
+        const yaml = require("yaml");
+        const fs = require("fs").promises;
+        await fs.writeFile(configPath, yaml.stringify(config), "utf8");
+        logger.info(`Fallback file write succeeded to: ${configPath}`);
+      } catch (writeErr) {
+        logger.error(`Fallback file write failed: ${writeErr.message}`);
+      }
+    }
 
     return {
       success: true,
@@ -212,7 +225,9 @@ async function registerMongoDB(agentId, targetIp) {
       targetIp,
     };
   } catch (err) {
-    logger.error(`Failed to register MongoDB for agent ${agentId}:`, err);
+    logger.error(
+      `Failed to register MongoDB for agent ${agentId}: ${err.message}`
+    );
     throw err;
   }
 }

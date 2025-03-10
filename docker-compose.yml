@@ -63,6 +63,7 @@ services:
       - TRAEFIK_CONTAINER=traefik
     volumes:
       - ./config:/config
+      - ./config:/app/config
       - ./config:/opt/cloudlunacy_front/config
       - /var/run/docker.sock:/var/run/docker.sock:ro
     healthcheck:

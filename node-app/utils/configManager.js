@@ -6,12 +6,13 @@ const logger = require("./logger").getLogger("configManager");
 
 class ConfigManager {
   constructor() {
-    // Adjusted paths to match Traefik's default locations
-    this.baseConfigPath = process.env.CONFIG_BASE_PATH || "/etc/traefik";
+    // The paths should match the Docker volume mounts
+    this.baseConfigPath =
+      process.env.CONFIG_BASE_PATH || "/opt/cloudlunacy_front/config";
     this.agentsConfigDir = path.join(this.baseConfigPath, "agents");
     this.mainDynamicConfigPath = path.join(this.baseConfigPath, "dynamic.yml");
 
-    // Track if initialization is complete
+    // Initialize flag
     this.initialized = false;
   }
 
