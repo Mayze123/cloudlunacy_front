@@ -83,7 +83,6 @@ class ConfigManager {
               routers: {},
               services: {},
               middlewares: {
-                pingMiddleware: { ping: {} },
                 "web-to-websecure": {
                   redirectScheme: {
                     scheme: "https",
@@ -105,7 +104,6 @@ class ConfigManager {
               routers: {},
               services: {},
               middlewares: {
-                pingMiddleware: { ping: {} },
                 "web-to-websecure": {
                   redirectScheme: {
                     scheme: "https",

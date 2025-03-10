@@ -122,8 +122,6 @@ http:
   routers: {}
   services: {}
   middlewares:
-    pingMiddleware:
-      ping: {}
     # Global redirection middleware - web to websecure
     web-to-websecure:
       redirectScheme:

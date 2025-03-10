@@ -112,7 +112,6 @@ async function initializeConfigFile() {
           routers: {},
           services: {},
           middlewares: {
-            pingMiddleware: { ping: {} },
             "web-to-websecure": {
               redirectScheme: {
                 scheme: "https",
