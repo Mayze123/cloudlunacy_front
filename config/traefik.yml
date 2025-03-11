@@ -7,11 +7,6 @@ global:
 entryPoints:
   web:
     address: ":80"
-    http:
-      redirections:
-        entryPoint:
-          to: websecure
-          scheme: https
   websecure:
     address: ":443"
   dashboard:
@@ -22,7 +17,7 @@ entryPoints:
 # API and dashboard configuration
 api:
   dashboard: true
-  insecure: true # Consider setting to false in production and use proper authentication
+  insecure: true
   debug: false
 
 # Ping for healthcheck
@@ -49,9 +44,9 @@ providers:
     watch: true
 
   # Per-agent configuration directory
-  # directory:
-  #   directory: "/etc/traefik/agents"
-  #   watch: true
+  directory:
+    directory: "/etc/traefik/agents"
+    watch: true
 
   # Docker provider for container discovery
   docker:
@@ -61,22 +56,18 @@ providers:
     network: "traefik-network"
     swarmMode: false
 
-# Certificate resolver for HTTPS
+# Certificate resolver for HTTPS - Using HTTP challenge instead of DNS
 certificatesResolvers:
   letsencrypt:
     acme:
       email: "m.taibou.i@gmail.com"
       storage: "/traefik-certs/acme.json"
-      dnsChallenge:
-        provider: cloudflare
-        resolvers:
-          - "1.1.1.1:53"
-          - "8.8.8.8:53"
-
-# Enable tracing for debugging issues
-tracing:
-  serviceName: "traefik"
-  jaeger:
-    samplingServerURL: ""
-    samplingType: "const"
-    samplingParam: 1.0
+      httpChallenge:
+        entryPoint: "web"
+# Disable tracing since it's causing errors
+# tracing:
+#   serviceName: "traefik"
+#   jaeger:
+#     samplingServerURL: ""
+#     samplingType: "const"
+#     samplingParam: 1.0
