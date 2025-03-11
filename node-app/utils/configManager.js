@@ -5,7 +5,7 @@ const yaml = require("yaml");
 const logger = require("./logger").getLogger("configManager");
 
 class ConfigManager {
-  Copyconstructor() {
+  constructor() {
     // Make sure paths match Docker volume mounts
     this.baseConfigPath =
       process.env.CONFIG_BASE_PATH || "/opt/cloudlunacy_front/config";
