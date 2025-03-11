@@ -167,6 +167,43 @@ async function fixTraefikMongoPortExposure() {
 }
 
 /**
+ * Trigger Traefik reload using the Docker API.
+ */
+async function triggerTraefikReload() {
+  try {
+    logger.info("Attempting to restart Traefik container...");
+    const Docker = require("dockerode");
+    const docker = new Docker({ socketPath: "/var/run/docker.sock" });
+
+    // Find the Traefik container
+    const containers = await docker.listContainers({
+      filters: { name: ["traefik"] },
+    });
+
+    if (containers.length === 0) {
+      logger.error("No Traefik container found");
+      return false;
+    }
+
+    const traefikContainer = docker.getContainer(containers[0].Id);
+    const containerId = containers[0].Id.substring(0, 12);
+
+    // Restart the container
+    logger.info(`Restarting Traefik container ${containerId}...`);
+    await traefikContainer.restart({ t: 10 }); // 10 seconds timeout
+
+    logger.info("Traefik restarted successfully");
+    return true;
+  } catch (error) {
+    logger.error("Failed to restart Traefik:", {
+      error: error.message,
+      stack: error.stack,
+    });
+    return false;
+  }
+}
+
+/**
  * Register a MongoDB instance with Traefik
  */
 async function registerMongoDB(agentId, targetIp) {
