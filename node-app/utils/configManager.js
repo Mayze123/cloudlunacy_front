@@ -5,15 +5,19 @@ const yaml = require("yaml");
 const logger = require("./logger").getLogger("configManager");
 
 class ConfigManager {
-  constructor() {
-    // The paths should match the Docker volume mounts
+  Copyconstructor() {
+    // Make sure paths match Docker volume mounts
     this.baseConfigPath =
       process.env.CONFIG_BASE_PATH || "/opt/cloudlunacy_front/config";
     this.agentsConfigDir = path.join(this.baseConfigPath, "agents");
     this.mainDynamicConfigPath = path.join(this.baseConfigPath, "dynamic.yml");
 
-    // Initialize flag
+    // Track if initialization is complete
     this.initialized = false;
+
+    // Add path to save directly to Traefik container as fallback
+    this.traefikConfigDir = "/etc/traefik";
+    this.traefikAgentsDir = path.join(this.traefikConfigDir, "agents");
   }
 
   async initialize() {
@@ -330,12 +334,31 @@ class ConfigManager {
     }
 
     const configPath = await this.getAgentConfigPath(agentId);
+    logger.info(`Saving agent config for ${agentId} to ${configPath}`);
 
     // Ensure proper structure before saving
     const structuredConfig = this.ensureAgentConfigStructure(config);
 
-    await this.saveConfig(configPath, structuredConfig);
-    return true;
+    try {
+      await this.saveConfig(configPath, structuredConfig);
+      logger.info(`Successfully saved config to ${configPath}`);
+      return true;
+    } catch (err) {
+      logger.error(`Error saving config to ${configPath}: ${err.message}`);
+
+      // Try fallback path
+      const fallbackPath = path.join(this.traefikAgentsDir, `${agentId}.yml`);
+      try {
+        logger.info(`Attempting fallback save to ${fallbackPath}`);
+        await this.ensureDirectory(path.dirname(fallbackPath));
+        await this.saveConfig(fallbackPath, structuredConfig);
+        logger.info(`Fallback save succeeded to ${fallbackPath}`);
+        return true;
+      } catch (fallbackErr) {
+        logger.error(`Fallback save also failed: ${fallbackErr.message}`);
+        throw err;
+      }
+    }
   }
 
   async saveConfig(configPath, config) {

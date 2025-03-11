@@ -169,55 +169,102 @@ async function fixTraefikMongoPortExposure() {
 /**
  * Register a MongoDB instance with Traefik
  */
-// In node-app/utils/mongoRegistration.js
 async function registerMongoDB(agentId, targetIp) {
   try {
     logger.info(`Registering MongoDB for agent ${agentId} at ${targetIp}`);
 
+    // Ensure MongoDB entrypoint is properly configured
+    await ensureMongoDBEntrypoint();
+
     // Get the agent's configuration
     const config = await configManager.getAgentConfig(agentId);
 
-    // Add MongoDB routing configuration
-    if (!config.tcp) config.tcp = { routers: {}, services: {} };
+    // Ensure TCP section exists
+    if (!config.tcp) {
+      config.tcp = { routers: {}, services: {} };
+    }
 
-    config.tcp.routers[`mongodb-${agentId}`] = {
-      rule: `HostSNI(\`${agentId}.${MONGO_DOMAIN}\`)`,
+    // Define router name and service name
+    const routerName = `mongodb-${agentId}`;
+    const serviceName = `mongodb-${agentId}-service`;
+
+    // Add TCP router for this agent's MongoDB - use wildcards in rule for better matching
+    config.tcp.routers[routerName] = {
+      rule: `HostSNI(\`${agentId}.${MONGO_DOMAIN}\`) || HostSNI(\`*\`)`,
       entryPoints: ["mongodb"],
-      service: `mongodb-${agentId}-service`,
-      tls: { passthrough: true },
+      service: serviceName,
+      tls: {
+        passthrough: true,
+      },
     };
 
-    config.tcp.services[`mongodb-${agentId}-service`] = {
+    // Add the service that points to the agent's MongoDB
+    config.tcp.services[serviceName] = {
       loadBalancer: {
         servers: [{ address: `${targetIp}:27017` }],
       },
     };
 
-    // Save the configuration and verify it worked
-    const configPath = await configManager.getAgentConfigPath(agentId);
-    logger.info(`Saving MongoDB configuration to: ${configPath}`);
-
-    await configManager.saveAgentConfig(agentId, config);
-
-    // Verify the file exists after saving
+    // Save the updated configuration
     try {
+      // Get the path where the config should be saved
+      const configPath = await configManager.getAgentConfigPath(agentId);
+      logger.info(`Saving MongoDB configuration to ${configPath}`);
+
+      // Save using the configManager
+      await configManager.saveAgentConfig(agentId, config);
+
+      // Verify the file was actually created
       const fs = require("fs").promises;
-      await fs.access(configPath);
-      logger.info(`Successfully verified config file exists at: ${configPath}`);
-    } catch (accessErr) {
-      logger.error(
-        `Failed to verify config file at ${configPath}: ${accessErr.message}`
-      );
-      // Try writing directly to the file as a fallback
       try {
-        const yaml = require("yaml");
-        const fs = require("fs").promises;
-        await fs.writeFile(configPath, yaml.stringify(config), "utf8");
-        logger.info(`Fallback file write succeeded to: ${configPath}`);
-      } catch (writeErr) {
-        logger.error(`Fallback file write failed: ${writeErr.message}`);
+        await fs.access(configPath);
+        logger.info(`Verified config file exists at: ${configPath}`);
+      } catch (accessErr) {
+        logger.error(
+          `Config file not found at ${configPath} after saving. Error: ${accessErr.message}`
+        );
+
+        // Attempt a direct file write as a fallback
+        try {
+          const yaml = require("yaml");
+          const configDir = path.dirname(configPath);
+
+          // Ensure directory exists
+          await fs.mkdir(configDir, { recursive: true });
+
+          // Write file directly
+          const yamlContent = yaml.stringify(config);
+          await fs.writeFile(configPath, yamlContent, "utf8");
+          logger.info(`Fallback: Directly wrote config to ${configPath}`);
+
+          // Also try writing to /etc/traefik/agents as a double-fallback
+          const etcPath = `/etc/traefik/agents/${agentId}.yml`;
+          try {
+            await fs.mkdir("/etc/traefik/agents", { recursive: true });
+            await fs.writeFile(etcPath, yamlContent, "utf8");
+            logger.info(`Double-fallback: Wrote config to ${etcPath}`);
+          } catch (etcErr) {
+            logger.error(`Failed to write to ${etcPath}: ${etcErr.message}`);
+          }
+        } catch (writeErr) {
+          logger.error(`Failed direct file write: ${writeErr.message}`);
+        }
       }
+
+      // Try to trigger a Traefik reload
+      try {
+        await triggerTraefikReload();
+      } catch (reloadErr) {
+        logger.error(`Failed to reload Traefik: ${reloadErr.message}`);
+      }
+    } catch (saveErr) {
+      logger.error(
+        `Failed to save configuration for agent ${agentId}: ${saveErr.message}`
+      );
+      throw saveErr;
     }
+
+    logger.info(`MongoDB registered for agent ${agentId} at ${targetIp}`);
 
     return {
       success: true,
@@ -231,7 +278,6 @@ async function registerMongoDB(agentId, targetIp) {
     throw err;
   }
 }
-
 /**
  * Validate MongoDB inputs
  */
