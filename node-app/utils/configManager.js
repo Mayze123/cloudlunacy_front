@@ -1,4 +1,4 @@
-// utils/configManager.js
+// Improved configManager.js with better error handling
 const fs = require("fs").promises;
 const path = require("path");
 const yaml = require("yaml");
@@ -110,18 +110,76 @@ class ConfigManager {
       // Save the config
       await this.saveConfig(this.mainDynamicConfigPath, mainConfig);
       logger.info("Main dynamic config file saved successfully");
+
+      // Double-check the saved file to ensure it's valid YAML
+      await this.validateYamlFile(this.mainDynamicConfigPath);
     } catch (err) {
       logger.error("Failed to ensure main config:", err);
       throw err;
     }
   }
 
+  /**
+   * Validate that a YAML file is properly formatted
+   */
+  async validateYamlFile(filePath) {
+    try {
+      const content = await fs.readFile(filePath, "utf8");
+      try {
+        yaml.parse(content);
+        logger.info(`YAML validation successful for ${filePath}`);
+        return true;
+      } catch (parseErr) {
+        logger.error(
+          `YAML validation failed for ${filePath}: ${parseErr.message}`
+        );
+
+        // Try to repair the file
+        logger.info(`Attempting to repair malformed YAML file: ${filePath}`);
+
+        // Create a backup
+        const backupPath = `${filePath}.malformed.${Date.now()}`;
+        await fs.copyFile(filePath, backupPath);
+
+        // For main config, use default template
+        if (filePath === this.mainDynamicConfigPath) {
+          const fixedConfig = this.getDefaultMainConfig();
+          await this.saveConfig(filePath, fixedConfig);
+          logger.info(`Repaired main config file with default template`);
+        } else {
+          // For agent configs, use default agent template
+          const fixedConfig = this.getDefaultAgentConfig();
+          await this.saveConfig(filePath, fixedConfig);
+          logger.info(`Repaired agent config file with default template`);
+        }
+
+        return false;
+      }
+    } catch (readErr) {
+      logger.error(
+        `Error reading file for validation ${filePath}: ${readErr.message}`
+      );
+      return false;
+    }
+  }
+
   getDefaultMainConfig() {
     return {
       http: {
-        routers: {},
-        services: {},
+        routers: {
+          dashboard: {
+            rule: "Host(`traefik.localhost`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))",
+            service: "api@internal",
+            entryPoints: ["dashboard"],
+            middlewares: ["auth"],
+          },
+        },
         middlewares: {
+          auth: {
+            basicAuth: {
+              users: ["admin:$apr1$H6uskkkW$IgXLP6ewTrSuBkTrqE8wj/"],
+            },
+          },
           "web-to-websecure": {
             redirectScheme: {
               scheme: "https",
@@ -129,6 +187,7 @@ class ConfigManager {
             },
           },
         },
+        services: {},
       },
       tcp: {
         routers: {
@@ -342,6 +401,10 @@ class ConfigManager {
     try {
       await this.saveConfig(configPath, structuredConfig);
       logger.info(`Successfully saved config to ${configPath}`);
+
+      // Validate the YAML after writing
+      await this.validateYamlFile(configPath);
+
       return true;
     } catch (err) {
       logger.error(`Error saving config to ${configPath}: ${err.message}`);
@@ -353,6 +416,10 @@ class ConfigManager {
         await this.ensureDirectory(path.dirname(fallbackPath));
         await this.saveConfig(fallbackPath, structuredConfig);
         logger.info(`Fallback save succeeded to ${fallbackPath}`);
+
+        // Validate the YAML after writing
+        await this.validateYamlFile(fallbackPath);
+
         return true;
       } catch (fallbackErr) {
         logger.error(`Fallback save also failed: ${fallbackErr.message}`);
@@ -410,6 +477,62 @@ class ConfigManager {
       logger.error(`Failed to remove agent ${agentId} config:`, err);
       return false;
     }
+  }
+
+  /**
+   * Repair all configuration files - utility method for emergency fixes
+   */
+  async repairAllConfigurations() {
+    logger.info("Starting emergency repair of all configuration files");
+
+    // Fix main configuration
+    try {
+      logger.info("Repairing main dynamic configuration");
+      const mainConfig = this.getDefaultMainConfig();
+      await this.saveConfig(this.mainDynamicConfigPath, mainConfig);
+      logger.info("Main configuration repaired successfully");
+
+      // Also try to write to the Traefik container path
+      try {
+        const traefikMainPath = path.join(this.traefikConfigDir, "dynamic.yml");
+        await this.saveConfig(traefikMainPath, mainConfig);
+        logger.info(
+          `Also wrote config to Traefik container path: ${traefikMainPath}`
+        );
+      } catch (containerErr) {
+        logger.warn(
+          `Could not write to Traefik container path: ${containerErr.message}`
+        );
+      }
+    } catch (mainErr) {
+      logger.error(`Failed to repair main configuration: ${mainErr.message}`);
+    }
+
+    // Repair all agent configurations
+    try {
+      const agents = await this.listAgents();
+      logger.info(`Found ${agents.length} agent configurations to repair`);
+
+      for (const agent of agents) {
+        try {
+          logger.info(`Repairing configuration for agent: ${agent}`);
+          const agentConfig = this.getDefaultAgentConfig();
+          await this.saveAgentConfig(agent, agentConfig);
+          logger.info(`Agent ${agent} configuration repaired successfully`);
+        } catch (agentErr) {
+          logger.error(
+            `Failed to repair agent ${agent} configuration: ${agentErr.message}`
+          );
+        }
+      }
+    } catch (scanErr) {
+      logger.error(
+        `Failed to scan for agent configurations: ${scanErr.message}`
+      );
+    }
+
+    logger.info("Configuration repair process completed");
+    return true;
   }
 }
 
