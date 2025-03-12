@@ -13,7 +13,7 @@ services:
       - "80:80"
       - "443:443"
       - "8081:8081"
-      - "27017:27017" # Ensure MongoDB port is exposed
+      - "27017:27017"
     networks:
       - traefik-network
       - cloudlunacy-network
@@ -47,6 +47,8 @@ services:
       dockerfile: Dockerfile
     container_name: node-app
     restart: always
+    command: >
+      sh -c "node /app/scripts/startup-validator.js && node /app/frontdoorService.js"
     networks:
       - traefik-network
       - cloudlunacy-network

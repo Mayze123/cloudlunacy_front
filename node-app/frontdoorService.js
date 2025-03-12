@@ -15,6 +15,7 @@ const yaml = require("yaml");
 const logger = require("./utils/logger").getLogger("frontdoor");
 const configManager = require("./utils/configManager");
 const mongoRegistration = require("./utils/mongoRegistration");
+const agentRegistration = require("./utils/agentRegistration");
 
 const app = express();
 const PORT = process.env.NODE_PORT || 3005;
@@ -397,32 +398,6 @@ async function triggerTraefikReload() {
 }
 
 /**
- * Validate subdomain and target IP/URL for MongoDB deployments.
- */
-function validateMongoInput(subdomain, targetIp) {
-  const subdomainRegex = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-  const ipRegex =
-    /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
-
-  const isValid = subdomainRegex.test(subdomain) && ipRegex.test(targetIp);
-
-  if (!isValid) {
-    logger.warn("Invalid MongoDB input validation:", {
-      subdomain: {
-        value: subdomain,
-        valid: subdomainRegex.test(subdomain),
-      },
-      targetIp: {
-        value: targetIp,
-        valid: ipRegex.test(targetIp),
-      },
-    });
-  }
-
-  return isValid;
-}
-
-/**
  * Validate subdomain and target URL for HTTP app deployments.
  */
 function validateAppInput(subdomain, targetUrl) {
@@ -614,52 +589,53 @@ app.post("/api/frontdoor/add-subdomain", jwtAuth, async (req, res) => {
       });
     }
 
-    // Get the agent ID either from the request body or from the JWT token
+    // Use the effective agent ID from either request or JWT
     const effectiveAgentId = agentId || req.user.agentId || "default";
 
-    // Use the validation method from mongoRegistration
-    const validation = mongoRegistration.validateMongoDBInputs(
-      subdomain,
-      targetIp
-    );
-    if (!validation.isValid) {
+    // Validate inputs
+    const validSubdomain = /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(subdomain);
+    const validIp =
+      /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(
+        targetIp
+      );
+
+    if (!validSubdomain || !validIp) {
       return res.status(400).json({
         error: "Invalid subdomain or target IP format.",
-        validationDetails: validation.details,
+        validationDetails: {
+          subdomain: {
+            value: subdomain,
+            valid: validSubdomain,
+          },
+          targetIp: {
+            value: targetIp,
+            valid: validIp,
+          },
+        },
       });
     }
 
-    // Ensure MongoDB entrypoint is configured
-    const entrypointReady = await mongoRegistration.ensureMongoDBEntrypoint();
-    if (!entrypointReady) {
-      logger.warn(
-        "MongoDB entrypoint is not fully configured, but proceeding with registration"
-      );
-    }
-
-    // Check if Traefik has port 27017 exposed
-    const portExposed = await mongoRegistration.checkTraefikMongoPort();
-    if (!portExposed) {
-      logger.warn(
-        "MongoDB port 27017 is not exposed in Traefik. Registration may not work correctly."
-      );
-    }
-
-    // Register the MongoDB instance
-    const result = await mongoRegistration.registerMongoDB(
+    // Use the enhanced agent registration for MongoDB
+    const registrationResult = await agentRegistration.registerAgent(
       effectiveAgentId,
       targetIp
     );
 
-    // Return the result to the client
+    if (!registrationResult.success) {
+      return res.status(500).json({
+        error: registrationResult.error,
+        message: `MongoDB registration failed: ${registrationResult.error}`,
+      });
+    }
+
+    // Return success
     res.json({
       success: true,
       message: "MongoDB subdomain added successfully with TLS passthrough.",
       details: {
-        domain: `${result.mongodbUrl}`,
-        targetIp: result.targetIp,
+        domain: registrationResult.mongodbUrl,
+        targetIp: targetIp,
         agentId: effectiveAgentId,
-        portExposed: portExposed,
       },
     });
   } catch (err) {
@@ -901,15 +877,6 @@ app.post("/api/agent/register", async (req, res) => {
       return res.status(400).json({ error: "agentId is required" });
     }
 
-    // Create initial agent config
-    await configManager.saveAgentConfig(agentId, {
-      http: { routers: {}, services: {}, middlewares: {} },
-      tcp: { routers: {}, services: {} },
-    });
-
-    // Generate agent token
-    const token = generateAgentToken({ agentId });
-
     // Get agent IP from the request
     const agentIP =
       req.headers["x-forwarded-for"] ||
@@ -917,26 +884,20 @@ app.post("/api/agent/register", async (req, res) => {
       req.connection.remoteAddress;
     const cleanIP = agentIP.replace(/^.*:/, ""); // Handle IPv6 format
 
-    try {
-      // Register MongoDB for this agent
-      const result = await mongoRegistration.registerMongoDB(agentId, cleanIP);
+    // Use the enhanced agent registration
+    const result = await agentRegistration.registerAgent(agentId, cleanIP);
 
+    if (result.success) {
       res.json({
-        token,
+        token: result.token,
         message: `Agent ${agentId} registered successfully`,
         mongodbUrl: result.mongodbUrl,
       });
-    } catch (mongoErr) {
-      // Log but don't fail the registration
-      logger.error("Failed to register MongoDB for agent", {
-        error: mongoErr.message,
-        agentId,
-      });
-
-      res.json({
-        token,
-        message: `Agent ${agentId} registered successfully but MongoDB registration failed`,
-        error: mongoErr.message,
+    } else {
+      logger.error("Agent registration failed:", result.error);
+      res.status(500).json({
+        error: result.error,
+        message: `Registration failed: ${result.error}`,
       });
     }
   } catch (err) {
