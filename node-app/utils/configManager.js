@@ -1,23 +1,72 @@
-// Improved configManager.js with better error handling
+// utils/configManager.js - Fixed version
+
 const fs = require("fs").promises;
 const path = require("path");
 const yaml = require("yaml");
-const logger = require("./logger").getLogger("configManager");
+
+// First, get a simple console logger before trying to load the proper logger
+const consoleLogger = {
+  info: (msg, meta) => console.log(`[INFO] ${msg}`, meta || ""),
+  warn: (msg, meta) => console.warn(`[WARN] ${msg}`, meta || ""),
+  error: (msg, meta) => console.error(`[ERROR] ${msg}`, meta || ""),
+  debug: (msg, meta) => console.log(`[DEBUG] ${msg}`, meta || ""),
+};
+
+// Try to load the real logger, fallback to console logger if it fails
+let logger;
+try {
+  logger = require("./logger").getLogger("configManager");
+} catch (err) {
+  console.warn(`Could not load logger module: ${err.message}`);
+  console.warn("Using fallback console logger");
+  logger = consoleLogger;
+}
 
 class ConfigManager {
   constructor() {
-    // Make sure paths match Docker volume mounts
+    // Initialize with default paths
     this.baseConfigPath =
       process.env.CONFIG_BASE_PATH || "/opt/cloudlunacy_front/config";
+
+    // Add fallback paths for Docker environment
+    const possibleConfigPaths = [
+      this.baseConfigPath,
+      "/app/config",
+      "/etc/traefik",
+      path.join(process.cwd(), "config"),
+    ];
+
+    // Find the first existing config path
+    for (const configPath of possibleConfigPaths) {
+      try {
+        if (require("fs").existsSync(configPath)) {
+          this.baseConfigPath = configPath;
+          break;
+        }
+      } catch (err) {
+        // Skip if path check fails
+      }
+    }
+
     this.agentsConfigDir = path.join(this.baseConfigPath, "agents");
     this.mainDynamicConfigPath = path.join(this.baseConfigPath, "dynamic.yml");
-
-    // Track if initialization is complete
-    this.initialized = false;
 
     // Add path to save directly to Traefik container as fallback
     this.traefikConfigDir = "/etc/traefik";
     this.traefikAgentsDir = path.join(this.traefikConfigDir, "agents");
+
+    // Set MongoDB domain from environment
+    this.mongoDomain = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
+
+    // Track if initialization is complete
+    this.initialized = false;
+
+    // Log initialized paths
+    console.log(
+      `ConfigManager initialized with baseConfigPath: ${this.baseConfigPath}`
+    );
+    console.log(`agentsConfigDir: ${this.agentsConfigDir}`);
+    console.log(`mainDynamicConfigPath: ${this.mainDynamicConfigPath}`);
   }
 
   async initialize() {
@@ -45,24 +94,70 @@ class ConfigManager {
       return true;
     } catch (err) {
       logger.error("Failed to initialize config manager:", err);
-      throw err;
+
+      // Try to recover by using fallback paths
+      try {
+        logger.info("Attempting recovery with fallback paths");
+
+        // Try fallback to Traefik container path
+        this.baseConfigPath = this.traefikConfigDir;
+        this.agentsConfigDir = this.traefikAgentsDir;
+        this.mainDynamicConfigPath = path.join(
+          this.traefikConfigDir,
+          "dynamic.yml"
+        );
+
+        logger.info(`Fallback: using baseConfigPath: ${this.baseConfigPath}`);
+
+        // Ensure directories exist in fallback location
+        await this.ensureDirectory(this.baseConfigPath);
+        await this.ensureDirectory(this.agentsConfigDir);
+
+        // Ensure main config exists with correct structure
+        await this.ensureMainConfig();
+
+        this.initialized = true;
+        logger.info(
+          "Configuration manager initialized successfully with fallback paths"
+        );
+        return true;
+      } catch (recoveryErr) {
+        logger.error("Recovery attempt also failed:", recoveryErr);
+        throw err;
+      }
     }
   }
 
   async ensureDirectory(dirPath) {
     try {
-      const stats = await fs.stat(dirPath);
-      if (!stats.isDirectory()) {
-        logger.error(`Path ${dirPath} exists but is not a directory`);
-        throw new Error(`${dirPath} is not a directory`);
-      }
-      logger.info(`Directory exists: ${dirPath}`);
-    } catch (err) {
-      if (err.code === "ENOENT") {
+      const stats = await fs.stat(dirPath).catch(() => null);
+
+      if (!stats) {
         logger.info(`Creating directory: ${dirPath}`);
         await fs.mkdir(dirPath, { recursive: true });
         // Set proper permissions
         await fs.chmod(dirPath, 0o755);
+        return;
+      }
+
+      if (!stats.isDirectory()) {
+        logger.error(`Path ${dirPath} exists but is not a directory`);
+        throw new Error(`${dirPath} is not a directory`);
+      }
+
+      logger.info(`Directory exists: ${dirPath}`);
+    } catch (err) {
+      // Handle the case where parent directory doesn't exist
+      if (err.code === "ENOENT") {
+        try {
+          logger.info(`Creating directory with parent directories: ${dirPath}`);
+          await fs.mkdir(dirPath, { recursive: true });
+          // Set proper permissions
+          await fs.chmod(dirPath, 0o755);
+        } catch (mkdirErr) {
+          logger.error(`Failed to create directory ${dirPath}:`, mkdirErr);
+          throw mkdirErr;
+        }
       } else {
         logger.error(`Error checking directory ${dirPath}:`, err);
         throw err;
@@ -192,7 +287,7 @@ class ConfigManager {
       tcp: {
         routers: {
           "mongodb-catchall": {
-            rule: "HostSNI(`*.mongodb.cloudlunacy.uk`)",
+            rule: `HostSNI(\`*.${this.mongoDomain}\`)`,
             service: "mongodb-catchall-service",
             entryPoints: ["mongodb"],
             tls: {
@@ -213,7 +308,7 @@ class ConfigManager {
 
   ensureConfigStructure(config) {
     // Create a deep copy to avoid modifying the original
-    const newConfig = JSON.parse(JSON.stringify(config));
+    const newConfig = JSON.parse(JSON.stringify(config || {}));
 
     // Ensure HTTP structure
     newConfig.http = newConfig.http || {};
@@ -239,7 +334,7 @@ class ConfigManager {
     // Ensure MongoDB catchall router exists
     if (!newConfig.tcp.routers["mongodb-catchall"]) {
       newConfig.tcp.routers["mongodb-catchall"] = {
-        rule: "HostSNI(`*.mongodb.cloudlunacy.uk`)",
+        rule: `HostSNI(\`*.${this.mongoDomain}\`)`,
         service: "mongodb-catchall-service",
         entryPoints: ["mongodb"],
         tls: {
@@ -262,8 +357,20 @@ class ConfigManager {
 
   async validateAgentConfigs() {
     try {
-      const agentFiles = await fs.readdir(this.agentsConfigDir);
-      logger.info(`Found ${agentFiles.length} agent configuration files`);
+      let agentFiles = [];
+      try {
+        agentFiles = await fs.readdir(this.agentsConfigDir);
+        logger.info(`Found ${agentFiles.length} agent configuration files`);
+      } catch (readErr) {
+        if (readErr.code === "ENOENT") {
+          // Directory doesn't exist yet, create it
+          await this.ensureDirectory(this.agentsConfigDir);
+          logger.info("Created agents directory that was missing");
+          return;
+        } else {
+          throw readErr;
+        }
+      }
 
       for (const file of agentFiles) {
         if (file.endsWith(".yml")) {
@@ -328,7 +435,7 @@ class ConfigManager {
 
   ensureAgentConfigStructure(config) {
     // Create a deep copy to avoid modifying the original
-    const newConfig = JSON.parse(JSON.stringify(config));
+    const newConfig = JSON.parse(JSON.stringify(config || {}));
 
     // Ensure HTTP structure
     newConfig.http = newConfig.http || {};
@@ -356,7 +463,40 @@ class ConfigManager {
       logger.info("Test agent config removed successfully");
     } catch (testErr) {
       logger.error(`Failed to create test agent config: ${testErr.message}`);
-      throw testErr;
+
+      // Try writing to fallback location
+      try {
+        const fallbackPath = path.join(this.traefikAgentsDir, "test-agent.yml");
+        logger.info(`Trying fallback path ${fallbackPath}`);
+
+        // Ensure fallback directory exists
+        await this.ensureDirectory(this.traefikAgentsDir);
+
+        const testConfig = this.getDefaultAgentConfig();
+        await this.saveConfig(fallbackPath, testConfig);
+        logger.info("Test agent config created successfully at fallback path");
+
+        // Remove the test file
+        await fs.unlink(fallbackPath);
+        logger.info("Test agent config removed from fallback path");
+
+        // Switch to using fallback paths
+        this.baseConfigPath = this.traefikConfigDir;
+        this.agentsConfigDir = this.traefikAgentsDir;
+        this.mainDynamicConfigPath = path.join(
+          this.traefikConfigDir,
+          "dynamic.yml"
+        );
+
+        logger.info(
+          `Switched to using fallback paths due to permission issues`
+        );
+      } catch (fallbackErr) {
+        logger.error(
+          `Failed to create test agent config at fallback path: ${fallbackErr.message}`
+        );
+        throw testErr;
+      }
     }
   }
 

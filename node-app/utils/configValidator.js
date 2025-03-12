@@ -8,17 +8,41 @@ const { execSync } = require("child_process");
 
 class ConfigValidator {
   constructor() {
-    // Configuration paths
-    this.configPaths = {
-      dynamic:
-        process.env.DYNAMIC_CONFIG_PATH ||
-        "/opt/cloudlunacy_front/config/dynamic.yml",
-      agents:
-        process.env.AGENTS_CONFIG_DIR || "/opt/cloudlunacy_front/config/agents",
-      dockerCompose:
-        process.env.DOCKER_COMPOSE_PATH ||
-        "/opt/cloudlunacy_front/docker-compose.yml",
-    };
+    // Determine whether we're running in Docker or not
+    this.inDocker = this.checkIfRunningInDocker();
+
+    // Configure paths based on environment
+    if (this.inDocker) {
+      logger.info("Running in Docker environment, adjusting paths");
+      // Configuration paths inside Docker
+      this.configPaths = {
+        dynamic: process.env.DYNAMIC_CONFIG_PATH || "/app/config/dynamic.yml",
+        agents: process.env.AGENTS_CONFIG_DIR || "/app/config/agents",
+        dockerCompose:
+          process.env.DOCKER_COMPOSE_PATH || "/app/docker-compose.yml",
+      };
+    } else {
+      // Configuration paths on host
+      this.configPaths = {
+        dynamic:
+          process.env.DYNAMIC_CONFIG_PATH ||
+          "/opt/cloudlunacy_front/config/dynamic.yml",
+        agents:
+          process.env.AGENTS_CONFIG_DIR ||
+          "/opt/cloudlunacy_front/config/agents",
+        dockerCompose:
+          process.env.DOCKER_COMPOSE_PATH ||
+          "/opt/cloudlunacy_front/docker-compose.yml",
+      };
+    }
+
+    // Try to find docker-compose.yml with fallbacks
+    this.findDockerComposeFile();
+
+    // Log the configuration paths
+    logger.info(`Dynamic config path: ${this.configPaths.dynamic}`);
+    logger.info(`Agents config dir: ${this.configPaths.agents}`);
+    logger.info(`Docker compose path: ${this.configPaths.dockerCompose}`);
 
     // MongoDB domain
     this.mongoDomain = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
@@ -62,6 +86,54 @@ class ConfigValidator {
         },
       },
     };
+  }
+
+  /**
+   * Check if running in Docker container
+   */
+  checkIfRunningInDocker() {
+    try {
+      return (
+        fs.existsSync("/.dockerenv") ||
+        (fs.existsSync("/proc/1/cgroup") &&
+          fs.readFileSync("/proc/1/cgroup", "utf8").includes("docker"))
+      );
+    } catch (err) {
+      logger.warn(`Error checking if running in Docker: ${err.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Try to find the docker-compose.yml file with fallbacks
+   */
+  findDockerComposeFile() {
+    const possiblePaths = [
+      this.configPaths.dockerCompose,
+      "/app/docker-compose.yml",
+      "/opt/cloudlunacy_front/docker-compose.yml",
+      "./docker-compose.yml",
+      "../docker-compose.yml",
+      path.join(process.cwd(), "docker-compose.yml"),
+      path.join(process.cwd(), "..", "docker-compose.yml"),
+    ];
+
+    for (const filePath of possiblePaths) {
+      try {
+        // Use sync method to check file existence immediately
+        if (require("fs").existsSync(filePath)) {
+          logger.info(`Found docker-compose.yml at ${filePath}`);
+          this.configPaths.dockerCompose = filePath;
+          return;
+        }
+      } catch (err) {
+        // Continue to next path
+      }
+    }
+
+    logger.warn(
+      "Could not find docker-compose.yml in any of the usual locations"
+    );
   }
 
   /**
@@ -290,11 +362,41 @@ class ConfigValidator {
     );
 
     try {
+      // Check if file exists
+      try {
+        await fs.access(this.configPaths.dockerCompose);
+      } catch (accessErr) {
+        logger.warn(
+          `Docker compose file not found at ${this.configPaths.dockerCompose}`
+        );
+
+        // When running in container, we don't need to validate docker-compose.yml
+        if (this.inDocker) {
+          logger.info(
+            "Running in Docker, skipping docker-compose.yml validation"
+          );
+          return {
+            valid: true,
+            fixes: [],
+            message: "Skipped validation (running in Docker)",
+          };
+        }
+
+        return {
+          valid: false,
+          fixes: [],
+          message: `Error: ${accessErr.message}`,
+        };
+      }
+
       // Read docker-compose.yml
       const content = await fs.readFile(this.configPaths.dockerCompose, "utf8");
 
       // Check if MongoDB port is defined
-      if (content.includes('"27017:27017"')) {
+      if (
+        content.includes('"27017:27017"') ||
+        content.includes("'27017:27017'")
+      ) {
         logger.info(
           "MongoDB port 27017 is properly defined in docker-compose.yml"
         );
@@ -569,12 +671,17 @@ class ConfigValidator {
 
     // Restart Traefik if fixes were applied
     if (anyFixes) {
-      await this.restartTraefik();
+      // Skip restarting Traefik if running in Docker
+      if (this.inDocker) {
+        logger.info("Running in Docker, skipping Traefik restart");
+      } else {
+        await this.restartTraefik();
+      }
     }
 
     return {
       ...validation,
-      traefikRestarted: anyFixes,
+      traefikRestarted: anyFixes && !this.inDocker,
     };
   }
 
