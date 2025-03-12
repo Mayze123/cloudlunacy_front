@@ -47,8 +47,6 @@ services:
       dockerfile: Dockerfile
     container_name: node-app
     restart: always
-    command: >
-      sh -c "node /app/scripts/startup-validator.js && node /app/frontdoorService.js"
     networks:
       - traefik-network
       - cloudlunacy-network
@@ -67,6 +65,7 @@ services:
       - ./config:/config
       - ./config:/app/config
       - ./config:/opt/cloudlunacy_front/config
+      - ./node-app/scripts:/app/scripts
       - /var/run/docker.sock:/var/run/docker.sock:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3005/health"]

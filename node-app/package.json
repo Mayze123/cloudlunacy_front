@@ -4,7 +4,7 @@
   "description": "A front server for dynamically managing Traefik routes for MongoDB Docker instances.",
   "main": "frontdoorService.js",
   "scripts": {
-    "start": "node frontdoorService.js",
+    "start": "node start.js",
     "dev": "nodemon frontdoorService.js"
   },
   "dependencies": {
