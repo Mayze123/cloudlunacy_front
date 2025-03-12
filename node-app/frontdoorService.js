@@ -861,7 +861,40 @@ app.get("/api/frontdoor/config", jwtAuth, async (req, res) => {
  */
 app.get("/health", (req, res) => {
   logger.debug("Health check requested");
-  res.json({ status: "ok" });
+
+  // Collect system health metrics
+  const health = {
+    status: "ok",
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
+    memory: process.memoryUsage(),
+    version: process.version,
+    service: "cloudlunacy-front",
+  };
+
+  // Check if MongoDB routing is configured properly
+  try {
+    const configExists = fs.existsSync(
+      path.join(
+        CONFIG.configPaths?.agents || "/app/config/agents",
+        "default.yml"
+      )
+    );
+    health.config = {
+      status: configExists ? "ok" : "warning",
+      details: configExists
+        ? "Configuration files found"
+        : "Configuration files missing",
+    };
+  } catch (err) {
+    health.config = {
+      status: "error",
+      details: `Error checking configuration: ${err.message}`,
+    };
+  }
+
+  // Always return 200 for Docker healthcheck
+  res.status(200).json({ status: "ok", service: "cloudlunacy-front" });
 });
 
 /**
