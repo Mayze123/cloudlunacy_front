@@ -1,677 +1,630 @@
-// utils/configManager.js - Fixed version
+// services/configManager.js
+/**
+ * Centralized Configuration Manager
+ *
+ * Handles all configuration loading, validation, and access.
+ * Provides a single source of truth for configuration values.
+ */
 
 const fs = require("fs").promises;
 const path = require("path");
 const yaml = require("yaml");
-
-// First, get a simple console logger before trying to load the proper logger
-const consoleLogger = {
-  info: (msg, meta) => console.log(`[INFO] ${msg}`, meta || ""),
-  warn: (msg, meta) => console.warn(`[WARN] ${msg}`, meta || ""),
-  error: (msg, meta) => console.error(`[ERROR] ${msg}`, meta || ""),
-  debug: (msg, meta) => console.log(`[DEBUG] ${msg}`, meta || ""),
-};
-
-// Try to load the real logger, fallback to console logger if it fails
-let logger;
-try {
-  logger = require("./logger").getLogger("configManager");
-} catch (err) {
-  console.warn(`Could not load logger module: ${err.message}`);
-  console.warn("Using fallback console logger");
-  logger = consoleLogger;
-}
+const Joi = require("joi");
+const pathResolver = require("../utils/pathResolver");
+const logger = require("../utils/logger").getLogger("configManager");
 
 class ConfigManager {
   constructor() {
-    // Initialize with default paths
-    this.baseConfigPath =
-      process.env.CONFIG_BASE_PATH || "/opt/cloudlunacy_front/config";
+    // Configuration paths
+    this.paths = {
+      base: null,
+      config: null,
+      agents: null,
+      dynamic: null,
+      docker: null,
+    };
 
-    // Add fallback paths for Docker environment
-    const possibleConfigPaths = [
-      this.baseConfigPath,
-      "/app/config",
-      "/etc/traefik",
-      path.join(process.cwd(), "config"),
-    ];
+    // Configuration domains
+    this.domains = {
+      mongo: process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk",
+      app: process.env.APP_DOMAIN || "apps.cloudlunacy.uk",
+    };
 
-    // Find the first existing config path
-    for (const configPath of possibleConfigPaths) {
-      try {
-        if (require("fs").existsSync(configPath)) {
-          this.baseConfigPath = configPath;
-          break;
-        }
-      } catch (err) {
-        // Skip if path check fails
-      }
-    }
+    // Basic templates for configuration files
+    this.templates = {
+      agent: null,
+      dynamic: null,
+    };
 
-    this.agentsConfigDir = path.join(this.baseConfigPath, "agents");
-    this.mainDynamicConfigPath = path.join(this.baseConfigPath, "dynamic.yml");
+    // Loaded configuration cache
+    this.configs = {
+      agents: new Map(),
+      main: null,
+    };
 
-    // Add path to save directly to Traefik container as fallback
-    this.traefikConfigDir = "/etc/traefik";
-    this.traefikAgentsDir = path.join(this.traefikConfigDir, "agents");
-
-    // Set MongoDB domain from environment
-    this.mongoDomain = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
-
-    // Track if initialization is complete
+    // Initialization state
     this.initialized = false;
-
-    // Log initialized paths
-    console.log(
-      `ConfigManager initialized with baseConfigPath: ${this.baseConfigPath}`
-    );
-    console.log(`agentsConfigDir: ${this.agentsConfigDir}`);
-    console.log(`mainDynamicConfigPath: ${this.mainDynamicConfigPath}`);
   }
 
+  /**
+   * Initialize the configuration manager
+   */
   async initialize() {
+    if (this.initialized) {
+      return true;
+    }
+
     try {
-      logger.info(
-        `Initializing config manager with base path: ${this.baseConfigPath}`
-      );
-      logger.info(`Agents config directory: ${this.agentsConfigDir}`);
+      logger.info("Initializing configuration manager");
+
+      // Resolve paths based on environment
+      await this.resolvePaths();
+
+      // Load templates
+      this.templates = this.getConfigTemplates();
 
       // Ensure directories exist
-      await this.ensureDirectory(this.baseConfigPath);
-      await this.ensureDirectory(this.agentsConfigDir);
+      await this.ensureDirectories();
 
-      // Ensure main config exists with correct structure
+      // Validate and fix main configuration
       await this.ensureMainConfig();
 
-      // Scan and validate existing agent configs
+      // Validate and fix agent configurations
       await this.validateAgentConfigs();
 
-      // Create test file to verify write permissions
+      // Test write permissions
       await this.verifyWritePermissions();
 
       this.initialized = true;
       logger.info("Configuration manager initialized successfully");
       return true;
     } catch (err) {
-      logger.error("Failed to initialize config manager:", err);
+      logger.error(
+        `Failed to initialize configuration manager: ${err.message}`,
+        {
+          error: err.message,
+          stack: err.stack,
+        }
+      );
 
-      // Try to recover by using fallback paths
+      // Try recovery with fallback paths
       try {
         logger.info("Attempting recovery with fallback paths");
+        await this.resolvePathsFallback();
 
-        // Try fallback to Traefik container path
-        this.baseConfigPath = this.traefikConfigDir;
-        this.agentsConfigDir = this.traefikAgentsDir;
-        this.mainDynamicConfigPath = path.join(
-          this.traefikConfigDir,
-          "dynamic.yml"
-        );
+        // Ensure directories exist
+        await this.ensureDirectories();
 
-        logger.info(`Fallback: using baseConfigPath: ${this.baseConfigPath}`);
-
-        // Ensure directories exist in fallback location
-        await this.ensureDirectory(this.baseConfigPath);
-        await this.ensureDirectory(this.agentsConfigDir);
-
-        // Ensure main config exists with correct structure
+        // Validate and fix main configuration
         await this.ensureMainConfig();
 
         this.initialized = true;
-        logger.info(
-          "Configuration manager initialized successfully with fallback paths"
-        );
+        logger.info("Configuration manager initialized with fallback paths");
         return true;
       } catch (recoveryErr) {
-        logger.error("Recovery attempt also failed:", recoveryErr);
+        logger.error(`Recovery failed: ${recoveryErr.message}`, {
+          error: recoveryErr.message,
+          stack: recoveryErr.stack,
+        });
         throw err;
       }
     }
   }
 
-  async ensureDirectory(dirPath) {
-    try {
-      const stats = await fs.stat(dirPath).catch(() => null);
+  /**
+   * Resolve configuration paths based on environment
+   */
+  async resolvePaths() {
+    const resolver = await pathResolver.initialize();
 
-      if (!stats) {
-        logger.info(`Creating directory: ${dirPath}`);
-        await fs.mkdir(dirPath, { recursive: true });
-        // Set proper permissions
-        await fs.chmod(dirPath, 0o755);
-        return;
-      }
+    this.paths.base = resolver.resolveBasePath();
+    this.paths.config = resolver.resolveConfigPath();
+    this.paths.agents = resolver.resolveAgentsPath();
+    this.paths.dynamic = resolver.resolveDynamicConfigPath();
+    this.paths.docker = resolver.resolveDockerComposePath();
 
-      if (!stats.isDirectory()) {
-        logger.error(`Path ${dirPath} exists but is not a directory`);
-        throw new Error(`${dirPath} is not a directory`);
-      }
-
-      logger.info(`Directory exists: ${dirPath}`);
-    } catch (err) {
-      // Handle the case where parent directory doesn't exist
-      if (err.code === "ENOENT") {
-        try {
-          logger.info(`Creating directory with parent directories: ${dirPath}`);
-          await fs.mkdir(dirPath, { recursive: true });
-          // Set proper permissions
-          await fs.chmod(dirPath, 0o755);
-        } catch (mkdirErr) {
-          logger.error(`Failed to create directory ${dirPath}:`, mkdirErr);
-          throw mkdirErr;
-        }
-      } else {
-        logger.error(`Error checking directory ${dirPath}:`, err);
-        throw err;
-      }
-    }
+    logger.info("Resolved configuration paths", { paths: this.paths });
+    return this.paths;
   }
 
-  async ensureMainConfig() {
-    try {
-      let mainConfig;
+  /**
+   * Resolve fallback paths if primary paths fail
+   */
+  async resolvePathsFallback() {
+    logger.info("Resolving fallback paths");
+
+    // Try container paths
+    this.paths.base = "/etc/traefik";
+    this.paths.config = "/etc/traefik";
+    this.paths.agents = "/etc/traefik/agents";
+    this.paths.dynamic = "/etc/traefik/dynamic.yml";
+
+    logger.info("Using fallback paths", { paths: this.paths });
+    return this.paths;
+  }
+
+  /**
+   * Get configuration templates
+   */
+  getConfigTemplates() {
+    return {
+      agent: {
+        http: {
+          routers: {},
+          services: {},
+          middlewares: {},
+        },
+        tcp: {
+          routers: {},
+          services: {},
+        },
+      },
+      dynamic: {
+        http: {
+          routers: {
+            dashboard: {
+              rule: "Host(`traefik.localhost`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))",
+              service: "api@internal",
+              entryPoints: ["dashboard"],
+              middlewares: ["auth"],
+            },
+          },
+          middlewares: {
+            auth: {
+              basicAuth: {
+                users: ["admin:$apr1$H6uskkkW$IgXLP6ewTrSuBkTrqE8wj/"],
+              },
+              "web-to-websecure": {
+                redirectScheme: {
+                  scheme: "https",
+                  permanent: true,
+                },
+              },
+            },
+            services: {},
+          },
+        },
+        tcp: {
+          routers: {
+            "mongodb-catchall": {
+              rule: `HostSNI(\`*.${this.domains.mongo}\`)`,
+              entryPoints: ["mongodb"],
+              service: "mongodb-catchall-service",
+              tls: {
+                passthrough: true,
+              },
+            },
+          },
+          services: {
+            "mongodb-catchall-service": {
+              loadBalancer: {
+                servers: [],
+              },
+            },
+          },
+        },
+      },
+    };
+  }
+
+  /**
+   * Ensure required directories exist
+   */
+  async ensureDirectories() {
+    const dirs = [this.paths.config, this.paths.agents];
+
+    for (const dir of dirs) {
       try {
-        const content = await fs.readFile(this.mainDynamicConfigPath, "utf8");
-        logger.info("Main dynamic config file read successfully");
-
-        try {
-          mainConfig = yaml.parse(content) || {};
-          logger.info("Main dynamic config file parsed successfully");
-        } catch (parseErr) {
-          logger.error(`Error parsing main config file: ${parseErr.message}`);
-          // Create a backup of the corrupted file
-          const backupPath = `${
-            this.mainDynamicConfigPath
-          }.corrupted.${Date.now()}`;
-          await fs.copyFile(this.mainDynamicConfigPath, backupPath);
-          logger.info(`Corrupted config backed up to ${backupPath}`);
-
-          // Create a new default config
-          mainConfig = this.getDefaultMainConfig();
-        }
+        await fs.mkdir(dir, { recursive: true });
+        logger.debug(`Directory created: ${dir}`);
       } catch (err) {
-        if (err.code === "ENOENT") {
-          logger.info(
-            "Main dynamic config file does not exist, creating default config"
-          );
-          mainConfig = this.getDefaultMainConfig();
-        } else {
-          logger.error(`Error reading main config file: ${err.message}`);
+        if (err.code !== "EEXIST") {
+          logger.error(`Failed to create directory ${dir}: ${err.message}`);
           throw err;
         }
       }
+    }
 
-      // Ensure necessary sections exist
-      mainConfig = this.ensureConfigStructure(mainConfig);
+    return true;
+  }
 
-      // Save the config
-      await this.saveConfig(this.mainDynamicConfigPath, mainConfig);
-      logger.info("Main dynamic config file saved successfully");
+  /**
+   * Ensure main configuration file exists and is valid
+   */
+  async ensureMainConfig() {
+    try {
+      // Check if file exists
+      let config;
+      try {
+        const content = await fs.readFile(this.paths.dynamic, "utf8");
+        config = yaml.parse(content);
+        logger.debug("Main configuration file loaded");
+      } catch (err) {
+        if (err.code === "ENOENT") {
+          // File doesn't exist, create it
+          logger.info(
+            "Main configuration file not found, creating from template"
+          );
+          config = this.templates.dynamic;
+        } else {
+          logger.error(`Error reading main configuration: ${err.message}`);
+          // Assume corrupted file, create backup and use template
+          try {
+            const backupPath = `${this.paths.dynamic}.backup.${Date.now()}`;
+            await fs.copyFile(this.paths.dynamic, backupPath);
+            logger.info(
+              `Created backup of corrupted configuration at ${backupPath}`
+            );
+          } catch (backupErr) {
+            // Ignore if we can't create a backup
+          }
+          config = this.templates.dynamic;
+        }
+      }
 
-      // Double-check the saved file to ensure it's valid YAML
-      await this.validateYamlFile(this.mainDynamicConfigPath);
+      // Validate and fix structure
+      config = this.ensureConfigStructure(config);
+      this.configs.main = config;
+
+      // Write the file
+      await this.saveConfig(this.paths.dynamic, config);
+      logger.info("Main configuration file validated and saved");
+
+      return config;
     } catch (err) {
-      logger.error("Failed to ensure main config:", err);
+      logger.error(`Failed to ensure main configuration: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+      });
       throw err;
     }
   }
 
   /**
-   * Validate that a YAML file is properly formatted
+   * Ensure agent configurations are valid
    */
-  async validateYamlFile(filePath) {
-    try {
-      const content = await fs.readFile(filePath, "utf8");
-      try {
-        yaml.parse(content);
-        logger.info(`YAML validation successful for ${filePath}`);
-        return true;
-      } catch (parseErr) {
-        logger.error(
-          `YAML validation failed for ${filePath}: ${parseErr.message}`
-        );
-
-        // Try to repair the file
-        logger.info(`Attempting to repair malformed YAML file: ${filePath}`);
-
-        // Create a backup
-        const backupPath = `${filePath}.malformed.${Date.now()}`;
-        await fs.copyFile(filePath, backupPath);
-
-        // For main config, use default template
-        if (filePath === this.mainDynamicConfigPath) {
-          const fixedConfig = this.getDefaultMainConfig();
-          await this.saveConfig(filePath, fixedConfig);
-          logger.info(`Repaired main config file with default template`);
-        } else {
-          // For agent configs, use default agent template
-          const fixedConfig = this.getDefaultAgentConfig();
-          await this.saveConfig(filePath, fixedConfig);
-          logger.info(`Repaired agent config file with default template`);
-        }
-
-        return false;
-      }
-    } catch (readErr) {
-      logger.error(
-        `Error reading file for validation ${filePath}: ${readErr.message}`
-      );
-      return false;
-    }
-  }
-
-  getDefaultMainConfig() {
-    return {
-      http: {
-        routers: {
-          dashboard: {
-            rule: "Host(`traefik.localhost`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))",
-            service: "api@internal",
-            entryPoints: ["dashboard"],
-            middlewares: ["auth"],
-          },
-        },
-        middlewares: {
-          auth: {
-            basicAuth: {
-              users: ["admin:$apr1$H6uskkkW$IgXLP6ewTrSuBkTrqE8wj/"],
-            },
-          },
-          "web-to-websecure": {
-            redirectScheme: {
-              scheme: "https",
-              permanent: true,
-            },
-          },
-        },
-        services: {},
-      },
-      tcp: {
-        routers: {
-          "mongodb-catchall": {
-            rule: `HostSNI(\`*.${this.mongoDomain}\`)`,
-            service: "mongodb-catchall-service",
-            entryPoints: ["mongodb"],
-            tls: {
-              passthrough: true,
-            },
-          },
-        },
-        services: {
-          "mongodb-catchall-service": {
-            loadBalancer: {
-              servers: [],
-            },
-          },
-        },
-      },
-    };
-  }
-
-  ensureConfigStructure(config) {
-    // Create a deep copy to avoid modifying the original
-    const newConfig = JSON.parse(JSON.stringify(config || {}));
-
-    // Ensure HTTP structure
-    newConfig.http = newConfig.http || {};
-    newConfig.http.routers = newConfig.http.routers || {};
-    newConfig.http.services = newConfig.http.services || {};
-    newConfig.http.middlewares = newConfig.http.middlewares || {};
-
-    // Ensure web-to-websecure middleware exists
-    if (!newConfig.http.middlewares["web-to-websecure"]) {
-      newConfig.http.middlewares["web-to-websecure"] = {
-        redirectScheme: {
-          scheme: "https",
-          permanent: true,
-        },
-      };
-    }
-
-    // Ensure TCP structure for MongoDB
-    newConfig.tcp = newConfig.tcp || {};
-    newConfig.tcp.routers = newConfig.tcp.routers || {};
-    newConfig.tcp.services = newConfig.tcp.services || {};
-
-    // Ensure MongoDB catchall router exists
-    if (!newConfig.tcp.routers["mongodb-catchall"]) {
-      newConfig.tcp.routers["mongodb-catchall"] = {
-        rule: `HostSNI(\`*.${this.mongoDomain}\`)`,
-        service: "mongodb-catchall-service",
-        entryPoints: ["mongodb"],
-        tls: {
-          passthrough: true,
-        },
-      };
-    }
-
-    // Ensure MongoDB catchall service exists
-    if (!newConfig.tcp.services["mongodb-catchall-service"]) {
-      newConfig.tcp.services["mongodb-catchall-service"] = {
-        loadBalancer: {
-          servers: [],
-        },
-      };
-    }
-
-    return newConfig;
-  }
-
   async validateAgentConfigs() {
     try {
-      let agentFiles = [];
+      // Get list of agent configuration files
+      let files;
       try {
-        agentFiles = await fs.readdir(this.agentsConfigDir);
-        logger.info(`Found ${agentFiles.length} agent configuration files`);
-      } catch (readErr) {
-        if (readErr.code === "ENOENT") {
-          // Directory doesn't exist yet, create it
-          await this.ensureDirectory(this.agentsConfigDir);
-          logger.info("Created agents directory that was missing");
-          return;
-        } else {
-          throw readErr;
+        files = await fs.readdir(this.paths.agents);
+      } catch (err) {
+        if (err.code === "ENOENT") {
+          // Directory doesn't exist
+          await this.ensureDirectories();
+          return [];
         }
+        throw err;
       }
 
+      // Filter for YAML files
+      const agentFiles = files.filter(
+        (file) => file.endsWith(".yml") && file !== "default.yml"
+      );
+
+      // Process each agent file
       for (const file of agentFiles) {
-        if (file.endsWith(".yml")) {
-          const agentPath = path.join(this.agentsConfigDir, file);
+        const agentId = file.replace(".yml", "");
+        const filePath = path.join(this.paths.agents, file);
+
+        try {
+          // Read and parse file
+          const content = await fs.readFile(filePath, "utf8");
+          let config = yaml.parse(content);
+
+          // Validate and fix structure
+          config = this.ensureAgentConfigStructure(config);
+
+          // Cache the configuration
+          this.configs.agents.set(agentId, config);
+
+          logger.debug(`Agent configuration validated: ${agentId}`);
+        } catch (err) {
+          logger.error(
+            `Error with agent configuration ${agentId}: ${err.message}`
+          );
+
+          // Create a backup and reset
           try {
-            const agentContent = await fs.readFile(agentPath, "utf8");
-            try {
-              const agentConfig = yaml.parse(agentContent);
-              logger.info(`Agent config ${file} is valid`);
+            const backupPath = `${filePath}.backup.${Date.now()}`;
+            await fs.copyFile(filePath, backupPath);
+            logger.info(
+              `Created backup of corrupted agent configuration at ${backupPath}`
+            );
 
-              // Ensure agent config has proper structure
-              const updatedConfig =
-                this.ensureAgentConfigStructure(agentConfig);
-              if (
-                JSON.stringify(updatedConfig) !== JSON.stringify(agentConfig)
-              ) {
-                logger.info(`Updating structure of agent config ${file}`);
-                await this.saveConfig(agentPath, updatedConfig);
-              }
-            } catch (parseErr) {
-              logger.error(
-                `Error parsing agent config ${file}: ${parseErr.message}`
-              );
-              // Create a backup and fix
-              const backupPath = `${agentPath}.corrupted.${Date.now()}`;
-              await fs.copyFile(agentPath, backupPath);
-              logger.info(`Corrupted agent config backed up to ${backupPath}`);
+            // Write a fresh template
+            await this.saveConfig(filePath, this.templates.agent);
+            this.configs.agents.set(agentId, this.templates.agent);
 
-              // Create a new default config for this agent
-              const defaultAgentConfig = this.getDefaultAgentConfig();
-              await this.saveConfig(agentPath, defaultAgentConfig);
-              logger.info(`Reset agent config ${file} to defaults`);
-            }
-          } catch (readErr) {
+            logger.info(`Reset agent configuration: ${agentId}`);
+          } catch (backupErr) {
             logger.error(
-              `Error reading agent config ${file}: ${readErr.message}`
+              `Failed to backup/reset agent configuration: ${backupErr.message}`
             );
           }
         }
       }
+
+      logger.info(`Validated ${agentFiles.length} agent configurations`);
+      return agentFiles;
     } catch (err) {
-      // If there's an error listing files, it might be because the directory was just created
-      if (err.code !== "ENOENT") {
-        logger.error(`Error scanning agent configs: ${err.message}`);
-      }
+      logger.error(`Failed to validate agent configurations: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+      });
+      throw err;
     }
   }
 
-  getDefaultAgentConfig() {
-    return {
-      http: {
-        routers: {},
-        services: {},
-        middlewares: {},
-      },
-      tcp: {
-        routers: {},
-        services: {},
-      },
-    };
+  /**
+   * Verify write permissions by creating a test file
+   */
+  async verifyWritePermissions() {
+    const testPath = path.join(this.paths.agents, "test-permissions.tmp");
+
+    try {
+      // Write test file
+      await fs.writeFile(testPath, "test", "utf8");
+
+      // Remove test file
+      await fs.unlink(testPath);
+
+      logger.debug("Write permissions verified");
+      return true;
+    } catch (err) {
+      logger.error(`Failed to verify write permissions: ${err.message}`, {
+        path: testPath,
+        error: err.message,
+      });
+      throw err;
+    }
   }
 
+  /**
+   * Ensure config has the required structure
+   */
+  ensureConfigStructure(config) {
+    // Create a deep copy to avoid modifying the original
+    const result = JSON.parse(JSON.stringify(config || {}));
+
+    // Ensure HTTP section
+    result.http = result.http || {};
+    result.http.routers = result.http.routers || {};
+    result.http.services = result.http.services || {};
+    result.http.middlewares = result.http.middlewares || {};
+
+    // Ensure web-to-websecure middleware
+    if (!result.http.middlewares["web-to-websecure"]) {
+      result.http.middlewares["web-to-websecure"] =
+        this.templates.dynamic.http.middlewares["web-to-websecure"];
+    }
+
+    // Ensure TCP section for MongoDB
+    result.tcp = result.tcp || {};
+    result.tcp.routers = result.tcp.routers || {};
+    result.tcp.services = result.tcp.services || {};
+
+    // Ensure MongoDB catchall router
+    if (!result.tcp.routers["mongodb-catchall"]) {
+      result.tcp.routers["mongodb-catchall"] =
+        this.templates.dynamic.tcp.routers["mongodb-catchall"];
+    }
+
+    // Ensure MongoDB catchall service
+    if (!result.tcp.services["mongodb-catchall-service"]) {
+      result.tcp.services["mongodb-catchall-service"] =
+        this.templates.dynamic.tcp.services["mongodb-catchall-service"];
+    }
+
+    return result;
+  }
+
+  /**
+   * Ensure agent config has the required structure
+   */
   ensureAgentConfigStructure(config) {
     // Create a deep copy to avoid modifying the original
-    const newConfig = JSON.parse(JSON.stringify(config || {}));
+    const result = JSON.parse(JSON.stringify(config || {}));
 
-    // Ensure HTTP structure
-    newConfig.http = newConfig.http || {};
-    newConfig.http.routers = newConfig.http.routers || {};
-    newConfig.http.services = newConfig.http.services || {};
-    newConfig.http.middlewares = newConfig.http.middlewares || {};
+    // Ensure HTTP section
+    result.http = result.http || {};
+    result.http.routers = result.http.routers || {};
+    result.http.services = result.http.services || {};
+    result.http.middlewares = result.http.middlewares || {};
 
-    // Ensure TCP structure
-    newConfig.tcp = newConfig.tcp || {};
-    newConfig.tcp.routers = newConfig.tcp.routers || {};
-    newConfig.tcp.services = newConfig.tcp.services || {};
+    // Ensure TCP section
+    result.tcp = result.tcp || {};
+    result.tcp.routers = result.tcp.routers || {};
+    result.tcp.services = result.tcp.services || {};
 
-    return newConfig;
+    return result;
   }
 
-  async verifyWritePermissions() {
+  /**
+   * Save configuration to file
+   */
+  async saveConfig(filePath, config) {
     try {
-      const testAgentPath = path.join(this.agentsConfigDir, "test-agent.yml");
-      const testConfig = this.getDefaultAgentConfig();
-      await this.saveConfig(testAgentPath, testConfig);
-      logger.info("Test agent config created successfully");
+      // Format YAML with proper indentation
+      const yamlStr = yaml.stringify(config, {
+        indent: 2,
+        aliasDuplicateObjects: false,
+      });
 
-      // Remove the test file
-      await fs.unlink(testAgentPath);
-      logger.info("Test agent config removed successfully");
-    } catch (testErr) {
-      logger.error(`Failed to create test agent config: ${testErr.message}`);
-
-      // Try writing to fallback location
+      // Make backup if file exists
       try {
-        const fallbackPath = path.join(this.traefikAgentsDir, "test-agent.yml");
-        logger.info(`Trying fallback path ${fallbackPath}`);
-
-        // Ensure fallback directory exists
-        await this.ensureDirectory(this.traefikAgentsDir);
-
-        const testConfig = this.getDefaultAgentConfig();
-        await this.saveConfig(fallbackPath, testConfig);
-        logger.info("Test agent config created successfully at fallback path");
-
-        // Remove the test file
-        await fs.unlink(fallbackPath);
-        logger.info("Test agent config removed from fallback path");
-
-        // Switch to using fallback paths
-        this.baseConfigPath = this.traefikConfigDir;
-        this.agentsConfigDir = this.traefikAgentsDir;
-        this.mainDynamicConfigPath = path.join(
-          this.traefikConfigDir,
-          "dynamic.yml"
-        );
-
-        logger.info(
-          `Switched to using fallback paths due to permission issues`
-        );
-      } catch (fallbackErr) {
-        logger.error(
-          `Failed to create test agent config at fallback path: ${fallbackErr.message}`
-        );
-        throw testErr;
+        const stats = await fs.stat(filePath);
+        if (stats.isFile()) {
+          const backupPath = `${filePath}.backup.${Date.now()}`;
+          await fs.copyFile(filePath, backupPath);
+          logger.debug(`Created backup at ${backupPath}`);
+        }
+      } catch (err) {
+        // Ignore if file doesn't exist
       }
+
+      // Write file
+      await fs.writeFile(filePath, yamlStr, "utf8");
+      logger.debug(`Configuration saved: ${filePath}`);
+
+      return true;
+    } catch (err) {
+      logger.error(`Failed to save configuration: ${err.message}`, {
+        path: filePath,
+        error: err.message,
+        stack: err.stack,
+      });
+      throw err;
     }
   }
 
-  async getAgentConfigPath(agentId) {
-    // Sanitize the agent ID to ensure it's safe for filesystem
-    const safeAgentId = agentId.replace(/[^a-zA-Z0-9-_]/g, "_");
-    return path.join(this.agentsConfigDir, `${safeAgentId}.yml`);
-  }
-
+  /**
+   * Get agent configuration
+   */
   async getAgentConfig(agentId) {
     if (!this.initialized) {
       await this.initialize();
     }
 
-    const configPath = await this.getAgentConfigPath(agentId);
+    // Check cache first
+    if (this.configs.agents.has(agentId)) {
+      return this.configs.agents.get(agentId);
+    }
+
+    // Load from file
+    const filePath = path.join(this.paths.agents, `${agentId}.yml`);
 
     try {
-      const content = await fs.readFile(configPath, "utf8");
-      let config = yaml.parse(content) || this.getDefaultAgentConfig();
+      const content = await fs.readFile(filePath, "utf8");
+      let config = yaml.parse(content);
 
-      // Ensure proper structure
+      // Validate structure
       config = this.ensureAgentConfigStructure(config);
+
+      // Cache the configuration
+      this.configs.agents.set(agentId, config);
 
       return config;
     } catch (err) {
-      // Return empty config if file doesn't exist
-      return this.getDefaultAgentConfig();
+      if (err.code === "ENOENT") {
+        // File doesn't exist, create a new one
+        const config = this.templates.agent;
+
+        // Cache the configuration
+        this.configs.agents.set(agentId, config);
+
+        return config;
+      }
+
+      logger.error(`Failed to get agent configuration: ${err.message}`, {
+        agentId,
+        error: err.message,
+        stack: err.stack,
+      });
+      throw err;
     }
   }
 
+  /**
+   * Save agent configuration
+   */
   async saveAgentConfig(agentId, config) {
     if (!this.initialized) {
       await this.initialize();
     }
 
-    const configPath = await this.getAgentConfigPath(agentId);
-    logger.info(`Saving agent config for ${agentId} to ${configPath}`);
+    // Validate structure
+    config = this.ensureAgentConfigStructure(config);
 
-    // Ensure proper structure before saving
-    const structuredConfig = this.ensureAgentConfigStructure(config);
+    // Cache the configuration
+    this.configs.agents.set(agentId, config);
 
-    try {
-      await this.saveConfig(configPath, structuredConfig);
-      logger.info(`Successfully saved config to ${configPath}`);
+    // Save to file
+    const filePath = path.join(this.paths.agents, `${agentId}.yml`);
+    await this.saveConfig(filePath, config);
 
-      // Validate the YAML after writing
-      await this.validateYamlFile(configPath);
-
-      return true;
-    } catch (err) {
-      logger.error(`Error saving config to ${configPath}: ${err.message}`);
-
-      // Try fallback path
-      const fallbackPath = path.join(this.traefikAgentsDir, `${agentId}.yml`);
-      try {
-        logger.info(`Attempting fallback save to ${fallbackPath}`);
-        await this.ensureDirectory(path.dirname(fallbackPath));
-        await this.saveConfig(fallbackPath, structuredConfig);
-        logger.info(`Fallback save succeeded to ${fallbackPath}`);
-
-        // Validate the YAML after writing
-        await this.validateYamlFile(fallbackPath);
-
-        return true;
-      } catch (fallbackErr) {
-        logger.error(`Fallback save also failed: ${fallbackErr.message}`);
-        throw err;
-      }
-    }
-  }
-
-  async saveConfig(configPath, config) {
-    // Ensure the directory exists
-    await this.ensureDirectory(path.dirname(configPath));
-
-    // Format YAML with clean indentation and no duplicate references
-    const yamlStr = yaml.stringify(config, {
-      indent: 2,
-      aliasDuplicateObjects: false,
-    });
-
-    await fs.writeFile(configPath, yamlStr, "utf8");
-
-    // Set proper permissions
-    await fs.chmod(configPath, 0o644);
-
-    logger.info(`Config saved to ${configPath}`);
     return true;
   }
 
+  /**
+   * List all agent IDs
+   */
   async listAgents() {
     if (!this.initialized) {
       await this.initialize();
     }
 
     try {
-      const files = await fs.readdir(this.agentsConfigDir);
+      const files = await fs.readdir(this.paths.agents);
       return files
-        .filter((file) => file.endsWith(".yml"))
+        .filter((file) => file.endsWith(".yml") && file !== "default.yml")
         .map((file) => file.replace(".yml", ""));
     } catch (err) {
-      logger.error("Failed to list agents:", err);
+      logger.error(`Failed to list agents: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+      });
       return [];
     }
   }
 
+  /**
+   * Remove agent configuration
+   */
   async removeAgentConfig(agentId) {
     if (!this.initialized) {
       await this.initialize();
     }
 
+    // Remove from cache
+    this.configs.agents.delete(agentId);
+
+    // Remove file
+    const filePath = path.join(this.paths.agents, `${agentId}.yml`);
+
     try {
-      const configPath = await this.getAgentConfigPath(agentId);
-      await fs.unlink(configPath);
-      logger.info(`Removed config for agent ${agentId}`);
+      await fs.unlink(filePath);
+      logger.info(`Removed agent configuration: ${agentId}`);
       return true;
     } catch (err) {
-      logger.error(`Failed to remove agent ${agentId} config:`, err);
+      if (err.code === "ENOENT") {
+        // File doesn't exist, consider it removed
+        return true;
+      }
+
+      logger.error(`Failed to remove agent configuration: ${err.message}`, {
+        agentId,
+        error: err.message,
+        stack: err.stack,
+      });
       return false;
     }
   }
 
   /**
-   * Repair all configuration files - utility method for emergency fixes
+   * Repair all configuration files
    */
   async repairAllConfigurations() {
-    logger.info("Starting emergency repair of all configuration files");
+    logger.info("Starting emergency repair of all configurations");
 
-    // Fix main configuration
-    try {
-      logger.info("Repairing main dynamic configuration");
-      const mainConfig = this.getDefaultMainConfig();
-      await this.saveConfig(this.mainDynamicConfigPath, mainConfig);
-      logger.info("Main configuration repaired successfully");
+    // Re-initialize with clean state
+    this.initialized = false;
+    this.configs.agents.clear();
+    this.configs.main = null;
 
-      // Also try to write to the Traefik container path
-      try {
-        const traefikMainPath = path.join(this.traefikConfigDir, "dynamic.yml");
-        await this.saveConfig(traefikMainPath, mainConfig);
-        logger.info(
-          `Also wrote config to Traefik container path: ${traefikMainPath}`
-        );
-      } catch (containerErr) {
-        logger.warn(
-          `Could not write to Traefik container path: ${containerErr.message}`
-        );
-      }
-    } catch (mainErr) {
-      logger.error(`Failed to repair main configuration: ${mainErr.message}`);
+    // Initialize again
+    await this.initialize();
+
+    // Get all agent IDs
+    const agents = await this.listAgents();
+
+    // Reset each agent to template
+    for (const agentId of agents) {
+      await this.saveAgentConfig(agentId, this.templates.agent);
     }
 
-    // Repair all agent configurations
-    try {
-      const agents = await this.listAgents();
-      logger.info(`Found ${agents.length} agent configurations to repair`);
-
-      for (const agent of agents) {
-        try {
-          logger.info(`Repairing configuration for agent: ${agent}`);
-          const agentConfig = this.getDefaultAgentConfig();
-          await this.saveAgentConfig(agent, agentConfig);
-          logger.info(`Agent ${agent} configuration repaired successfully`);
-        } catch (agentErr) {
-          logger.error(
-            `Failed to repair agent ${agent} configuration: ${agentErr.message}`
-          );
-        }
-      }
-    } catch (scanErr) {
-      logger.error(
-        `Failed to scan for agent configurations: ${scanErr.message}`
-      );
-    }
-
-    logger.info("Configuration repair process completed");
+    logger.info("Emergency repair completed");
     return true;
   }
 }
