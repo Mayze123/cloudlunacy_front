@@ -8,7 +8,6 @@
 
 const express = require("express");
 const router = express.Router();
-const jwt = require("jsonwebtoken");
 
 // Import controllers
 const agentController = require("./controllers/agentController.js");
@@ -19,7 +18,7 @@ const healthController = require("./controllers/healthController");
 
 // Import middleware
 const authMiddleware = require("./middleware/auth");
-const errorMiddleware = require("./middleware/errorHandler");
+const { errorMiddleware } = require("../utils/errorHandler");
 
 // Define routes
 
@@ -29,18 +28,15 @@ const errorMiddleware = require("./middleware/errorHandler");
 router.post("/agent/register", agentController.registerAgent);
 router.post("/agent/authenticate", agentController.authenticateAgent);
 router.get(
-  "/agent/list",
+  "/agent/:agentId/status",
   authMiddleware.requireAuth,
-  agentController.listAgents
-);
-router.get(
-  "/agent/:agentId",
-  authMiddleware.requireAuth,
-  agentController.getAgentDetails
+  authMiddleware.requireAgentAccess(),
+  agentController.getAgentStatus
 );
 router.delete(
   "/agent/:agentId",
   authMiddleware.requireAuth,
+  authMiddleware.requireAgentAccess(),
   agentController.deregisterAgent
 );
 
@@ -52,19 +48,11 @@ router.post(
   authMiddleware.requireAuth,
   appController.addApp
 );
-router.post(
-  "/app/:agentId",
-  authMiddleware.requireAuth,
-  appController.registerApp
-);
-router.get(
-  "/app/:agentId/list",
-  authMiddleware.requireAuth,
-  appController.listApps
-);
+router.get("/app", authMiddleware.requireAuth, appController.listApps);
 router.delete(
   "/app/:agentId/:subdomain",
   authMiddleware.requireAuth,
+  authMiddleware.requireAgentAccess(),
   appController.removeApp
 );
 
@@ -77,35 +65,27 @@ router.post(
   mongodbController.addSubdomain
 );
 router.get(
-  "/mongodb/list",
+  "/mongodb",
   authMiddleware.requireAuth,
-  mongodbController.listMongoDbs
+  mongodbController.listSubdomains
 );
-router.post(
+router.delete(
   "/mongodb/:agentId",
   authMiddleware.requireAuth,
-  mongodbController.registerMongoDB
+  authMiddleware.requireAgentAccess(),
+  mongodbController.removeSubdomain
 );
 router.get(
   "/mongodb/:agentId/test",
   authMiddleware.requireAuth,
+  authMiddleware.requireAgentAccess(),
   mongodbController.testMongoDB
 );
 
 /**
- * Configuration Management Routes
+ * Configuration Routes
  */
 router.get("/config", authMiddleware.requireAuth, configController.getConfig);
-router.get(
-  "/frontdoor/config",
-  authMiddleware.requireAuth,
-  configController.getTraefikConfig
-);
-router.post(
-  "/config/repair",
-  authMiddleware.requireAuth,
-  configController.repairConfig
-);
 router.get(
   "/config/:agentId",
   authMiddleware.requireAuth,
@@ -133,6 +113,6 @@ router.post(
 );
 
 // Apply error handling middleware
-router.use(errorMiddleware.handleErrors);
+router.use(errorMiddleware);
 
 module.exports = router;

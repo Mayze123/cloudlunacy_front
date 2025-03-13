@@ -5,9 +5,9 @@
  * Handles JWT authentication and authorization for API routes.
  */
 
-const jwt = require("jsonwebtoken");
+const coreServices = require("../../services/core");
 const logger = require("../../utils/logger").getLogger("auth");
-const agentManager = require("../../services/agentManager");
+const { AppError } = require("../../utils/errorHandler");
 
 /**
  * Require authentication for protected routes
@@ -29,38 +29,22 @@ exports.requireAuth = (req, res, next) => {
       return res.status(401).json({ error: "Invalid Authorization format" });
     }
 
+    // Verify token
     try {
-      // Verify and decode token
-      const decoded = agentManager.verifyAgentToken(token);
-
-      // Add user info to request
+      const decoded = coreServices.agent.verifyAgentToken(token);
       req.user = decoded;
-
-      logger.debug("Authentication successful", {
-        user: {
-          agentId: decoded.agentId,
-          role: decoded.role,
-        },
-        path: req.path,
-      });
-
       next();
     } catch (err) {
-      logger.warn("Invalid token", {
-        error: err.message,
-        path: req.path,
-      });
-
-      return res.status(403).json({ error: "Invalid token" });
+      logger.warn(`Invalid token: ${err.message}`, { path: req.path });
+      return res.status(401).json({ error: "Invalid token" });
     }
   } catch (err) {
-    logger.error("Authentication error", {
+    logger.error(`Authentication error: ${err.message}`, {
       error: err.message,
       stack: err.stack,
       path: req.path,
     });
-
-    return res.status(500).json({ error: "Authentication failed" });
+    return res.status(500).json({ error: "Authentication error" });
   }
 };
 

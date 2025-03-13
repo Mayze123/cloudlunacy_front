@@ -1,255 +1,101 @@
 // utils/pathResolver.js
 /**
- * Path Resolver
+ * Path Resolver Utility
  *
- * Handles environment-specific path resolution
+ * Provides consistent path resolution across the application.
  */
 
-const fs = require("fs");
 const path = require("path");
-const os = require("os");
+const fs = require("fs").promises;
+const logger = require("./logger").getLogger("pathResolver");
 
-class PathResolver {
-  constructor() {
-    // Default paths
-    this.defaultPaths = {
-      base: "/opt/cloudlunacy_front",
-      config: "/opt/cloudlunacy_front/config",
-      agents: "/opt/cloudlunacy_front/config/agents",
-      dynamic: "/opt/cloudlunacy_front/config/dynamic.yml",
-      docker: "/opt/cloudlunacy_front/docker-compose.yml",
-    };
+/**
+ * Resolve a path based on environment and availability
+ * @param {string} relativePath - The relative path to resolve
+ * @param {Array<string>} basePaths - Potential base paths to check
+ * @returns {Promise<string>} - The resolved absolute path
+ */
+async function resolvePath(relativePath, basePaths = []) {
+  // Default base paths to check
+  const defaultBasePaths = [
+    process.env.APP_BASE_PATH || "/app",
+    process.env.CONFIG_BASE_PATH || "/app/config",
+    "/opt/cloudlunacy_front",
+    "/opt/cloudlunacy_front/node-app",
+    process.cwd(),
+  ];
 
-    // Container paths
-    this.containerPaths = {
-      base: "/app",
-      config: "/app/config",
-      agents: "/app/config/agents",
-      dynamic: "/app/config/dynamic.yml",
-      docker: "/app/docker-compose.yml",
-    };
+  // Combine with provided base paths
+  const allBasePaths = [...basePaths, ...defaultBasePaths];
 
-    // Fallback paths
-    this.fallbackPaths = {
-      base: "/etc/traefik",
-      config: "/etc/traefik",
-      agents: "/etc/traefik/agents",
-      dynamic: "/etc/traefik/dynamic.yml",
-      docker: null,
-    };
-
-    // Environment detection
-    this.isDocker = false;
-    this.isInitialized = false;
-  }
-
-  /**
-   * Initialize the path resolver
-   */
-  async initialize() {
-    if (this.isInitialized) {
-      return this;
-    }
-
-    // Detect if running in Docker
-    this.isDocker = this.checkIfRunningInDocker();
-
-    // Find appropriate docker-compose path
-    if (!this.isDocker) {
-      await this.findDockerComposePath();
-    }
-
-    this.isInitialized = true;
-    return this;
-  }
-
-  /**
-   * Check if running in Docker container
-   */
-  checkIfRunningInDocker() {
+  // Try each base path
+  for (const basePath of allBasePaths) {
+    const fullPath = path.join(basePath, relativePath);
     try {
-      return (
-        fs.existsSync("/.dockerenv") ||
-        (fs.existsSync("/proc/1/cgroup") &&
-          fs.readFileSync("/proc/1/cgroup", "utf8").includes("docker"))
+      await fs.access(fullPath);
+      logger.debug(`Resolved path ${relativePath} to ${fullPath}`);
+      return fullPath;
+    } catch (err) {
+      // Path doesn't exist or isn't accessible, try next
+      continue;
+    }
+  }
+
+  // If we get here, no valid path was found
+  logger.warn(`Could not resolve path: ${relativePath}`);
+
+  // Return the default path as fallback
+  const defaultPath = path.join(defaultBasePaths[0], relativePath);
+  logger.debug(`Using default path: ${defaultPath}`);
+  return defaultPath;
+}
+
+/**
+ * Ensure a directory exists, creating it if necessary
+ * @param {string} dirPath - The directory path to ensure
+ * @returns {Promise<boolean>} - True if directory exists or was created
+ */
+async function ensureDirectory(dirPath) {
+  try {
+    await fs.access(dirPath);
+    return true;
+  } catch (err) {
+    try {
+      await fs.mkdir(dirPath, { recursive: true });
+      logger.info(`Created directory: ${dirPath}`);
+      return true;
+    } catch (mkdirErr) {
+      logger.error(
+        `Failed to create directory ${dirPath}: ${mkdirErr.message}`
       );
-    } catch (err) {
-      // If error, assume not in Docker
-      return false;
-    }
-  }
-
-  /**
-   * Find docker-compose.yml path
-   */
-  async findDockerComposePath() {
-    const possiblePaths = [
-      this.defaultPaths.docker,
-      path.join(process.cwd(), "docker-compose.yml"),
-      path.join(path.dirname(process.cwd()), "docker-compose.yml"),
-      "/opt/cloudlunacy_front/docker-compose.yml",
-      "/docker-compose.yml",
-    ];
-
-    for (const filePath of possiblePaths) {
-      try {
-        if (fs.existsSync(filePath)) {
-          this.defaultPaths.docker = filePath;
-          return filePath;
-        }
-      } catch (err) {
-        // Ignore errors and try next path
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * Resolve base directory path
-   */
-  resolveBasePath() {
-    if (this.isDocker) {
-      return this.containerPaths.base;
-    }
-
-    // Check environment variable
-    if (process.env.BASE_DIR) {
-      return process.env.BASE_DIR;
-    }
-
-    // Check if default path exists
-    try {
-      if (fs.existsSync(this.defaultPaths.base)) {
-        return this.defaultPaths.base;
-      }
-    } catch (err) {
-      // Ignore error
-    }
-
-    // Use current directory as fallback
-    return process.cwd();
-  }
-
-  /**
-   * Resolve config directory path
-   */
-  resolveConfigPath() {
-    if (this.isDocker) {
-      return this.containerPaths.config;
-    }
-
-    // Check environment variable
-    if (process.env.CONFIG_DIR) {
-      return process.env.CONFIG_DIR;
-    }
-
-    // Use base path + config
-    const basePath = this.resolveBasePath();
-    return path.join(basePath, "config");
-  }
-
-  /**
-   * Resolve agents directory path
-   */
-  resolveAgentsPath() {
-    if (this.isDocker) {
-      return this.containerPaths.agents;
-    }
-
-    // Check environment variable
-    if (process.env.AGENTS_CONFIG_DIR) {
-      return process.env.AGENTS_CONFIG_DIR;
-    }
-
-    // Use config path + agents
-    const configPath = this.resolveConfigPath();
-    return path.join(configPath, "agents");
-  }
-
-  /**
-   * Resolve dynamic config path
-   */
-  resolveDynamicConfigPath() {
-    if (this.isDocker) {
-      return this.containerPaths.dynamic;
-    }
-
-    // Check environment variable
-    if (process.env.DYNAMIC_CONFIG_PATH) {
-      return process.env.DYNAMIC_CONFIG_PATH;
-    }
-
-    // Use config path + dynamic.yml
-    const configPath = this.resolveConfigPath();
-    return path.join(configPath, "dynamic.yml");
-  }
-
-  /**
-   * Resolve docker-compose path
-   */
-  resolveDockerComposePath() {
-    if (this.isDocker) {
-      return this.containerPaths.docker;
-    }
-
-    // Check environment variable
-    if (process.env.DOCKER_COMPOSE_PATH) {
-      return process.env.DOCKER_COMPOSE_PATH;
-    }
-
-    // Return found path
-    return this.defaultPaths.docker;
-  }
-
-  /**
-   * Resolve fallback paths if primary paths fail
-   */
-  resolveFallbackPaths() {
-    return this.fallbackPaths;
-  }
-
-  /**
-   * Resolve path for a relative path
-   */
-  resolveRelativePath(relativePath) {
-    const basePath = this.resolveBasePath();
-    return path.isAbsolute(relativePath)
-      ? relativePath
-      : path.join(basePath, relativePath);
-  }
-
-  /**
-   * Check if a path exists and is accessible
-   */
-  async checkPathAccess(filePath) {
-    try {
-      await fs.promises.access(filePath, fs.constants.F_OK);
-      return true;
-    } catch (err) {
-      return false;
-    }
-  }
-
-  /**
-   * Check if a path is writable
-   */
-  async checkPathWritable(filePath) {
-    try {
-      // Try to create the directory if it doesn't exist
-      const dirPath = path.dirname(filePath);
-      await fs.promises.mkdir(dirPath, { recursive: true });
-
-      // Try to write a test file
-      const testPath = path.join(dirPath, ".write-test");
-      await fs.promises.writeFile(testPath, "test");
-      await fs.promises.unlink(testPath);
-
-      return true;
-    } catch (err) {
       return false;
     }
   }
 }
 
-module.exports = new PathResolver();
+/**
+ * Check if a path is writable
+ * @param {string} filePath - The path to check
+ * @returns {Promise<boolean>} - True if path is writable
+ */
+async function isWritable(filePath) {
+  try {
+    // Try to write a temporary file
+    const testPath = path.join(
+      path.dirname(filePath),
+      `.write-test-${Date.now()}`
+    );
+    await fs.writeFile(testPath, "test");
+    await fs.unlink(testPath);
+    return true;
+  } catch (err) {
+    logger.warn(`Path ${filePath} is not writable: ${err.message}`);
+    return false;
+  }
+}
+
+module.exports = {
+  resolvePath,
+  ensureDirectory,
+  isWritable,
+};

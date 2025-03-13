@@ -5,8 +5,9 @@
  * Handles MongoDB subdomain registration and management.
  */
 
-const mongodbManager = require("../../services/mongodbManager");
+const coreServices = require("../../services/core");
 const logger = require("../../utils/logger").getLogger("mongodbController");
+const { AppError, asyncHandler } = require("../../utils/errorHandler");
 
 /**
  * Add a new MongoDB subdomain
@@ -18,134 +19,116 @@ const logger = require("../../utils/logger").getLogger("mongodbController");
  *   "agentId": "optional-agent-id"
  * }
  */
-exports.addSubdomain = async (req, res, next) => {
-  try {
-    const { subdomain, targetIp, agentId } = req.body;
+exports.addSubdomain = asyncHandler(async (req, res) => {
+  const { subdomain, targetIp, agentId } = req.body;
 
-    if (!subdomain || !targetIp) {
-      return res.status(400).json({
-        error:
-          "Missing required parameters: subdomain and targetIp are required",
-        received: { subdomain, targetIp },
-      });
-    }
-
-    logger.info(`Adding MongoDB subdomain ${subdomain} for IP ${targetIp}`);
-
-    // Use the effective agent ID from either request or JWT
-    const effectiveAgentId = agentId || req.user.agentId || "default";
-
-    // Register MongoDB for the agent
-    const result = await mongodbManager.registerAgent(
-      effectiveAgentId,
-      targetIp
+  if (!subdomain || !targetIp) {
+    throw new AppError(
+      "Missing required parameters: subdomain and targetIp are required",
+      400,
+      { received: { subdomain, targetIp } }
     );
-
-    res.status(200).json({
-      success: true,
-      message: "MongoDB subdomain added successfully with TLS passthrough.",
-      details: {
-        domain: result.mongodbUrl,
-        targetIp: targetIp,
-        agentId: effectiveAgentId,
-      },
-    });
-  } catch (err) {
-    logger.error(`Failed to add MongoDB subdomain: ${err.message}`, {
-      error: err.message,
-      stack: err.stack,
-      subdomain: req.body.subdomain,
-      targetIp: req.body.targetIp,
-    });
-
-    next(err);
   }
-};
+
+  logger.info(
+    `Adding MongoDB subdomain ${subdomain} with target IP ${targetIp}`
+  );
+
+  // Register the MongoDB subdomain
+  const result = await coreServices.mongodb.registerAgent(
+    agentId || subdomain,
+    targetIp
+  );
+
+  res.status(201).json({
+    success: true,
+    subdomain: agentId || subdomain,
+    domain: `${agentId || subdomain}.${coreServices.mongodb.mongoDomain}`,
+    targetIp,
+  });
+});
 
 /**
- * List all registered MongoDB instances
+ * List all MongoDB subdomains
  *
- * GET /api/mongodb/list
+ * GET /api/mongodb
  */
-exports.listMongoDbs = async (req, res, next) => {
-  try {
-    logger.info("Listing all MongoDB registrations");
+exports.listSubdomains = asyncHandler(async (req, res) => {
+  logger.info("Listing all MongoDB subdomains");
 
-    // Get the list of MongoDB registrations
-    const result = await mongodbManager.listRegisteredAgents();
+  // Get all TCP routes from cache
+  const routes = Array.from(coreServices.routing.routeCache.entries())
+    .filter(([key]) => key.startsWith("tcp:") && !key.includes("catchall"))
+    .map(([_, route]) => ({
+      name: route.name,
+      domain: extractDomainFromTcpRule(route.rule),
+      targetIp: extractTargetFromService(route.service),
+      lastUpdated: route.lastUpdated,
+    }));
 
-    res.status(200).json(result);
-  } catch (err) {
-    logger.error(`Failed to list MongoDB registrations: ${err.message}`, {
-      error: err.message,
-      stack: err.stack,
-    });
-
-    next(err);
-  }
-};
+  res.status(200).json({
+    success: true,
+    count: routes.length,
+    subdomains: routes,
+  });
+});
 
 /**
- * Register MongoDB for an agent
+ * Remove a MongoDB subdomain
  *
- * POST /api/mongodb/:agentId
- * {
- *   "targetIp": "1.2.3.4"
- * }
+ * DELETE /api/mongodb/:agentId
  */
-exports.registerMongoDB = async (req, res, next) => {
-  try {
-    const { agentId } = req.params;
-    const { targetIp } = req.body;
+exports.removeSubdomain = asyncHandler(async (req, res) => {
+  const { agentId } = req.params;
 
-    if (!targetIp) {
-      return res.status(400).json({
-        error: "Target IP is required",
-      });
-    }
+  logger.info(`Removing MongoDB subdomain for agent ${agentId}`);
 
-    logger.info(`Registering MongoDB for agent ${agentId} with IP ${targetIp}`);
+  // Remove the MongoDB subdomain
+  const result = await coreServices.mongodb.deregisterAgent(agentId);
 
-    // Register MongoDB for the agent
-    const result = await mongodbManager.registerAgent(agentId, targetIp);
-
-    res.status(200).json(result);
-  } catch (err) {
-    logger.error(`Failed to register MongoDB for agent: ${err.message}`, {
-      error: err.message,
-      stack: err.stack,
-      agentId: req.params.agentId,
-      targetIp: req.body.targetIp,
-    });
-
-    next(err);
+  if (!result.success) {
+    throw new AppError(
+      `Failed to remove MongoDB subdomain for agent ${agentId}`,
+      404
+    );
   }
-};
+
+  res.status(200).json(result);
+});
 
 /**
  * Test MongoDB connectivity
  *
  * GET /api/mongodb/:agentId/test
  */
-exports.testMongoDB = async (req, res, next) => {
-  try {
-    const { agentId } = req.params;
-    const { targetIp } = req.query;
+exports.testMongoDB = asyncHandler(async (req, res) => {
+  const { agentId } = req.params;
+  const { targetIp } = req.query;
 
-    logger.info(`Testing MongoDB connectivity for agent ${agentId}`);
+  logger.info(`Testing MongoDB connectivity for agent ${agentId}`);
 
-    // Test MongoDB connectivity
-    const result = await mongodbManager.testConnection(agentId, targetIp);
+  // Test MongoDB connectivity
+  const result = await coreServices.mongodb.testConnection(agentId, targetIp);
 
-    res.status(200).json(result);
-  } catch (err) {
-    logger.error(`Failed to test MongoDB connectivity: ${err.message}`, {
-      error: err.message,
-      stack: err.stack,
-      agentId: req.params.agentId,
-      targetIp: req.query.targetIp,
-    });
+  res.status(200).json(result);
+});
 
-    next(err);
-  }
-};
+// Helper function to extract domain from TCP rule
+function extractDomainFromTcpRule(rule) {
+  if (!rule) return null;
+
+  const match = rule.match(/HostSNI\(`([^`]+)`\)/);
+  return match ? match[1] : null;
+}
+
+// Helper function to extract target IP from service
+function extractTargetFromService(serviceName) {
+  if (!serviceName) return null;
+
+  const service =
+    coreServices.config.configs.main?.tcp?.services?.[serviceName];
+  if (!service?.loadBalancer?.servers?.length) return null;
+
+  const address = service.loadBalancer.servers[0].address;
+  return address ? address.split(":")[0] : null;
+}

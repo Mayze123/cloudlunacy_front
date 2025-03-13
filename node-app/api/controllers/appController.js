@@ -5,9 +5,9 @@
  * Handles app registration and management.
  */
 
-const routingManager = require("../../services/routingManager");
-const agentManager = require("../../services/agentManager");
+const coreServices = require("../../services/core");
 const logger = require("../../utils/logger").getLogger("appController");
+const { AppError, asyncHandler } = require("../../utils/errorHandler");
 
 /**
  * Add a new app
@@ -20,150 +20,90 @@ const logger = require("../../utils/logger").getLogger("appController");
  *   "protocol": "optional-protocol"
  * }
  */
-exports.addApp = async (req, res, next) => {
-  try {
-    const { subdomain, targetUrl, agentId, protocol } = req.body;
+exports.addApp = asyncHandler(async (req, res) => {
+  const { subdomain, targetUrl, agentId, protocol } = req.body;
 
-    if (!subdomain || !targetUrl) {
-      return res.status(400).json({
-        error:
-          "Missing required parameters: subdomain and targetUrl are required",
-        received: { subdomain, targetUrl },
-      });
-    }
-
-    logger.info(`Adding app ${subdomain} for target ${targetUrl}`);
-
-    // Use the effective agent ID from either request or JWT
-    const effectiveAgentId = agentId || req.user.agentId || "default";
-
-    // Add HTTP route
-    const result = await routingManager.addHttpRoute(
-      effectiveAgentId,
-      subdomain,
-      targetUrl,
-      { protocol: protocol || "http" }
+  if (!subdomain || !targetUrl) {
+    throw new AppError(
+      "Missing required parameters: subdomain and targetUrl are required",
+      400,
+      { received: { subdomain, targetUrl } }
     );
-
-    res.status(200).json({
-      success: true,
-      message: "App subdomain added successfully.",
-      details: {
-        domain: result.domain,
-        targetUrl: result.targetUrl,
-        agentId: effectiveAgentId,
-      },
-    });
-  } catch (err) {
-    logger.error(`Failed to add app: ${err.message}`, {
-      error: err.message,
-      stack: err.stack,
-      subdomain: req.body.subdomain,
-      targetUrl: req.body.targetUrl,
-    });
-
-    next(err);
   }
-};
+
+  logger.info(`Adding app ${subdomain} with target ${targetUrl}`);
+
+  // Add the app route
+  const result = await coreServices.routing.addHttpRoute(
+    agentId || "default",
+    subdomain,
+    targetUrl,
+    { protocol: protocol || "http" }
+  );
+
+  res.status(201).json(result);
+});
 
 /**
- * Register app for an agent
+ * List all apps
  *
- * POST /api/app/:agentId
- * {
- *   "subdomain": "myapp",
- *   "targetUrl": "http://1.2.3.4:8080",
- *   "protocol": "optional-protocol"
- * }
+ * GET /api/app
  */
-exports.registerApp = async (req, res, next) => {
-  try {
-    const { agentId } = req.params;
-    const { subdomain, targetUrl, protocol } = req.body;
+exports.listApps = asyncHandler(async (req, res) => {
+  logger.info("Listing all apps");
 
-    if (!subdomain || !targetUrl) {
-      return res.status(400).json({
-        error: "Subdomain and target URL are required",
-      });
-    }
+  // Get all HTTP routes from cache
+  const routes = Array.from(coreServices.routing.routeCache.entries())
+    .filter(([key]) => key.startsWith("http:"))
+    .map(([_, route]) => ({
+      name: route.name,
+      domain: route.domain || extractDomainFromRule(route.rule),
+      targetUrl: route.targetUrl || extractServiceFromConfig(route.service),
+      lastUpdated: route.lastUpdated,
+    }));
 
-    logger.info(
-      `Registering app ${subdomain} for agent ${agentId} with target ${targetUrl}`
-    );
-
-    // Register app for the agent
-    const result = await agentManager.registerApp(agentId, {
-      subdomain,
-      targetUrl,
-      protocol: protocol || "http",
-    });
-
-    res.status(200).json(result);
-  } catch (err) {
-    logger.error(`Failed to register app for agent: ${err.message}`, {
-      error: err.message,
-      stack: err.stack,
-      agentId: req.params.agentId,
-      subdomain: req.body.subdomain,
-      targetUrl: req.body.targetUrl,
-    });
-
-    next(err);
-  }
-};
-
-/**
- * List apps for an agent
- *
- * GET /api/app/:agentId/list
- */
-exports.listApps = async (req, res, next) => {
-  try {
-    const { agentId } = req.params;
-
-    logger.info(`Listing apps for agent ${agentId}`);
-
-    // Get the list of apps for the agent
-    const result = await routingManager.listRoutes({
-      agentId,
-      type: "http",
-    });
-
-    res.status(200).json(result);
-  } catch (err) {
-    logger.error(`Failed to list apps for agent: ${err.message}`, {
-      error: err.message,
-      stack: err.stack,
-      agentId: req.params.agentId,
-    });
-
-    next(err);
-  }
-};
+  res.status(200).json({
+    success: true,
+    count: routes.length,
+    apps: routes,
+  });
+});
 
 /**
  * Remove an app
  *
  * DELETE /api/app/:agentId/:subdomain
  */
-exports.removeApp = async (req, res, next) => {
-  try {
-    const { agentId, subdomain } = req.params;
+exports.removeApp = asyncHandler(async (req, res) => {
+  const { agentId, subdomain } = req.params;
 
-    logger.info(`Removing app ${subdomain} for agent ${agentId}`);
+  logger.info(`Removing app ${subdomain} for agent ${agentId}`);
 
-    // Remove the app
-    const result = await routingManager.removeRoute(agentId, subdomain, "http");
+  // Remove the app route
+  const result = await coreServices.routing.removeHttpRoute(agentId, subdomain);
 
-    res.status(200).json(result);
-  } catch (err) {
-    logger.error(`Failed to remove app: ${err.message}`, {
-      error: err.message,
-      stack: err.stack,
-      agentId: req.params.agentId,
-      subdomain: req.params.subdomain,
-    });
-
-    next(err);
+  if (!result.success) {
+    throw new AppError(`Failed to remove app ${subdomain}`, 404);
   }
-};
+
+  res.status(200).json(result);
+});
+
+// Helper function to extract domain from rule
+function extractDomainFromRule(rule) {
+  if (!rule) return null;
+
+  const match = rule.match(/Host\(`([^`]+)`\)/);
+  return match ? match[1] : null;
+}
+
+// Helper function to extract service URL from config
+function extractServiceFromConfig(serviceName) {
+  if (!serviceName) return null;
+
+  const service =
+    coreServices.config.configs.main?.http?.services?.[serviceName];
+  if (!service?.loadBalancer?.servers?.length) return null;
+
+  return service.loadBalancer.servers[0].url;
+}

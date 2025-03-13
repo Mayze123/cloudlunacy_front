@@ -11,14 +11,12 @@ const express = require("express");
 const morgan = require("morgan");
 const path = require("path");
 
-// Import services
-const configManager = require("./services/configManager");
-const mongodbManager = require("./services/mongodbManager");
-const agentManager = require("./services/agentManager");
-const routingManager = require("./services/routingManager");
+// Import core services
+const coreServices = require("./services/core");
 
 // Import utilities
 const logger = require("./utils/logger");
+const { errorMiddleware } = require("./utils/errorHandler");
 const appLogger = logger.getLogger("server");
 
 // Import API routes
@@ -45,69 +43,9 @@ app.get("/health", (req, res) => {
 app.use("/api", routes);
 
 // Error handler middleware
-app.use((err, req, res, next) => {
-  appLogger.error("Unhandled error", {
-    error: err.message,
-    stack: err.stack,
-    path: req.path,
-    method: req.method,
-  });
+app.use(errorMiddleware);
 
-  res.status(err.status || 500).json({
-    error: err.message || "Internal Server Error",
-  });
-});
-
-// Initialize services sequentially
-async function initializeServices() {
-  try {
-    appLogger.info("Initializing services...");
-
-    // Initialize config manager first
-    await configManager.initialize();
-    appLogger.info("Configuration manager initialized");
-
-    // Initialize MongoDB manager
-    await mongodbManager.initialize();
-    appLogger.info("MongoDB manager initialized");
-
-    // Initialize agent manager
-    await agentManager.initialize();
-    appLogger.info("Agent manager initialized");
-
-    // Initialize routing manager
-    await routingManager.initialize();
-    appLogger.info("Routing manager initialized");
-
-    appLogger.info("All services initialized successfully");
-    return true;
-  } catch (err) {
-    appLogger.error("Failed to initialize services", {
-      error: err.message,
-      stack: err.stack,
-    });
-
-    // Try to recover
-    appLogger.info("Attempting recovery...");
-
-    try {
-      // Repair configurations
-      await configManager.repairAllConfigurations();
-      appLogger.info("Configuration repaired successfully");
-
-      return true;
-    } catch (recoveryErr) {
-      appLogger.error("Recovery failed", {
-        error: recoveryErr.message,
-        stack: recoveryErr.stack,
-      });
-
-      return false;
-    }
-  }
-}
-
-// Setup graceful shutdown
+// Set up graceful shutdown handlers
 function setupGracefulShutdown(server) {
   // Handle SIGTERM signal (e.g., from Docker or Kubernetes)
   process.on("SIGTERM", () => {
@@ -132,15 +70,12 @@ function setupGracefulShutdown(server) {
 
   // Handle unhandled promise rejections
   process.on("unhandledRejection", (reason, promise) => {
-    appLogger.error("Unhandled Promise rejection:", {
-      reason: String(reason),
-      stack: reason instanceof Error ? reason.stack : undefined,
-    });
+    appLogger.error("Unhandled Promise rejection:", { reason });
     performGracefulShutdown(server);
   });
 }
 
-// Perform the actual graceful shutdown process
+// Perform graceful shutdown
 function performGracefulShutdown(server) {
   appLogger.info("Starting graceful shutdown...");
 
@@ -160,11 +95,13 @@ function performGracefulShutdown(server) {
 // Start the server
 async function startServer() {
   try {
-    // Initialize services
-    const initialized = await initializeServices();
+    // Initialize core services
+    const initialized = await coreServices.initialize();
 
     if (!initialized) {
-      appLogger.error("Failed to initialize services, server will not start");
+      appLogger.error(
+        "Failed to initialize core services, server will not start"
+      );
       process.exit(1);
     }
 
@@ -176,56 +113,45 @@ async function startServer() {
     // Setup graceful shutdown handlers
     setupGracefulShutdown(server);
 
-    // Log system info
-    appLogger.info(`Environment: ${process.env.NODE_ENV || "development"}`);
-    appLogger.info(
-      `App Domain: ${process.env.APP_DOMAIN || "apps.cloudlunacy.uk"}`
-    );
-    appLogger.info(
-      `MongoDB Domain: ${process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk"}`
-    );
+    // Schedule periodic health checks
+    const HEALTH_CHECK_INTERVAL = parseInt(
+      process.env.HEALTH_CHECK_INTERVAL || "900000",
+      10
+    ); // Default: 15 minutes
+    setInterval(async () => {
+      try {
+        appLogger.debug("Running periodic health check");
 
-    // Set up periodic health checks
-    scheduleHealthChecks();
+        // Check MongoDB port
+        const mongoConfigOk = await coreServices.mongodb.checkMongoDBPort();
+        if (!mongoConfigOk) {
+          appLogger.warn(
+            "MongoDB port not correctly exposed, attempting to fix"
+          );
+          await coreServices.mongodb.ensureMongoDBPort();
+        }
+
+        appLogger.debug("Health check completed");
+      } catch (err) {
+        appLogger.error("Error during periodic health check", {
+          error: err.message,
+          stack: err.stack,
+        });
+      }
+    }, HEALTH_CHECK_INTERVAL);
+
+    appLogger.info(
+      `Scheduled health checks every ${HEALTH_CHECK_INTERVAL / 60000} minutes`
+    );
 
     return server;
   } catch (err) {
-    appLogger.error("Failed to start server", {
+    appLogger.error("Failed to start server:", {
       error: err.message,
       stack: err.stack,
     });
     process.exit(1);
   }
-}
-
-// Schedule periodic health checks
-function scheduleHealthChecks() {
-  const HEALTH_CHECK_INTERVAL =
-    process.env.HEALTH_CHECK_INTERVAL || 5 * 60 * 1000; // 5 minutes
-
-  setInterval(async () => {
-    try {
-      appLogger.debug("Running periodic health check");
-
-      // Check MongoDB configuration
-      const mongoConfigOk = await mongodbManager.checkMongoDBPort();
-      if (!mongoConfigOk) {
-        appLogger.warn("MongoDB port not correctly exposed, attempting to fix");
-        await mongodbManager.ensureMongoDBPort();
-      }
-
-      appLogger.debug("Health check completed");
-    } catch (err) {
-      appLogger.error("Error during periodic health check", {
-        error: err.message,
-        stack: err.stack,
-      });
-    }
-  }, HEALTH_CHECK_INTERVAL);
-
-  appLogger.info(
-    `Scheduled health checks every ${HEALTH_CHECK_INTERVAL / 60000} minutes`
-  );
 }
 
 // Start the server if this file is run directly
