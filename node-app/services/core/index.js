@@ -12,22 +12,25 @@ const mongodbService = require("./mongodbService");
 const logger = require("../../utils/logger").getLogger("coreServices");
 
 /**
- * Initialize all core services in the correct order
+ * Initialize all core services
  */
 async function initialize() {
   try {
     logger.info("Initializing core services...");
 
-    // Initialize in dependency order
+    // Initialize config first as other services depend on it
     await configService.initialize();
     logger.info("Configuration service initialized");
 
+    // Initialize MongoDB service
     await mongodbService.initialize();
     logger.info("MongoDB service initialized");
 
+    // Initialize agent service
     await agentService.initialize();
     logger.info("Agent service initialized");
 
+    // Initialize routing service
     await routingService.initialize();
     logger.info("Routing service initialized");
 
@@ -38,7 +41,7 @@ async function initialize() {
       error: err.message,
       stack: err.stack,
     });
-    throw err;
+    return false;
   }
 }
 

@@ -191,6 +191,51 @@ class AgentService {
       return false;
     }
   }
+
+  /**
+   * Load registered agents from configuration
+   */
+  async loadRegisteredAgents() {
+    try {
+      logger.info("Loading registered agents");
+
+      // Clear existing registrations
+      this.registeredAgents.clear();
+
+      // Get agent configs
+      const agentConfigs = await configService.listAgents();
+
+      for (const agentId of agentConfigs) {
+        try {
+          // Load agent config
+          const agentConfig = await configService.loadAgentConfig(agentId);
+
+          if (agentConfig && agentConfig.registration) {
+            // Add to registry
+            this.registeredAgents.set(agentId, {
+              targetIp: agentConfig.registration.targetIp,
+              registeredAt:
+                agentConfig.registration.registeredAt ||
+                new Date().toISOString(),
+              lastSeen:
+                agentConfig.registration.lastSeen || new Date().toISOString(),
+            });
+
+            logger.debug(`Loaded agent: ${agentId}`);
+          }
+        } catch (err) {
+          logger.warn(`Failed to load agent ${agentId}: ${err.message}`);
+        }
+      }
+
+      logger.info(`Loaded ${this.registeredAgents.size} agents`);
+    } catch (err) {
+      logger.error(`Failed to load registered agents: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+      });
+    }
+  }
 }
 
 module.exports = new AgentService();

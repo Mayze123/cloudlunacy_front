@@ -483,6 +483,70 @@ class MongoDBService {
       socket.connect(port, host);
     });
   }
+
+  /**
+   * Load registered agents from configuration
+   */
+  async loadRegisteredAgents() {
+    try {
+      logger.info("Loading registered MongoDB agents");
+
+      // Clear existing registrations
+      this.registeredAgents.clear();
+
+      // Make sure config is loaded
+      if (!configService.configs.main) {
+        logger.warn(
+          "Main configuration not loaded, cannot load MongoDB agents"
+        );
+        return;
+      }
+
+      // Get main config
+      const mainConfig = configService.configs.main;
+      if (!mainConfig || !mainConfig.tcp || !mainConfig.tcp.routers) {
+        logger.warn("No TCP routers found in configuration");
+        return;
+      }
+
+      // Find MongoDB routers
+      const mongoRouters = Object.entries(mainConfig.tcp.routers).filter(
+        ([name]) => name.startsWith("mongodb-") && name !== "mongodb-catchall"
+      );
+
+      for (const [name, router] of mongoRouters) {
+        // Extract agent ID from router name
+        const agentId = name.replace("mongodb-", "");
+
+        // Extract target IP from service
+        const serviceName = router.service;
+        const service = mainConfig.tcp.services?.[serviceName];
+
+        if (service?.loadBalancer?.servers?.length) {
+          const address = service.loadBalancer.servers[0].address;
+          const targetIp = address ? address.split(":")[0] : null;
+
+          if (targetIp) {
+            // Add to registry
+            this.registeredAgents.set(agentId, {
+              targetIp,
+              registeredAt: new Date().toISOString(),
+            });
+
+            logger.debug(`Loaded MongoDB agent: ${agentId} -> ${targetIp}`);
+          }
+        }
+      }
+
+      logger.info(`Loaded ${this.registeredAgents.size} MongoDB agents`);
+    } catch (err) {
+      logger.error(`Failed to load registered agents: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+      });
+      // Don't throw, just log the error
+    }
+  }
 }
 
 module.exports = new MongoDBService();

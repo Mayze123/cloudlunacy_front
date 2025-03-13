@@ -79,55 +79,24 @@ exports.getHealth = async (req, res, next) => {
  *
  * GET /api/health/mongo
  */
-exports.checkMongo = async (req, res, next) => {
-  try {
-    logger.info("Checking MongoDB health");
+exports.checkMongo = asyncHandler(async (req, res) => {
+  logger.info("Checking MongoDB health");
 
-    // Check MongoDB port
-    const portOk = await mongodbManager.checkMongoDBPort();
+  // Check MongoDB port
+  const portActive = await coreServices.mongodb.checkMongoDBPort();
 
-    // If port is not OK, try to fix it
-    if (!portOk) {
-      logger.warn("MongoDB port not properly exposed, attempting to fix");
-      await mongodbManager.ensureMongoDBPort();
-    }
+  // Check MongoDB configuration
+  const configValid = await checkMongoDBConfig();
 
-    // Get MongoDB registrations
-    const registrations = await mongodbManager.listRegisteredAgents();
-
-    // Test connectivity to the first few agents
-    const connectivityTests = [];
-    const maxTests = Math.min(3, registrations.registrations?.length || 0);
-
-    for (let i = 0; i < maxTests; i++) {
-      const reg = registrations.registrations[i];
-      const test = await mongodbManager.testConnection(
-        reg.agentId,
-        reg.targetAddress?.split(":")[0]
-      );
-      connectivityTests.push({
-        agentId: reg.agentId,
-        domain: reg.mongoUrl,
-        targetAddress: reg.targetAddress,
-        result: test,
-      });
-    }
-
-    res.status(200).json({
-      success: true,
-      portOk,
-      registrationsCount: registrations.registrations?.length || 0,
-      connectivityTests,
-    });
-  } catch (err) {
-    logger.error(`MongoDB health check failed: ${err.message}`, {
-      error: err.message,
-      stack: err.stack,
-    });
-
-    next(err);
-  }
-};
+  res.status(200).json({
+    success: true,
+    portActive,
+    configValid,
+    message: portActive
+      ? "MongoDB port is active"
+      : "MongoDB port is not active",
+  });
+});
 
 /**
  * Check Traefik health
