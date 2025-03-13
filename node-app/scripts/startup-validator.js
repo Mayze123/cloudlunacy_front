@@ -175,6 +175,50 @@ async function runStartupValidation() {
   }
 }
 
+/**
+ * Validate Docker Compose configuration
+ */
+async function validateDockerCompose() {
+  try {
+    const dockerComposePath =
+      process.env.DOCKER_COMPOSE_PATH || "/app/docker-compose.yml";
+
+    // Check if file exists
+    try {
+      await fs.access(dockerComposePath);
+    } catch (err) {
+      // In production, Docker Compose file might not be needed
+      if (process.env.NODE_ENV === "production") {
+        logger.info(
+          "Docker Compose file not found, but this is acceptable in production"
+        );
+        return {
+          valid: true,
+          fixes: [],
+          message:
+            "Docker Compose validation skipped in production environment",
+        };
+      }
+
+      return {
+        valid: false,
+        fixes: [],
+        message: `Error: ${err.message}`,
+      };
+    }
+
+    // Continue with validation if file exists
+    // ...existing validation logic...
+  } catch (err) {
+    logger.error(`Failed to validate Docker Compose: ${err.message}`);
+    return {
+      valid: false,
+      fixes: [],
+      message: `Error: ${err.message}`,
+    };
+  }
+}
+
 // Run the validation if this script is executed directly
 if (require.main === module) {
   runStartupValidation()

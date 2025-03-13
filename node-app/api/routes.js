@@ -111,6 +111,11 @@ router.post(
   authMiddleware.requireAuth,
   healthController.repair
 );
+router.get(
+  "/health/mongodb-listener",
+  authMiddleware.requireAuth,
+  healthController.checkMongoDBListener
+);
 
 // Apply error handling middleware
 router.use(errorMiddleware);

@@ -11,6 +11,8 @@ const dns = require("dns").promises;
 const Docker = require("dockerode");
 const configService = require("./configService");
 const logger = require("../../utils/logger").getLogger("mongodbService");
+const fs = require("fs").promises;
+const yaml = require("yaml");
 
 const execAsync = promisify(exec);
 const docker = new Docker({ socketPath: "/var/run/docker.sock" });
@@ -39,11 +41,18 @@ class MongoDBService {
       const portExposed = await this.checkMongoDBPort();
       if (!portExposed) {
         logger.warn("MongoDB port not exposed in Traefik, attempting to fix");
-        await this.ensureMongoDBPort();
+        const entrypointFixed = await this.ensureMongoDBEntrypoint();
+
+        if (!entrypointFixed) {
+          logger.error("Failed to configure MongoDB entrypoint in Traefik");
+          // Continue initialization but log the error
+        } else {
+          logger.info("Successfully configured MongoDB entrypoint");
+        }
       }
 
-      // Ensure MongoDB catchall router exists
-      await this.ensureMongoDBEntrypoint();
+      // Load registered agents from configuration
+      await this.loadRegisteredAgents();
 
       this.initialized = true;
       logger.info("MongoDB service initialized successfully");
@@ -108,9 +117,66 @@ class MongoDBService {
    * Ensure MongoDB entrypoint is configured in Traefik
    */
   async ensureMongoDBEntrypoint() {
-    // Implementation details...
-    logger.info("Ensuring MongoDB entrypoint is properly configured");
-    return true;
+    try {
+      logger.info("Ensuring MongoDB entrypoint is properly configured");
+
+      // Check if the static config file exists
+      const traefikConfigPath = configService.paths.traefik;
+      let traefikConfig;
+
+      try {
+        const configData = await fs.readFile(traefikConfigPath, "utf8");
+        traefikConfig = yaml.parse(configData);
+      } catch (err) {
+        logger.error(`Failed to read Traefik config: ${err.message}`);
+        return false;
+      }
+
+      // Check if MongoDB entrypoint is defined
+      if (!traefikConfig.entryPoints || !traefikConfig.entryPoints.mongodb) {
+        logger.warn(
+          "MongoDB entrypoint not found in Traefik config, adding it"
+        );
+
+        // Add MongoDB entrypoint
+        if (!traefikConfig.entryPoints) {
+          traefikConfig.entryPoints = {};
+        }
+
+        traefikConfig.entryPoints.mongodb = {
+          address: ":27017",
+          transport: {
+            respondingTimeouts: {
+              idleTimeout: "1h",
+            },
+          },
+        };
+
+        // Save updated config
+        await fs.writeFile(traefikConfigPath, yaml.stringify(traefikConfig));
+
+        // Restart Traefik to apply changes
+        await this.restartTraefik();
+      }
+
+      // Verify the entrypoint is working by checking if port 27017 is listening
+      const portActive = await this.checkMongoDBPort();
+      if (!portActive) {
+        logger.error(
+          "MongoDB port is still not active after configuration update"
+        );
+        return false;
+      }
+
+      logger.info("MongoDB entrypoint is properly configured");
+      return true;
+    } catch (err) {
+      logger.error(`Failed to ensure MongoDB entrypoint: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+      });
+      return false;
+    }
   }
 
   /**

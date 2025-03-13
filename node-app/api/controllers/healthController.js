@@ -13,6 +13,8 @@ const logger = require("../../utils/logger").getLogger("healthController");
 const { exec } = require("child_process");
 const { promisify } = require("util");
 const execAsync = promisify(exec);
+const { asyncHandler } = require("express-async-handler");
+const coreServices = require("../../services/core");
 
 /**
  * Get system health
@@ -339,3 +341,56 @@ async function checkPort(port) {
     return false;
   }
 }
+
+/**
+ * Check MongoDB listener status
+ *
+ * GET /api/health/mongodb-listener
+ */
+exports.checkMongoDBListener = asyncHandler(async (req, res) => {
+  logger.info("Checking MongoDB listener status");
+
+  // Check if MongoDB port is active
+  const portActive = await coreServices.mongodb.checkMongoDBPort();
+
+  if (!portActive) {
+    logger.warn("MongoDB listener is not active, attempting to fix");
+
+    // Try to fix the issue
+    const fixed = await coreServices.mongodb.ensureMongoDBEntrypoint();
+
+    if (!fixed) {
+      return res.status(500).json({
+        success: false,
+        status: "error",
+        message: "MongoDB listener is not active and could not be fixed",
+        details: {
+          port: 27017,
+          active: false,
+          fixed: false,
+        },
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      status: "fixed",
+      message: "MongoDB listener was not active but has been fixed",
+      details: {
+        port: 27017,
+        active: true,
+        fixed: true,
+      },
+    });
+  }
+
+  return res.status(200).json({
+    success: true,
+    status: "ok",
+    message: "MongoDB listener is active",
+    details: {
+      port: 27017,
+      active: true,
+    },
+  });
+});
