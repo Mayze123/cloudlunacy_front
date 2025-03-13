@@ -9,7 +9,6 @@
 const fs = require("fs").promises;
 const path = require("path");
 const yaml = require("yaml");
-const Joi = require("joi");
 const pathResolver = require("../utils/pathResolver");
 const logger = require("../utils/logger").getLogger("configManager");
 
