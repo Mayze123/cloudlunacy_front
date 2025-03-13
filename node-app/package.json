@@ -2,10 +2,10 @@
   "name": "cloudlunacy_front",
   "version": "1.0.0",
   "description": "A front server for dynamically managing Traefik routes for MongoDB Docker instances.",
-  "main": "frontdoorService.js",
+  "main": "server.js",
   "scripts": {
     "start": "node start.js",
-    "dev": "nodemon frontdoorService.js"
+    "dev": "nodemon server.js"
   },
   "dependencies": {
     "axios": "^1.8.3",

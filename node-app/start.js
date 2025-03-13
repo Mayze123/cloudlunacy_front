@@ -167,15 +167,13 @@ async function main() {
       path.join(process.cwd(), "scripts"),
     ];
 
-    // Find the main service file
-    const servicePath = findFile("frontdoorService.js", possibleDirs);
+    // Find the main service file - UPDATED to look for server.js
+    const servicePath = findFile("server.js", possibleDirs);
     if (!servicePath) {
-      throw new Error(
-        "Could not find frontdoorService.js in any of the usual locations"
-      );
+      throw new Error("Could not find server.js in any of the usual locations");
     }
 
-    log(`Found frontdoorService.js at ${servicePath}`);
+    log(`Found server.js at ${servicePath}`);
 
     // Check if file is readable
     try {

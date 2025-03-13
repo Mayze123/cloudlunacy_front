@@ -21,8 +21,8 @@ if [ -f "/app/start.js" ]; then
 elif [ -f "/opt/cloudlunacy_front/node-app/start.js" ]; then
   echo "Found start.js in /opt/cloudlunacy_front/node-app, using it"
   exec node /opt/cloudlunacy_front/node-app/start.js
-elif [ -f "/app/frontdoorService.js" ]; then
-  echo "No start.js found, falling back to frontdoorService.js"
+elif [ -f "/app/server.js" ]; then
+  echo "Found server.js, using it as entry point"
   
   # First try to run startup-validator.js if it exists
   if [ -f "/app/scripts/startup-validator.js" ]; then
@@ -31,9 +31,9 @@ elif [ -f "/app/frontdoorService.js" ]; then
   fi
   
   # Then start the main service
-  exec node /app/frontdoorService.js
+  exec node /app/server.js
 else
-  echo "ERROR: Could not find start.js or frontdoorService.js"
+  echo "ERROR: Could not find start.js or server.js"
   echo "Available files in /app:"
   ls -la /app
   exit 1
