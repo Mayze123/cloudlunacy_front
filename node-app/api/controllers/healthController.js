@@ -6,73 +6,56 @@
  */
 
 const os = require("os");
-const mongodbManager = require("../../services/mongodbManager");
-const configManager = require("../../services/configManager");
-const routingManager = require("../../services/routingManager");
-const logger = require("../../utils/logger").getLogger("healthController");
 const { exec } = require("child_process");
 const { promisify } = require("util");
 const execAsync = promisify(exec);
-const { asyncHandler } = require("express-async-handler");
 const coreServices = require("../../services/core");
+const logger = require("../../utils/logger").getLogger("healthController");
+const { AppError, asyncHandler } = require("../../utils/errorHandler");
 
 /**
  * Get system health
  *
  * GET /api/health
  */
-exports.getHealth = async (req, res, next) => {
-  try {
-    logger.debug("Health check requested");
+exports.getHealth = asyncHandler(async (req, res) => {
+  logger.debug("Health check requested");
 
-    // Collect system health metrics
-    const health = {
-      status: "ok",
-      uptime: process.uptime(),
-      timestamp: new Date().toISOString(),
-      memory: process.memoryUsage(),
-      system: {
-        platform: os.platform(),
-        arch: os.arch(),
-        release: os.release(),
-        hostname: os.hostname(),
-        uptime: os.uptime(),
-        loadavg: os.loadavg(),
-        totalmem: os.totalmem(),
-        freemem: os.freemem(),
-        cpus: os.cpus().length,
-      },
-    };
+  // Collect system health metrics
+  const health = {
+    status: "ok",
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
+    memory: process.memoryUsage(),
+    system: {
+      platform: os.platform(),
+      arch: os.arch(),
+      release: os.release(),
+      hostname: os.hostname(),
+      uptime: os.uptime(),
+      loadavg: os.loadavg(),
+      totalmem: os.totalmem(),
+      freemem: os.freemem(),
+      cpus: os.cpus().length,
+    },
+  };
 
-    // Check service health
-    const services = {
-      mongodb: await checkMongoDBHealth(),
-      traefik: await checkTraefikHealth(),
-      configManager: configManager.initialized,
-      routingManager: routingManager.initialized,
-    };
+  // Check service health
+  const services = {
+    mongodb: await checkMongoDBHealth(),
+    traefik: await checkTraefikHealth(),
+    configManager: coreServices.config.initialized,
+    routingManager: coreServices.routing.initialized,
+  };
 
-    // Always return 200 for Docker healthcheck
-    res.status(200).json({
-      status: "ok",
-      service: "cloudlunacy-front",
-      health,
-      services,
-    });
-  } catch (err) {
-    logger.error(`Health check failed: ${err.message}`, {
-      error: err.message,
-      stack: err.stack,
-    });
-
-    // Still return 200 for Docker healthcheck
-    res.status(200).json({
-      status: "warning",
-      service: "cloudlunacy-front",
-      error: err.message,
-    });
-  }
-};
+  // Always return 200 for Docker healthcheck
+  res.status(200).json({
+    status: "ok",
+    service: "cloudlunacy-front",
+    health,
+    services,
+  });
+});
 
 /**
  * Check MongoDB health
@@ -103,94 +86,99 @@ exports.checkMongo = asyncHandler(async (req, res) => {
  *
  * GET /api/health/traefik
  */
-exports.checkTraefik = async (req, res, next) => {
-  try {
-    logger.info("Checking Traefik health");
+exports.checkTraefik = asyncHandler(async (req, res) => {
+  logger.info("Checking Traefik health");
 
-    // Check Traefik container status
-    const containerStatus = await checkTraefikContainer();
+  // Check Traefik container status
+  const containerStatus = await checkTraefikContainer();
 
-    // Check if port 8081 (dashboard) is accessible
-    const dashboardAccessible = await checkPort(8081);
+  // Check if port 8081 (dashboard) is accessible
+  const dashboardAccessible = await checkPort(8081);
 
-    // Check if dynamic configuration is valid
-    const configValid = await checkTraefikConfig();
+  // Check if dynamic configuration is valid
+  const configValid = await checkTraefikConfig();
 
-    res.status(200).json({
-      success: true,
-      containerStatus,
-      dashboardAccessible,
-      configValid,
-    });
-  } catch (err) {
-    logger.error(`Traefik health check failed: ${err.message}`, {
-      error: err.message,
-      stack: err.stack,
-    });
-
-    next(err);
-  }
-};
+  res.status(200).json({
+    success: true,
+    containerStatus,
+    dashboardAccessible,
+    configValid,
+  });
+});
 
 /**
  * Repair system
  *
  * POST /api/health/repair
  */
-exports.repair = async (req, res, next) => {
-  try {
-    logger.info("Repairing system");
+exports.repair = asyncHandler(async (req, res) => {
+  logger.info("Repairing system");
 
-    // Repair configurations
-    await configManager.repairAllConfigurations();
+  // Repair core services
+  const servicesRepaired = await coreServices.repair();
 
-    // Ensure MongoDB port is properly configured
-    const mongodbPortFixed = await mongodbManager.ensureMongoDBPort();
+  // Restart Traefik
+  const traefikRestarted = await restartTraefik();
 
-    // Ensure MongoDB entrypoint is properly configured
-    const mongodbEntrypointFixed =
-      await mongodbManager.ensureMongoDBEntrypoint();
+  res.status(200).json({
+    success: true,
+    servicesRepaired,
+    traefikRestarted,
+    message: "System repair completed",
+  });
+});
 
-    // Restart Traefik to apply changes
-    const traefikRestarted = await mongodbManager.restartTraefik();
-
-    res.status(200).json({
-      success: true,
-      message: "System repaired successfully",
-      details: {
-        configRepaired: true,
-        mongodbPortFixed,
-        mongodbEntrypointFixed,
-        traefikRestarted,
-      },
-    });
-  } catch (err) {
-    logger.error(`System repair failed: ${err.message}`, {
-      error: err.message,
-      stack: err.stack,
-    });
-
-    next(err);
-  }
-};
+// Helper functions
 
 /**
  * Check MongoDB health
  */
 async function checkMongoDBHealth() {
   try {
-    // Check MongoDB port
-    const portOk = await mongodbManager.checkMongoDBPort();
+    // Check if MongoDB port is active
+    const portActive = await coreServices.mongodb.checkMongoDBPort();
 
     return {
-      status: portOk ? "ok" : "error",
-      portExposed: portOk,
+      portActive,
+      status: portActive ? "active" : "inactive",
     };
   } catch (err) {
-    logger.error(`MongoDB health check failed: ${err.message}`);
+    logger.error(`Failed to check MongoDB health: ${err.message}`);
+    return {
+      portActive: false,
+      status: "error",
+      error: err.message,
+    };
+  }
+}
+
+/**
+ * Check MongoDB configuration
+ */
+async function checkMongoDBConfig() {
+  try {
+    // Make sure config is initialized
+    await coreServices.config.initialize();
+
+    // Get main config
+    const mainConfig = coreServices.config.configs.main;
+
+    // Check if MongoDB catchall router exists
+    const catchallExists = mainConfig?.tcp?.routers?.["mongodb-catchall"];
+
+    // Check if MongoDB catchall service exists
+    const serviceExists =
+      mainConfig?.tcp?.services?.["mongodb-catchall-service"];
 
     return {
-      status: "error",
+      valid: catchallExists && serviceExists,
+      catchallExists: !!catchallExists,
+      serviceExists: !!serviceExists,
+    };
+  } catch (err) {
+    logger.error(`Failed to check MongoDB config: ${err.message}`);
+    return {
+      valid: false,
       error: err.message,
     };
   }
@@ -201,17 +189,18 @@ async function checkMongoDBHealth() {
  */
 async function checkTraefikHealth() {
   try {
-    // Check Traefik container status
+    // Check if Traefik container is running
     const containerStatus = await checkTraefikContainer();
 
     return {
-      status: containerStatus.running ? "ok" : "error",
-      containerInfo: containerStatus,
+      containerRunning: containerStatus.running,
+      status: containerStatus.running ? "active" : "inactive",
+      containerDetails: containerStatus,
     };
   } catch (err) {
-    logger.error(`Traefik health check failed: ${err.message}`);
-
+    logger.error(`Failed to check Traefik health: ${err.message}`);
     return {
+      containerRunning: false,
       status: "error",
       error: err.message,
     };
@@ -258,10 +247,10 @@ async function checkTraefikContainer() {
 async function checkTraefikConfig() {
   try {
     // Make sure config manager is initialized
-    await configManager.initialize();
+    await coreServices.config.initialize();
 
     // Check if config has required sections
-    const config = configManager.configs.main;
+    const config = coreServices.config.configs.main;
 
     const httpValid =
       config &&
@@ -307,6 +296,20 @@ async function checkPort(port) {
 
     return stdout !== "failed" && stdout !== "";
   } catch (err) {
+    return false;
+  }
+}
+
+/**
+ * Restart Traefik container
+ */
+async function restartTraefik() {
+  try {
+    logger.info("Restarting Traefik container");
+    await execAsync("docker restart traefik");
+    return true;
+  } catch (err) {
+    logger.error(`Failed to restart Traefik: ${err.message}`);
     return false;
   }
 }
