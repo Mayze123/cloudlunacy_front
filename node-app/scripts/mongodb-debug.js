@@ -349,6 +349,34 @@ async function getAgentIp(agentId) {
 }
 
 /**
+ * Add this function to test direct connection to the agent
+ */
+async function testDirectConnection(agentId) {
+  try {
+    // Get agent IP
+    const agentIp = await getAgentIp(agentId);
+    if (!agentIp) {
+      error(`Could not find IP for agent ${agentId}`);
+      return false;
+    }
+
+    info(`Testing direct connection to MongoDB at ${agentIp}:27017`);
+    const connected = await testTcpConnection(agentIp, 27017);
+
+    if (connected) {
+      success(`Direct connection to MongoDB at ${agentIp}:27017 successful`);
+    } else {
+      error(`Direct connection to MongoDB at ${agentIp}:27017 failed`);
+    }
+
+    return connected;
+  } catch (err) {
+    error(`Error testing direct connection: ${err.message}`);
+    return false;
+  }
+}
+
+/**
  * Comprehensive MongoDB connection diagnostics
  */
 async function diagnoseMongoDBConnection(connectionString) {

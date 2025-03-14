@@ -16,6 +16,12 @@ entryPoints:
     transport:
       respondingTimeouts:
         idleTimeout: "1h"
+    http:
+      tls:
+        options:
+          default:
+            minVersion: "VersionTLS12"
+            sniStrict: true
 
 # API and dashboard configuration
 api:

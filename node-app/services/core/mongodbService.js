@@ -241,11 +241,17 @@ class MongoDBService {
         registeredAt: new Date().toISOString(),
       });
 
+      // Build connection URL with TLS parameters
+      const mongodbUrl = `mongodb://${agentId}.${this.mongoDomain}:27017`;
+      const connectionString = `mongodb://username:password@${agentId}.${this.mongoDomain}:27017/admin?ssl=true&tlsAllowInvalidCertificates=true`;
+
       return {
         success: true,
         agentId,
-        mongodbUrl: `mongodb://${agentId}.${this.mongoDomain}:27017`,
+        mongodbUrl,
+        connectionString,
         targetIp,
+        tlsEnabled: true,
       };
     } catch (err) {
       logger.error(
