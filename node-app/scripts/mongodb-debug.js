@@ -19,7 +19,17 @@ const fs = require("fs").promises;
 const path = require("path");
 const net = require("net");
 const dns = require("dns").promises;
-const chalk = require("chalk"); // For colored output
+
+// Simple colored output without chalk
+const chalk = {
+  green: (text) => `\x1b[32m${text}\x1b[0m`,
+  red: (text) => `\x1b[31m${text}\x1b[0m`,
+  yellow: (text) => `\x1b[33m${text}\x1b[0m`,
+  blue: (text) => `\x1b[34m${text}\x1b[0m`,
+  bold: {
+    white: (text) => `\x1b[1m\x1b[37m${text}\x1b[0m`,
+  },
+};
 
 // Configuration
 const CONFIG = {
@@ -40,28 +50,28 @@ const CONFIG = {
  * Print success message
  */
 function success(message) {
-  console.log(chalk.green(`✓ ${message}`));
+  console.log(chalk.green(message));
 }
 
 /**
  * Print warning message
  */
 function warning(message) {
-  console.log(chalk.yellow(`⚠ ${message}`));
+  console.log(chalk.yellow(message));
 }
 
 /**
  * Print error message
  */
 function error(message) {
-  console.log(chalk.red(`✗ ${message}`));
+  console.log(chalk.red(message));
 }
 
 /**
  * Print info message
  */
 function info(message) {
-  console.log(chalk.blue(`ℹ ${message}`));
+  console.log(chalk.blue(message));
 }
 
 /**
