@@ -68,16 +68,14 @@ certificatesResolvers:
       httpChallenge:
         entryPoint: "web"
 
-  # Add a wildcard certificate resolver for MongoDB
-  mongoResolver:
-    acme:
-      email: "m.taibou.i@gmail.com"
-      storage: "/traefik-certs/mongo-acme.json"
-      dnsChallenge:
-        provider: "cloudflare"
-        resolvers:
-          - "1.1.1.1:53"
-          - "8.8.8.8:53"
+# Certificate resolver for MongoDB
+mongoResolver:
+  acme:
+    email: "m.taibou.i@gmail.com"
+    storage: "/traefik-certs/mongo-acme.json"
+    dnsChallenge:
+      provider: "cloudflare"
+      delayBeforeCheck: 90
 # Disable tracing since it's causing errors
 # tracing:
 #   serviceName: "traefik"
