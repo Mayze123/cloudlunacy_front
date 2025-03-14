@@ -180,56 +180,56 @@ class MongoDBService {
   }
 
   /**
-   * Register a new MongoDB agent
+   * Register a new agent for MongoDB access
    */
   async registerAgent(agentId, targetIp) {
     try {
+      if (!this.initialized) {
+        await this.initialize();
+      }
+
       logger.info(`Registering MongoDB agent ${agentId} with IP ${targetIp}`);
 
       // Validate inputs
-      if (!agentId || !targetIp) {
-        throw new Error("Agent ID and target IP are required");
-      }
-
-      // Make sure config is loaded
-      if (!configService.configs.main) {
-        await configService.loadMainConfig();
+      if (!this.validateInputs(agentId, targetIp)) {
+        throw new Error("Invalid agent ID or target IP");
       }
 
       // Get main config
       const mainConfig = configService.configs.main;
+      if (!mainConfig) {
+        throw new Error("Main configuration not loaded");
+      }
 
-      // Create router name and service name
-      const routerName = `mongodb-${agentId}`;
-      const serviceName = `${routerName}-service`;
-
-      // Add router to TCP routers
+      // Ensure tcp section exists
       if (!mainConfig.tcp) {
         mainConfig.tcp = { routers: {}, services: {} };
       }
-
       if (!mainConfig.tcp.routers) {
         mainConfig.tcp.routers = {};
       }
+      if (!mainConfig.tcp.services) {
+        mainConfig.tcp.services = {};
+      }
 
-      // Configure router with TLS passthrough
+      // Create router name
+      const routerName = `mongodb-${agentId}`;
+      const serviceName = `${routerName}-service`;
+
+      // Create router with proper TLS passthrough
       mainConfig.tcp.routers[routerName] = {
         rule: `HostSNI(\`${agentId}.${this.mongoDomain}\`)`,
         service: serviceName,
         entryPoints: ["mongodb"],
         tls: {
-          passthrough: true, // Ensure TLS passthrough is enabled
+          passthrough: true,
         },
       };
 
-      // Add service to TCP services
-      if (!mainConfig.tcp.services) {
-        mainConfig.tcp.services = {};
-      }
-
+      // Create service
       mainConfig.tcp.services[serviceName] = {
         loadBalancer: {
-          servers: [{ address: `${targetIp}:${this.portNumber}` }],
+          servers: [{ address: `${targetIp}:27017` }],
         },
       };
 
@@ -242,12 +242,13 @@ class MongoDBService {
         registeredAt: new Date().toISOString(),
       });
 
-      logger.info(`Successfully registered MongoDB agent ${agentId}`);
+      // Generate MongoDB URL
+      const mongodbUrl = `${agentId}.${this.mongoDomain}`;
 
       return {
         success: true,
         agentId,
-        domain: `${agentId}.${this.mongoDomain}`,
+        mongodbUrl,
         targetIp,
       };
     } catch (err) {

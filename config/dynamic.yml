@@ -33,7 +33,8 @@ tcp:
       entryPoints:
         - "mongodb"
       service: "mongodb-catchall-service"
-      tls: {} # Use default certificate
+      tls:
+        passthrough: true
 
   services:
     mongodb-catchall-service:
