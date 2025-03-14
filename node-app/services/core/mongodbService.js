@@ -222,10 +222,7 @@ class MongoDBService {
         rule: `HostSNI(\`${agentId}.${this.mongoDomain}\`)`,
         service: `${routerName}-service`,
         entryPoints: ["mongodb"],
-        tls: {
-          // Use the certificate resolver instead of passthrough
-          certResolver: "mongoResolver",
-        },
+        tls: {}, // Use default certificate resolver
       };
 
       // Create service
