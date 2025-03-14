@@ -546,6 +546,78 @@ class MongoDBService {
       // Don't throw, just log the error
     }
   }
+
+  /**
+   * Fix MongoDB connection issues by ensuring proper TLS configuration
+   */
+  async fixMongoDBConnections() {
+    try {
+      logger.info("Fixing MongoDB connection issues");
+
+      // Get main config
+      const mainConfig = configService.configs.main;
+      if (!mainConfig) {
+        logger.error("Main configuration not loaded");
+        return false;
+      }
+
+      // Ensure tcp section exists
+      if (!mainConfig.tcp) {
+        mainConfig.tcp = { routers: {}, services: {} };
+      }
+      if (!mainConfig.tcp.routers) {
+        mainConfig.tcp.routers = {};
+      }
+      if (!mainConfig.tcp.services) {
+        mainConfig.tcp.services = {};
+      }
+
+      // Fix catchall router
+      if (mainConfig.tcp.routers["mongodb-catchall"]) {
+        logger.info("Fixing MongoDB catchall router");
+        mainConfig.tcp.routers["mongodb-catchall"].tls = {
+          passthrough: true,
+        };
+      }
+
+      // Fix all agent routers
+      let fixedCount = 0;
+      for (const [routerName, router] of Object.entries(
+        mainConfig.tcp.routers
+      )) {
+        if (
+          routerName.startsWith("mongodb-") &&
+          routerName !== "mongodb-catchall"
+        ) {
+          if (!router.tls || router.tls.passthrough !== true) {
+            logger.info(`Fixing TLS configuration for router ${routerName}`);
+            router.tls = { passthrough: true };
+            fixedCount++;
+          }
+        }
+      }
+
+      // Save updated config
+      await configService.saveConfig(configService.paths.dynamic, mainConfig);
+
+      if (fixedCount > 0) {
+        logger.info(
+          `Fixed TLS configuration for ${fixedCount} MongoDB routers`
+        );
+
+        // Restart Traefik to apply changes
+        await this.restartTraefik();
+      }
+
+      return true;
+    } catch (err) {
+      logger.error(`Failed to fix MongoDB connections: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+      });
+      return false;
+    }
+  }
 }
 
 module.exports = new MongoDBService();
