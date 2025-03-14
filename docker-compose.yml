@@ -20,7 +20,6 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./config:/etc/traefik
-      - ./config/agents:/etc/traefik/agents
       - ./traefik-certs:/traefik-certs
       - /var/log/traefik:/var/log/traefik
     env_file:
@@ -61,12 +60,10 @@ services:
       - JWT_SECRET=${JWT_SECRET}
       - MONGO_DOMAIN=${MONGO_DOMAIN:-mongodb.cloudlunacy.uk}
       - APP_DOMAIN=${APP_DOMAIN:-apps.cloudlunacy.uk}
-      - DYNAMIC_CONFIG_PATH=/config/dynamic.yml
+      - DYNAMIC_CONFIG_PATH=/app/config/dynamic.yml
       - TRAEFIK_CONTAINER=traefik
     volumes:
-      - ./config:/config
       - ./config:/app/config
-      - ./config:/opt/cloudlunacy_front/config
       - ./node-app/scripts:/app/scripts
       - /var/run/docker.sock:/var/run/docker.sock:ro
     healthcheck:
