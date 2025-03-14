@@ -42,6 +42,10 @@ exports.registerAgent = asyncHandler(async (req, res) => {
     token: result.token,
     mongodbUrl: result.mongodbUrl,
     targetIp,
+    tlsEnabled: true,
+    connectionString: `mongodb://username:password@${agentId}.${
+      process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk"
+    }:27017/admin?ssl=true&tlsAllowInvalidCertificates=true`,
   });
 });
 

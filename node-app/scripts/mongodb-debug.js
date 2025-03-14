@@ -103,6 +103,12 @@ function parseConnectionString(connectionString) {
       result.agentId = result.host.split(`.${CONFIG.mongoDomain}`)[0];
     }
 
+    // Check SSL parameters
+    if (result.params.ssl !== "true") {
+      warning("SSL is not enabled in the connection string");
+      info("For TLS connections, add 'ssl=true' to your connection string");
+    }
+
     return result;
   } catch (err) {
     error(`Failed to parse connection string: ${err.message}`);
@@ -464,7 +470,7 @@ async function diagnoseMongoDBConnection(connectionString) {
     info(`Register agent ${parsed.agentId}`);
   }
 
-  console.log("\nCorrected Connection String:");
+  console.log("\nCorrected Connection String with TLS:");
   console.log(
     chalk.green(
       `mongodb://${parsed.username || "username"}:${

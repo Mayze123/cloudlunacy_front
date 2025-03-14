@@ -217,13 +217,14 @@ class MongoDBService {
       // Create router name
       const routerName = `mongodb-${agentId}`;
 
-      // Create router
+      // Create router with TLS termination
       mainConfig.tcp.routers[routerName] = {
         rule: `HostSNI(\`${agentId}.${this.mongoDomain}\`)`,
         service: `${routerName}-service`,
         entryPoints: ["mongodb"],
         tls: {
-          passthrough: true,
+          // Use the certificate resolver instead of passthrough
+          certResolver: "mongoResolver",
         },
       };
 

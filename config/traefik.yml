@@ -13,6 +13,9 @@ entryPoints:
     address: ":8081"
   mongodb:
     address: ":27017"
+    transport:
+      respondingTimeouts:
+        idleTimeout: "1h"
 
 # API and dashboard configuration
 api:
@@ -56,7 +59,7 @@ providers:
     network: "traefik-network"
     swarmMode: false
 
-# Certificate resolver for HTTPS - Using HTTP challenge instead of DNS
+# Certificate resolver for HTTPS and MongoDB
 certificatesResolvers:
   letsencrypt:
     acme:
@@ -64,6 +67,17 @@ certificatesResolvers:
       storage: "/traefik-certs/acme.json"
       httpChallenge:
         entryPoint: "web"
+
+  # Add a wildcard certificate resolver for MongoDB
+  mongoResolver:
+    acme:
+      email: "m.taibou.i@gmail.com"
+      storage: "/traefik-certs/mongo-acme.json"
+      dnsChallenge:
+        provider: "cloudflare"
+        resolvers:
+          - "1.1.1.1:53"
+          - "8.8.8.8:53"
 # Disable tracing since it's causing errors
 # tracing:
 #   serviceName: "traefik"

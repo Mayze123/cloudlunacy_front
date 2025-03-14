@@ -34,7 +34,11 @@ tcp:
         - "mongodb"
       service: "mongodb-catchall-service"
       tls:
-        passthrough: true
+        certResolver: "mongoResolver"
+        domains:
+          - main: "mongodb.cloudlunacy.uk"
+            sans:
+              - "*.mongodb.cloudlunacy.uk"
 
   services:
     mongodb-catchall-service:
