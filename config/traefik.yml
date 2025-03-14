@@ -3,6 +3,13 @@ global:
   checkNewVersion: false
   sendAnonymousUsage: false
 
+# TLS options
+tls:
+  options:
+    default:
+      minVersion: "VersionTLS12"
+      sniStrict: true
+
 # Entry points definition
 entryPoints:
   web:
@@ -16,12 +23,6 @@ entryPoints:
     transport:
       respondingTimeouts:
         idleTimeout: "1h"
-    http:
-      tls:
-        options:
-          default:
-            minVersion: "VersionTLS12"
-            sniStrict: true
 
 # API and dashboard configuration
 api:
