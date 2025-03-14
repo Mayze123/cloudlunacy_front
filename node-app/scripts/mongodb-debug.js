@@ -477,7 +477,7 @@ async function diagnoseMongoDBConnection(connectionString) {
     }
   }
 
-  // Final recommendations
+  //  Final recommendations
   section("Recommendations");
 
   if (!parsed.params.ssl || !parsed.params.tlsAllowInvalidCertificates) {
