@@ -78,7 +78,7 @@ function info(message) {
  * Print section header
  */
 function section(title) {
-  console.log(chalk.bold.white(`\n=== ${title} ===`));
+  console.log(`\n=== ${title} ===`);
 }
 
 /**

@@ -180,55 +180,56 @@ class MongoDBService {
   }
 
   /**
-   * Register an agent for MongoDB access
+   * Register a new MongoDB agent
    */
   async registerAgent(agentId, targetIp) {
     try {
-      if (!this.initialized) {
-        await this.initialize();
-      }
-
-      logger.info(
-        `Registering MongoDB for agent ${agentId} with IP ${targetIp}`
-      );
+      logger.info(`Registering MongoDB agent ${agentId} with IP ${targetIp}`);
 
       // Validate inputs
-      if (!this.validateInputs(agentId, targetIp)) {
-        throw new Error("Invalid agent ID or target IP");
+      if (!agentId || !targetIp) {
+        throw new Error("Agent ID and target IP are required");
+      }
+
+      // Make sure config is loaded
+      if (!configService.configs.main) {
+        await configService.loadMainConfig();
       }
 
       // Get main config
       const mainConfig = configService.configs.main;
-      if (!mainConfig) {
-        throw new Error("Main configuration not loaded");
-      }
 
-      // Ensure tcp section exists
+      // Create router name and service name
+      const routerName = `mongodb-${agentId}`;
+      const serviceName = `${routerName}-service`;
+
+      // Add router to TCP routers
       if (!mainConfig.tcp) {
         mainConfig.tcp = { routers: {}, services: {} };
       }
+
       if (!mainConfig.tcp.routers) {
         mainConfig.tcp.routers = {};
       }
+
+      // Configure router with TLS passthrough
+      mainConfig.tcp.routers[routerName] = {
+        rule: `HostSNI(\`${agentId}.${this.mongoDomain}\`)`,
+        service: serviceName,
+        entryPoints: ["mongodb"],
+        tls: {
+          passthrough: true, // Ensure TLS passthrough is enabled
+        },
+      };
+
+      // Add service to TCP services
       if (!mainConfig.tcp.services) {
         mainConfig.tcp.services = {};
       }
 
-      // Create router name
-      const routerName = `mongodb-${agentId}`;
-
-      // Create router with TLS termination
-      mainConfig.tcp.routers[routerName] = {
-        rule: `HostSNI(\`${agentId}.${this.mongoDomain}\`)`,
-        service: `${routerName}-service`,
-        entryPoints: ["mongodb"],
-        tls: {}, // Use default certificate resolver
-      };
-
-      // Create service
-      mainConfig.tcp.services[`${routerName}-service`] = {
+      mainConfig.tcp.services[serviceName] = {
         loadBalancer: {
-          servers: [{ address: `${targetIp}:27017` }],
+          servers: [{ address: `${targetIp}:${this.portNumber}` }],
         },
       };
 
@@ -241,28 +242,21 @@ class MongoDBService {
         registeredAt: new Date().toISOString(),
       });
 
-      // Build connection URL with TLS parameters
-      const mongodbUrl = `mongodb://${agentId}.${this.mongoDomain}:27017`;
-      const connectionString = `mongodb://username:password@${agentId}.${this.mongoDomain}:27017/admin?ssl=true&tlsAllowInvalidCertificates=true`;
+      logger.info(`Successfully registered MongoDB agent ${agentId}`);
 
       return {
         success: true,
         agentId,
-        mongodbUrl,
-        connectionString,
+        domain: `${agentId}.${this.mongoDomain}`,
         targetIp,
-        tlsEnabled: true,
       };
     } catch (err) {
-      logger.error(
-        `Failed to register MongoDB for agent ${agentId}: ${err.message}`,
-        {
-          error: err.message,
-          stack: err.stack,
-          agentId,
-          targetIp,
-        }
-      );
+      logger.error(`Failed to register MongoDB agent: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+        agentId,
+        targetIp,
+      });
       throw err;
     }
   }
