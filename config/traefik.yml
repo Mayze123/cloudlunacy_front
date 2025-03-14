@@ -29,7 +29,7 @@ ping:
 
 # Log configuration
 log:
-  level: "INFO"
+  level: "DEBUG"
   filePath: "/var/log/traefik/traefik.log"
   format: "json"
 
@@ -59,23 +59,15 @@ providers:
     network: "traefik-network"
     swarmMode: false
 
-# Certificate resolver for HTTPS and MongoDB
+# Certificate resolvers
 certificatesResolvers:
-  letsencrypt:
+  default:
     acme:
       email: "m.taibou.i@gmail.com"
       storage: "/traefik-certs/acme.json"
-      httpChallenge:
-        entryPoint: "web"
-
-# Certificate resolver for MongoDB
-mongoResolver:
-  acme:
-    email: "m.taibou.i@gmail.com"
-    storage: "/traefik-certs/mongo-acme.json"
-    dnsChallenge:
-      provider: "cloudflare"
-      delayBeforeCheck: 90
+      dnsChallenge:
+        provider: "cloudflare"
+        delayBeforeCheck: 90
 # Disable tracing since it's causing errors
 # tracing:
 #   serviceName: "traefik"

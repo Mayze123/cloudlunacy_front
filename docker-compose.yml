@@ -29,7 +29,7 @@ services:
       - TZ=UTC
       - CF_EMAIL=${CF_EMAIL}
       - CF_API_KEY=${CF_API_KEY}
-      - CF_DNS_API_TOKEN=${CF_DNS_API_TOKEN}
+      - CLOUDFLARE_DNS_API_TOKEN=${CF_DNS_API_TOKEN}
       - CF_ZONE_API_TOKEN=${CF_ZONE_API_TOKEN}
     healthcheck:
       test: ["CMD", "traefik", "healthcheck"]

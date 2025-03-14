@@ -33,12 +33,7 @@ tcp:
       entryPoints:
         - "mongodb"
       service: "mongodb-catchall-service"
-      tls:
-        certResolver: "mongoResolver"
-        domains:
-          - main: "mongodb.cloudlunacy.uk"
-            sans:
-              - "*.mongodb.cloudlunacy.uk"
+      tls: {} # Use default certificate
 
   services:
     mongodb-catchall-service:
