@@ -9,13 +9,61 @@ require("dotenv").config();
 const fs = require("fs").promises;
 const yaml = require("yaml");
 const { execSync } = require("child_process");
+const path = require("path");
 
 // Configuration
 const AGENT_ID = process.argv[2] || "240922b9-4d3b-4692-8d1c-1884d423092a";
 const TARGET_IP = process.argv[3] || "128.140.53.203";
-const CONFIG_PATH =
-  process.env.DYNAMIC_CONFIG_PATH || "/app/config/dynamic.yml";
+
+// Try multiple possible config paths
+const CONFIG_PATHS = [
+  "/app/config/dynamic.yml",
+  "/etc/traefik/dynamic.yml",
+  "./config/dynamic.yml",
+  "/opt/cloudlunacy_front/config/dynamic.yml",
+  path.resolve(__dirname, "../../config/dynamic.yml"),
+];
+
 const MONGO_DOMAIN = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
+
+async function findConfigFile() {
+  for (const configPath of CONFIG_PATHS) {
+    try {
+      await fs.access(configPath);
+      console.log(`Found configuration at ${configPath}`);
+      return configPath;
+    } catch (err) {
+      // Continue to next path
+    }
+  }
+
+  // If we get here, no config file was found
+  console.error("Could not find dynamic.yml in any of the expected locations");
+  console.error("Creating a new configuration file in ./config/dynamic.yml");
+
+  // Create directory if it doesn't exist
+  await fs.mkdir("./config", { recursive: true });
+
+  // Create a basic config file
+  const basicConfig = {
+    http: {
+      routers: {},
+      middlewares: {},
+      services: {},
+    },
+    tcp: {
+      routers: {},
+      services: {},
+    },
+  };
+
+  await fs.writeFile(
+    "./config/dynamic.yml",
+    yaml.stringify(basicConfig),
+    "utf8"
+  );
+  return "./config/dynamic.yml";
+}
 
 async function main() {
   console.log(
@@ -23,8 +71,11 @@ async function main() {
   );
 
   try {
+    // Find or create config file
+    const configPath = await findConfigFile();
+
     // Read the current configuration
-    const configContent = await fs.readFile(CONFIG_PATH, "utf8");
+    const configContent = await fs.readFile(configPath, "utf8");
     const config = yaml.parse(configContent);
 
     // Ensure tcp section exists
@@ -32,12 +83,42 @@ async function main() {
       config.tcp = { routers: {}, services: {} };
     }
 
+    if (!config.tcp.routers) {
+      config.tcp.routers = {};
+    }
+
+    if (!config.tcp.services) {
+      config.tcp.services = {};
+    }
+
     // Create router name and service name
     const routerName = `mongodb-${AGENT_ID}`;
     const serviceName = `mongodb-${AGENT_ID}-service`;
     const domain = `${AGENT_ID}.${MONGO_DOMAIN}`;
 
+    // Add the catchall router if it doesn't exist
+    if (!config.tcp.routers["mongodb-catchall"]) {
+      console.log("Adding MongoDB catchall router");
+      config.tcp.routers["mongodb-catchall"] = {
+        rule: `HostSNI(\`*.${MONGO_DOMAIN}\`)`,
+        entryPoints: ["mongodb"],
+        service: "mongodb-catchall-service",
+        tls: {
+          passthrough: true,
+        },
+      };
+
+      if (!config.tcp.services["mongodb-catchall-service"]) {
+        config.tcp.services["mongodb-catchall-service"] = {
+          loadBalancer: {
+            servers: [],
+          },
+        };
+      }
+    }
+
     // Add the router
+    console.log(`Adding router for ${domain}`);
     config.tcp.routers[routerName] = {
       rule: `HostSNI(\`${domain}\`)`,
       entryPoints: ["mongodb"],
@@ -48,6 +129,7 @@ async function main() {
     };
 
     // Add the service
+    console.log(`Adding service for ${TARGET_IP}:27017`);
     config.tcp.services[serviceName] = {
       loadBalancer: {
         servers: [
@@ -59,13 +141,18 @@ async function main() {
     };
 
     // Write the updated configuration
-    await fs.writeFile(CONFIG_PATH, yaml.stringify(config), "utf8");
-    console.log(`Updated configuration at ${CONFIG_PATH}`);
+    await fs.writeFile(configPath, yaml.stringify(config), "utf8");
+    console.log(`Updated configuration at ${configPath}`);
 
     // Restart Traefik
     console.log("Restarting Traefik...");
-    execSync("docker restart traefik");
-    console.log("Traefik restarted");
+    try {
+      execSync("docker restart traefik");
+      console.log("Traefik restarted");
+    } catch (err) {
+      console.error(`Failed to restart Traefik: ${err.message}`);
+      console.log("You may need to restart Traefik manually");
+    }
 
     console.log(
       `\nMongoDB connection should now be available at: ${domain}:27017`
