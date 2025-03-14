@@ -121,6 +121,12 @@ router.get(
 /**
  * Certificate Routes
  */
+// Fix: Add optional middleware helper function if it doesn't exist
+if (!authMiddleware.optional) {
+  authMiddleware.optional = (req, res, next) => next();
+}
+
+// Fix: Ensure the controller method exists
 router.get(
   "/certificates/mongodb-ca",
   authMiddleware.optional,

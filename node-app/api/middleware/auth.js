@@ -49,6 +49,44 @@ exports.requireAuth = (req, res, next) => {
 };
 
 /**
+ * Optional authentication middleware
+ * Attempts to authenticate but continues even if authentication fails
+ */
+exports.optional = (req, res, next) => {
+  try {
+    // Get authorization header
+    const authHeader = req.headers.authorization;
+    if (!authHeader) {
+      // Continue without authentication
+      return next();
+    }
+
+    // Extract token
+    const [type, token] = authHeader.split(" ");
+
+    if (type !== "Bearer" || !token) {
+      // Continue without authentication
+      return next();
+    }
+
+    // Verify token
+    try {
+      const decoded = coreServices.agent.verifyAgentToken(token);
+      req.user = decoded;
+    } catch (err) {
+      // Continue without authentication
+      logger.debug(`Optional auth failed: ${err.message}`, { path: req.path });
+    }
+
+    next();
+  } catch (err) {
+    // Continue without authentication
+    logger.debug(`Optional auth error: ${err.message}`, { path: req.path });
+    next();
+  }
+};
+
+/**
  * Require a specific role
  */
 exports.requireRole = (role) => {
