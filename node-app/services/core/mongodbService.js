@@ -189,72 +189,47 @@ class MongoDBService {
         await this.initialize();
       }
 
-      logger.info(`Registering MongoDB agent ${agentId} with IP ${targetIp}`);
+      logger.info(
+        `Registering MongoDB agent ${agentId} with target IP ${targetIp}`
+      );
 
-      // Validate inputs
-      if (!this.validateInputs(agentId, targetIp)) {
-        throw new Error("Invalid agent ID or target IP");
-      }
-
-      // Get main config
-      const mainConfig = configService.configs.main;
-      if (!mainConfig) {
-        throw new Error("Main configuration not loaded");
-      }
-
-      // Ensure tcp section exists
-      if (!mainConfig.tcp) {
-        mainConfig.tcp = { routers: {}, services: {} };
-      }
-      if (!mainConfig.tcp.routers) {
-        mainConfig.tcp.routers = {};
-      }
-      if (!mainConfig.tcp.services) {
-        mainConfig.tcp.services = {};
-      }
-
-      // Create router name
+      // Create the router configuration
       const routerName = `mongodb-${agentId}`;
-      const serviceName = `${routerName}-service`;
+      const serviceName = `mongodb-${agentId}-service`;
+      const domain = `${agentId}.${this.mongoDomain}`;
 
-      // Instead of TLS passthrough, we'll handle TLS termination at Traefik
-      // This means the MongoDB server doesn't need TLS certificates
-      mainConfig.tcp.routers[routerName] = {
-        rule: `HostSNI(\`${agentId}.${this.mongoDomain}\`)`,
-        service: serviceName,
+      // Add the TCP router
+      const routerConfig = {
+        rule: `HostSNI(\`${domain}\`)`,
         entryPoints: ["mongodb"],
+        service: serviceName,
         tls: {
-          // Use Traefik's built-in certificate resolver
-          certResolver: "default",
+          passthrough: true,
         },
       };
 
-      // Create service
-      mainConfig.tcp.services[serviceName] = {
+      // Add the TCP service
+      const serviceConfig = {
         loadBalancer: {
-          servers: [{ address: `${targetIp}:27017` }],
+          servers: [
+            {
+              address: `${targetIp}:27017`,
+            },
+          ],
         },
       };
 
-      // Save updated config
-      await configService.saveConfig(configService.paths.dynamic, mainConfig);
+      // Update the configuration
+      await this.config.addTcpRouter(routerName, routerConfig);
+      await this.config.addTcpService(serviceName, serviceConfig);
 
-      // Add to registry
-      this.registeredAgents.set(agentId, {
-        targetIp,
-        registeredAt: new Date().toISOString(),
-        useTls: true,
-      });
-
-      // Generate MongoDB URL
-      const mongodbUrl = `${agentId}.${this.mongoDomain}`;
-
+      // Return the registration result
       return {
         success: true,
         agentId,
-        mongodbUrl,
+        domain,
         targetIp,
-        useTls: true,
+        mongodbUrl: `mongodb://${domain}:27017`,
       };
     } catch (err) {
       logger.error(`Failed to register MongoDB agent: ${err.message}`, {
@@ -263,7 +238,8 @@ class MongoDBService {
         agentId,
         targetIp,
       });
-      throw err;
+
+      throw new Error(`Failed to register MongoDB agent: ${err.message}`);
     }
   }
 
