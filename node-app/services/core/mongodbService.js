@@ -20,7 +20,7 @@ const docker = new Docker({ socketPath: "/var/run/docker.sock" });
 class MongoDBService {
   constructor() {
     this.mongoDomain = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
-    this.portNumber = 27017;
+    this.portNumber = 27018;
     this.connectTimeout = 5000; // 5 seconds
     this.initialized = false;
     this.registeredAgents = new Map(); // Store agent registrations
