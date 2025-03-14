@@ -13,6 +13,7 @@ const configService = require("./configService");
 const logger = require("../../utils/logger").getLogger("mongodbService");
 const fs = require("fs").promises;
 const yaml = require("yaml");
+const certificateService = require("./certificateService");
 
 const execAsync = promisify(exec);
 const docker = new Docker({ socketPath: "/var/run/docker.sock" });
@@ -180,9 +181,9 @@ class MongoDBService {
   }
 
   /**
-   * Register a new agent for MongoDB access
+   * Register a new agent for MongoDB access with TLS termination at Traefik
    */
-  async registerAgent(agentId, targetIp) {
+  async registerAgent(agentId, targetIp, options = {}) {
     try {
       if (!this.initialized) {
         await this.initialize();
@@ -216,13 +217,15 @@ class MongoDBService {
       const routerName = `mongodb-${agentId}`;
       const serviceName = `${routerName}-service`;
 
-      // Create router with proper TLS passthrough
+      // Instead of TLS passthrough, we'll handle TLS termination at Traefik
+      // This means the MongoDB server doesn't need TLS certificates
       mainConfig.tcp.routers[routerName] = {
         rule: `HostSNI(\`${agentId}.${this.mongoDomain}\`)`,
         service: serviceName,
         entryPoints: ["mongodb"],
         tls: {
-          passthrough: true,
+          // Use Traefik's built-in certificate resolver
+          certResolver: "default",
         },
       };
 
@@ -240,6 +243,7 @@ class MongoDBService {
       this.registeredAgents.set(agentId, {
         targetIp,
         registeredAt: new Date().toISOString(),
+        useTls: true,
       });
 
       // Generate MongoDB URL
@@ -250,6 +254,7 @@ class MongoDBService {
         agentId,
         mongodbUrl,
         targetIp,
+        useTls: true,
       };
     } catch (err) {
       logger.error(`Failed to register MongoDB agent: ${err.message}`, {

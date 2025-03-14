@@ -43,6 +43,7 @@ exports.registerAgent = asyncHandler(async (req, res) => {
     mongodbUrl: result.mongodbUrl,
     targetIp,
     tlsEnabled: true,
+    // TLS is handled by the front server, so clients should use SSL
     connectionString: `mongodb://username:password@${agentId}.${
       process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk"
     }:27017/admin?ssl=true&tlsAllowInvalidCertificates=true`,
@@ -128,3 +129,47 @@ exports.deregisterAgent = asyncHandler(async (req, res) => {
     message: `Agent ${agentId} deregistered successfully`,
   });
 });
+
+// Update the register method to include certificates
+exports.register = async (req, res) => {
+  try {
+    const { agentId } = req.body;
+    const agentIp = req.headers["x-agent-ip"] || req.ip;
+
+    // Validate inputs
+    if (!agentId) {
+      return res.status(400).json({
+        success: false,
+        message: "Agent ID is required",
+      });
+    }
+
+    // Register the agent
+    const result = await agentService.registerAgent(agentId, agentIp);
+
+    // Register MongoDB for this agent
+    const mongoResult = await mongodbService.registerAgent(agentId, agentIp, {
+      useTls: true,
+    });
+
+    // Include MongoDB information in the response
+    const response = {
+      ...result,
+      mongodbUrl: mongoResult.mongodbUrl,
+      certificates: mongoResult.certificates,
+    };
+
+    res.json(response);
+  } catch (err) {
+    logger.error(`Agent registration failed: ${err.message}`, {
+      error: err.message,
+      stack: err.stack,
+    });
+
+    res.status(500).json({
+      success: false,
+      message: "Agent registration failed",
+      error: err.message,
+    });
+  }
+};

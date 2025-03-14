@@ -15,6 +15,7 @@ const appController = require("./controllers/appController");
 const mongodbController = require("./controllers/mongodbController");
 const configController = require("./controllers/configController");
 const healthController = require("./controllers/healthController");
+const certificateController = require("./controllers/certificateController");
 
 // Import middleware
 const authMiddleware = require("./middleware/auth");
@@ -115,6 +116,15 @@ router.get(
   "/health/mongodb-listener",
   authMiddleware.requireAuth,
   healthController.checkMongoDBListener
+);
+
+/**
+ * Certificate Routes
+ */
+router.get(
+  "/certificates/mongodb-ca",
+  authMiddleware.optional,
+  certificateController.getMongoCA
 );
 
 // Apply error handling middleware

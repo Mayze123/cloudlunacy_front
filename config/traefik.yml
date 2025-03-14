@@ -71,10 +71,8 @@ certificatesResolvers:
   default:
     acme:
       email: "m.taibou.i@gmail.com"
-      storage: "/traefik-certs/acme.json"
-      dnsChallenge:
-        provider: "cloudflare"
-        delayBeforeCheck: 90
+      storage: /etc/traefik/acme.json
+      tlsChallenge: {}
 # Disable tracing since it's causing errors
 # tracing:
 #   serviceName: "traefik"
