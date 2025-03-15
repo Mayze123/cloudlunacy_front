@@ -9,21 +9,17 @@ const path = require("path");
 const logger = require("../../utils/logger").getLogger("configManager");
 
 class ConfigManager {
-  constructor(configPath) {
-    this.configPath =
-      configPath ||
-      process.env.DYNAMIC_CONFIG_PATH ||
-      "/app/config/dynamic.yml";
+  constructor() {
+    this.initialized = false;
     this.configs = {
       main: null,
     };
-    this.initialized = false;
     this.paths = {
-      dynamic: process.env.DYNAMIC_CONFIG_PATH || "/app/config/dynamic.yml",
-      // other paths...
+      main: process.env.DYNAMIC_CONFIG_PATH || "/etc/traefik/dynamic.yml",
+      static: process.env.STATIC_CONFIG_PATH || "/etc/traefik/traefik.yml",
     };
 
-    logger.info(`ConfigManager initialized with path: ${this.configPath}`);
+    logger.info(`ConfigManager initialized`);
   }
 
   /**
@@ -34,7 +30,7 @@ class ConfigManager {
       logger.info("Initializing configuration manager");
 
       // Load the main configuration
-      await this.loadConfig();
+      await this.loadConfig("main");
 
       this.initialized = true;
       logger.info("Configuration manager initialized successfully");
@@ -56,79 +52,105 @@ class ConfigManager {
   /**
    * Load the configuration from file
    */
-  async loadConfig() {
+  async loadConfig(name) {
     try {
-      logger.info(`Loading configuration from ${this.configPath}`);
+      logger.info(`Loading ${name} configuration`);
+
+      const configPath = this.paths[name];
+      if (!configPath) {
+        throw new Error(`Unknown configuration: ${name}`);
+      }
 
       // Check if the file exists
       try {
-        await fs.access(this.configPath);
+        await fs.access(configPath);
       } catch (err) {
         logger.warn(
-          `Configuration file not found at ${this.configPath}, creating default`
+          `Configuration file not found at ${configPath}, creating default`
         );
-        await this.createDefaultConfig();
+        this.configs[name] = this._createDefaultConfig(name);
+        await this.saveConfig(name, this.configs[name]);
       }
 
       // Read and parse the configuration
-      const content = await fs.readFile(this.configPath, "utf8");
-      this.configs.main = yaml.parse(content) || {};
+      const content = await fs.readFile(configPath, "utf8");
+      this.configs[name] = yaml.parse(content) || {};
 
       // Validate and fix the configuration
-      this.validateConfig(this.configs.main);
+      this.validateConfig(this.configs[name]);
 
-      logger.info("Configuration loaded successfully");
-      return this.configs.main;
+      logger.info(`Successfully loaded ${name} configuration`);
+      return this.configs[name];
     } catch (err) {
-      logger.error(`Failed to load configuration: ${err.message}`, {
+      logger.error(`Failed to load ${name} configuration: ${err.message}`, {
         error: err.message,
         stack: err.stack,
       });
 
       // Create a default configuration if loading failed
-      await this.createDefaultConfig();
-      return this.configs.main;
+      this.configs[name] = this._createDefaultConfig(name);
+      await this.saveConfig(name, this.configs[name]);
+      return this.configs[name];
     }
   }
 
   /**
    * Create a default configuration
    */
-  async createDefaultConfig() {
-    logger.info("Creating default configuration");
+  _createDefaultConfig(name) {
+    logger.info(`Creating default ${name} configuration`);
 
-    // Create a basic default configuration
-    this.configs.main = {
-      http: {
-        routers: {},
-        services: {},
-        middlewares: {},
-      },
-      tcp: {
-        routers: {
-          "mongodb-catchall": {
-            rule: "HostSNI(`*.mongodb.cloudlunacy.uk`)",
-            entryPoints: ["mongodb"],
-            service: "mongodb-catchall-service",
-            tls: {
-              passthrough: true,
+    if (name === "main") {
+      return {
+        http: {
+          routers: {
+            dashboard: {
+              rule: "Host(`traefik.localhost`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))",
+              service: "api@internal",
+              entryPoints: ["dashboard"],
+              middlewares: ["auth"],
+            },
+          },
+          middlewares: {
+            auth: {
+              basicAuth: {
+                users: ["admin:$apr1$H6uskkkW$IgXLP6ewTrSuBkTrqE8wj/"],
+              },
+            },
+            "web-to-websecure": {
+              redirectScheme: {
+                scheme: "https",
+                permanent: true,
+              },
+            },
+          },
+          services: {},
+        },
+        tcp: {
+          routers: {
+            "mongodb-catchall": {
+              rule: `HostSNI(\`*.${
+                process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk"
+              }\`)`,
+              entryPoints: ["mongodb"],
+              service: "mongodb-catchall-service",
+              tls: {
+                passthrough: true,
+              },
+            },
+          },
+          services: {
+            "mongodb-catchall-service": {
+              loadBalancer: {
+                servers: [],
+              },
             },
           },
         },
-        services: {
-          "mongodb-catchall-service": {
-            loadBalancer: {
-              servers: [],
-            },
-          },
-        },
-      },
-    };
+      };
+    }
 
-    // Save the default configuration
-    await this.saveConfig(this.configs.main);
-
-    return this.configs.main;
+    return {};
   }
 
   /**
@@ -197,32 +219,46 @@ class ConfigManager {
   /**
    * Save configuration to file
    *
-   * @param {string} filePath - Path to save the configuration
+   * @param {string} name - Configuration name
    * @param {Object} config - Configuration to save
    * @returns {Promise<boolean>} - Success status
    */
-  async saveConfig(filePath, config) {
+  async saveConfig(name, config) {
     try {
-      logger.info(`Saving configuration to ${filePath}`);
+      logger.info(`Saving ${name} configuration`);
 
-      // Extract only the Traefik configuration parts
-      const traefikConfig = {
-        http: config.http || {},
-        tcp: config.tcp || {},
-      };
+      const configPath = this.paths[name];
+      if (!configPath) {
+        throw new Error(`Unknown configuration: ${name}`);
+      }
 
       // Create directory if it doesn't exist
-      const dir = path.dirname(filePath);
+      const dir = path.dirname(configPath);
       await fs.mkdir(dir, { recursive: true });
 
-      // Convert to YAML and save
-      const yamlContent = yaml.stringify(traefikConfig);
-      await fs.writeFile(filePath, yamlContent, "utf8");
+      // Create a backup
+      try {
+        const backupPath = `${configPath}.bak`;
+        await fs.copyFile(configPath, backupPath);
+        logger.info(`Created backup at ${backupPath}`);
+      } catch (err) {
+        // Ignore if file doesn't exist
+        if (err.code !== "ENOENT") {
+          logger.warn(`Failed to create backup: ${err.message}`);
+        }
+      }
 
-      logger.info(`Configuration saved to ${filePath}`);
+      // Convert to YAML and save
+      const content = yaml.stringify(config);
+      await fs.writeFile(configPath, content, "utf8");
+
+      // Update in-memory configuration
+      this.configs[name] = config;
+
+      logger.info(`Successfully saved ${name} configuration`);
       return true;
     } catch (err) {
-      logger.error(`Failed to save configuration: ${err.message}`, {
+      logger.error(`Failed to save ${name} configuration: ${err.message}`, {
         error: err.message,
         stack: err.stack,
       });

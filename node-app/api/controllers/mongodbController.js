@@ -34,22 +34,33 @@ exports.addSubdomain = asyncHandler(async (req, res) => {
     `Adding MongoDB subdomain ${subdomain} with target IP ${targetIp}`
   );
 
+  // Use the agent ID if provided, otherwise use the subdomain as the agent ID
+  const effectiveAgentId = agentId || subdomain;
+
   // Register the MongoDB subdomain
   const result = await coreServices.mongodb.registerAgent(
-    agentId || subdomain,
+    effectiveAgentId,
     targetIp,
     {
       useTls: true,
     }
   );
 
+  if (!result.success) {
+    throw new AppError(
+      `Failed to register MongoDB agent: ${result.error}`,
+      500
+    );
+  }
+
   res.status(201).json({
     success: true,
-    subdomain: agentId || subdomain,
-    domain: `${agentId || subdomain}.${coreServices.mongodb.mongoDomain}`,
+    subdomain: effectiveAgentId,
+    domain: `${effectiveAgentId}.${coreServices.mongodb.mongoDomain}`,
     targetIp,
     mongodbUrl: result.mongodbUrl,
     connectionString: result.connectionString,
+    certificates: result.certificates,
   });
 });
 
@@ -67,7 +78,7 @@ exports.listSubdomains = asyncHandler(async (req, res) => {
     .map(([, route]) => ({
       name: route.name,
       domain: extractDomainFromTcpRule(route.rule),
-      targetIp: extractTargetFromService(route.service),
+      targetIp: extractTargetFromAddress(route.targetAddress),
       lastUpdated: route.lastUpdated,
     }));
 
@@ -93,7 +104,7 @@ exports.removeSubdomain = asyncHandler(async (req, res) => {
 
   if (!result.success) {
     throw new AppError(
-      `Failed to remove MongoDB subdomain for agent ${agentId}`,
+      `Failed to remove MongoDB subdomain for agent ${agentId}: ${result.error}`,
       404
     );
   }
@@ -126,14 +137,8 @@ function extractDomainFromTcpRule(rule) {
   return match ? match[1] : null;
 }
 
-// Helper function to extract target IP from service
-function extractTargetFromService(serviceName) {
-  if (!serviceName) return null;
-
-  const service =
-    coreServices.config.configs.main?.tcp?.services?.[serviceName];
-  if (!service?.loadBalancer?.servers?.length) return null;
-
-  const address = service.loadBalancer.servers[0].address;
-  return address ? address.split(":")[0] : null;
+// Helper function to extract target IP from address
+function extractTargetFromAddress(address) {
+  if (!address) return null;
+  return address.split(":")[0];
 }

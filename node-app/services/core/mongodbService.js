@@ -1,25 +1,15 @@
 /**
  * MongoDB Service
  *
- * Centralized service for MongoDB routing, connection testing, and management.
+ * Handles MongoDB subdomain registration and management through Traefik.
  */
 
-const { execSync, exec } = require("child_process");
-const { promisify } = require("util");
-const net = require("net");
-const dns = require("dns").promises;
-const Docker = require("dockerode");
-const configManager = require("./configManager");
-const logger = require("../../utils/logger").getLogger("mongodbService");
 const fs = require("fs").promises;
-const yaml = require("yaml");
-const certificateService = require("./certificateService");
 const path = require("path");
-const { MongoClient } = require("mongodb");
-const routingService = require("./routingService");
-
+const { exec } = require("child_process");
+const { promisify } = require("util");
 const execAsync = promisify(exec);
-const docker = new Docker({ socketPath: "/var/run/docker.sock" });
+const logger = require("../../utils/logger").getLogger("mongodbService");
 
 class MongoDBService {
   constructor(configManager, routingManager) {
@@ -29,9 +19,6 @@ class MongoDBService {
     this.mongoDomain = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
     this.mongoPort = 27017;
     this.traefikContainer = process.env.TRAEFIK_CONTAINER || "traefik";
-    this.certsDir = process.env.CERTS_DIR || "/app/config/certs";
-    this.agentCertsDir =
-      process.env.AGENT_CERTS_DIR || "/app/config/certs/agents";
   }
 
   /**
@@ -41,20 +28,21 @@ class MongoDBService {
     logger.info("Initializing MongoDB service");
 
     try {
-      // Ensure MongoDB port is exposed
+      // Ensure MongoDB port is properly configured
       await this.ensureMongoDBPort();
 
-      // Ensure MongoDB entrypoint is configured
+      // Ensure MongoDB entrypoint is properly configured
       await this.ensureMongoDBEntrypoint();
 
       this.initialized = true;
       logger.info("MongoDB service initialized successfully");
+      return true;
     } catch (err) {
       logger.error(`Failed to initialize MongoDB service: ${err.message}`, {
         error: err.message,
         stack: err.stack,
       });
-      throw err;
+      return false;
     }
   }
 
@@ -78,47 +66,44 @@ class MongoDBService {
     const useTls = options.useTls !== false; // Default to true
 
     try {
-      // Create MongoDB route
-      const routerName = `mongodb-${agentId}`;
-      const serviceName = `${routerName}-service`;
-      const domain = `${agentId}.${this.mongoDomain}`;
-
-      // Add TCP route
-      await this.routingManager.addTcpRoute(
+      // Create TCP route for this agent
+      const routeResult = await this.routingManager.addTcpRoute(
         agentId,
-        domain,
+        `${agentId}.${this.mongoDomain}`,
         `${targetIp}:${this.mongoPort}`,
-        {
-          entryPoint: "mongodb",
-          useTls: useTls,
-          tlsPassthrough: true,
-        }
+        { useTls }
       );
 
-      logger.info(`MongoDB route added for agent ${agentId}`);
+      if (!routeResult.success) {
+        throw new Error(`Failed to add TCP route: ${routeResult.error}`);
+      }
 
       // Generate certificates if needed
       let certificates = null;
-      if (useTls && this.configManager.certificateService) {
+      if (useTls && this.configManager.certificate) {
         try {
           certificates =
-            await this.configManager.certificateService.generateAgentCertificate(
+            await this.configManager.certificate.generateAgentCertificate(
               agentId
             );
-          logger.info(`Generated certificates for agent ${agentId}`);
         } catch (certErr) {
-          logger.error(`Failed to generate certificates: ${certErr.message}`);
+          logger.warn(
+            `Failed to generate certificates for agent ${agentId}: ${certErr.message}`
+          );
         }
       }
 
-      // Construct MongoDB URL
-      const mongodbUrl = `mongodb://${domain}:${this.mongoPort}`;
-      const connectionString = `mongodb://username:password@${domain}:${this.mongoPort}/admin?ssl=true&tlsAllowInvalidCertificates=true`;
+      // Build MongoDB URL
+      const mongodbUrl = `mongodb://${agentId}.${this.mongoDomain}:${this.mongoPort}`;
+
+      // Build connection string
+      const connectionString = useTls
+        ? `mongodb://username:password@${agentId}.${this.mongoDomain}:${this.mongoPort}/admin?ssl=true&tlsAllowInvalidCertificates=true`
+        : `mongodb://username:password@${agentId}.${this.mongoDomain}:${this.mongoPort}/admin`;
 
       return {
         success: true,
         agentId,
-        domain,
         targetIp,
         mongodbUrl,
         connectionString,
@@ -134,7 +119,10 @@ class MongoDBService {
         }
       );
 
-      throw err;
+      return {
+        success: false,
+        error: err.message,
+      };
     }
   }
 
@@ -152,11 +140,15 @@ class MongoDBService {
     }
 
     try {
-      // Remove TCP route
-      const result = await this.routingManager.removeTcpRoute(agentId);
+      // Remove TCP route for this agent
+      const routeResult = await this.routingManager.removeTcpRoute(agentId);
+
+      if (!routeResult.success) {
+        throw new Error(`Failed to remove TCP route: ${routeResult.error}`);
+      }
 
       return {
-        success: result.success,
+        success: true,
         agentId,
         message: `MongoDB agent ${agentId} deregistered successfully`,
       };
@@ -171,7 +163,6 @@ class MongoDBService {
 
       return {
         success: false,
-        agentId,
         error: err.message,
       };
     }
@@ -181,78 +172,65 @@ class MongoDBService {
    * Test MongoDB connection
    *
    * @param {string} agentId - The agent ID
-   * @param {string} targetIp - The target IP address
+   * @param {string} targetIp - The target IP address (optional)
    * @returns {Promise<Object>} Test result
    */
   async testConnection(agentId, targetIp) {
     logger.info(`Testing MongoDB connection for agent ${agentId}`);
 
-    const domain = `${agentId}.${this.mongoDomain}`;
-    const directIp = targetIp || null;
-
-    const results = {
-      success: false,
-      domain,
-      directIp,
-      tests: {},
-    };
-
-    // Test direct connection if IP is provided
-    if (directIp) {
-      try {
-        const directCommand = `timeout 5 mongosh "mongodb://admin:adminpassword@${directIp}:${this.mongoPort}/admin?ssl=true&tlsAllowInvalidCertificates=true" --eval "db.serverStatus()" 2>&1 || echo "Connection failed"`;
-        const directResult = execSync(directCommand, { encoding: "utf8" });
-
-        results.tests.directConnection = {
-          success: !directResult.includes("Connection failed"),
-          message: directResult.includes("Connection failed")
-            ? "Direct connection failed"
-            : "Direct connection successful",
-        };
-      } catch (err) {
-        results.tests.directConnection = {
-          success: false,
-          message: `Error testing direct connection: ${err.message}`,
-        };
-      }
-    }
-
-    // Test connection through Traefik
     try {
-      const traefikCommand = `timeout 5 mongosh "mongodb://admin:adminpassword@${domain}:${this.mongoPort}/admin?ssl=true&tlsAllowInvalidCertificates=true" --eval "db.serverStatus()" 2>&1 || echo "Connection failed"`;
-      const traefikResult = execSync(traefikCommand, { encoding: "utf8" });
+      // Test direct connection if target IP is provided
+      if (targetIp) {
+        const directResult = await this._testDirectConnection(targetIp);
 
-      results.tests.traefikConnection = {
-        success: !traefikResult.includes("Connection failed"),
-        message: traefikResult.includes("Connection failed")
-          ? "Traefik connection failed"
-          : "Traefik connection successful",
+        if (!directResult.success) {
+          return {
+            success: false,
+            message: `Failed to connect directly to MongoDB at ${targetIp}:${this.mongoPort}`,
+            error: directResult.error,
+          };
+        }
+      }
+
+      // Test connection through Traefik
+      const traefikResult = await this._testTraefikConnection(agentId);
+
+      return {
+        success: traefikResult.success,
+        message: traefikResult.success
+          ? `Successfully connected to MongoDB for agent ${agentId}`
+          : `Failed to connect to MongoDB for agent ${agentId}`,
+        directConnection: targetIp ? true : undefined,
+        traefikConnection: traefikResult.success,
+        error: traefikResult.error,
       };
-
-      // Set overall success based on Traefik connection
-      results.success = results.tests.traefikConnection.success;
     } catch (err) {
-      results.tests.traefikConnection = {
+      logger.error(
+        `Error testing MongoDB connection for agent ${agentId}: ${err.message}`,
+        {
+          error: err.message,
+          stack: err.stack,
+        }
+      );
+
+      return {
         success: false,
-        message: `Error testing Traefik connection: ${err.message}`,
+        error: err.message,
       };
     }
-
-    return results;
   }
 
   /**
    * Check if MongoDB port is active
    *
-   * @returns {Promise<boolean>} True if port is active
+   * @returns {Promise<boolean>} Whether the port is active
    */
   async checkMongoDBPort() {
     try {
-      const result = execSync(
-        `docker port ${this.traefikContainer} | grep ${this.mongoPort}`,
-        { encoding: "utf8" }
+      const { stdout } = await execAsync(
+        `docker port ${this.traefikContainer} | grep ${this.mongoPort}`
       );
-      return result.includes(`${this.mongoPort}`);
+      return stdout.trim().length > 0;
     } catch (err) {
       logger.warn(`MongoDB port check failed: ${err.message}`);
       return false;
@@ -260,36 +238,55 @@ class MongoDBService {
   }
 
   /**
-   * Ensure MongoDB port is exposed in Traefik
+   * Ensure MongoDB port is properly configured
    *
-   * @returns {Promise<boolean>} True if fixed
+   * @returns {Promise<boolean>} Whether the port was fixed
    */
   async ensureMongoDBPort() {
-    logger.info("Ensuring MongoDB port is exposed in Traefik");
-
-    // Check if port is already exposed
-    const portActive = await this.checkMongoDBPort();
-    if (portActive) {
-      logger.info("MongoDB port is already exposed");
-      return false;
-    }
-
-    logger.warn("MongoDB port is not exposed, attempting to fix");
+    logger.info("Ensuring MongoDB port is properly configured");
 
     try {
-      // Try to restart Traefik
-      execSync(`docker restart ${this.traefikContainer}`, { encoding: "utf8" });
-      logger.info("Restarted Traefik container");
+      // Check if port is already active
+      const portActive = await this.checkMongoDBPort();
 
-      // Check again after restart
-      const portActiveAfterRestart = await this.checkMongoDBPort();
-      if (portActiveAfterRestart) {
-        logger.info("MongoDB port is now exposed after restart");
-        return true;
+      if (portActive) {
+        logger.info("MongoDB port is already active");
+        return false; // No changes needed
       }
 
-      logger.warn("MongoDB port is still not exposed after restart");
-      return false;
+      logger.warn("MongoDB port is not active, attempting to fix");
+
+      // Check docker-compose.yml
+      const composeFile = "/app/docker-compose.yml";
+
+      try {
+        const composeContent = await fs.readFile(composeFile, "utf8");
+
+        if (!composeContent.includes(`"${this.mongoPort}:${this.mongoPort}"`)) {
+          logger.warn("MongoDB port is not configured in docker-compose.yml");
+
+          // We can't modify the docker-compose.yml file here
+          // This would require a more complex solution
+          logger.error("Cannot automatically fix docker-compose.yml");
+          return false;
+        }
+      } catch (readErr) {
+        logger.warn(`Failed to read docker-compose.yml: ${readErr.message}`);
+      }
+
+      // Restart Traefik to apply changes
+      await this.restartTraefik();
+
+      // Check if port is now active
+      const portFixed = await this.checkMongoDBPort();
+
+      if (portFixed) {
+        logger.info("MongoDB port is now active");
+        return true;
+      } else {
+        logger.error("Failed to fix MongoDB port");
+        return false;
+      }
     } catch (err) {
       logger.error(`Failed to ensure MongoDB port: ${err.message}`, {
         error: err.message,
@@ -300,57 +297,53 @@ class MongoDBService {
   }
 
   /**
-   * Ensure MongoDB entrypoint is configured in Traefik
+   * Ensure MongoDB entrypoint is properly configured
    *
-   * @returns {Promise<boolean>} True if fixed
+   * @returns {Promise<boolean>} Whether the entrypoint was fixed
    */
   async ensureMongoDBEntrypoint() {
-    logger.info("Ensuring MongoDB entrypoint is configured");
+    logger.info("Ensuring MongoDB entrypoint is properly configured");
 
     try {
-      // Get current configuration
+      // Make sure config manager is initialized
       await this.configManager.initialize();
-      const config = this.configManager.configs.main;
 
-      // Check if MongoDB catchall router exists
-      const hasCatchall = config?.tcp?.routers?.["mongodb-catchall"];
+      // Get static configuration
+      const staticConfig = await this._getStaticConfig();
 
-      if (hasCatchall) {
-        logger.info("MongoDB catchall router is already configured");
-        return false;
+      // Check if MongoDB entrypoint exists
+      if (
+        staticConfig.entryPoints &&
+        staticConfig.entryPoints.mongodb &&
+        staticConfig.entryPoints.mongodb.address === `:${this.mongoPort}`
+      ) {
+        logger.info("MongoDB entrypoint is already configured");
+        return false; // No changes needed
       }
 
-      logger.warn("MongoDB catchall router is not configured, adding it");
+      logger.warn("MongoDB entrypoint is not configured, attempting to fix");
 
-      // Ensure TCP section exists
-      if (!config.tcp) {
-        config.tcp = { routers: {}, services: {} };
+      // Add MongoDB entrypoint
+      if (!staticConfig.entryPoints) {
+        staticConfig.entryPoints = {};
       }
 
-      // Add catchall router
-      config.tcp.routers["mongodb-catchall"] = {
-        rule: `HostSNI(\`*.${this.mongoDomain}\`)`,
-        entryPoints: ["mongodb"],
-        service: "mongodb-catchall-service",
-        tls: {
-          passthrough: true,
+      staticConfig.entryPoints.mongodb = {
+        address: `:${this.mongoPort}`,
+        transport: {
+          respondingTimeouts: {
+            idleTimeout: "1h",
+          },
         },
       };
 
-      // Add catchall service
-      config.tcp.services["mongodb-catchall-service"] = {
-        loadBalancer: {
-          servers: [],
-        },
-      };
-
-      // Save configuration
-      await this.configManager.saveConfig("main", config);
-      logger.info("Added MongoDB catchall router to configuration");
+      // Save static configuration
+      await this._saveStaticConfig(staticConfig);
 
       // Restart Traefik to apply changes
       await this.restartTraefik();
 
+      logger.info("MongoDB entrypoint has been configured");
       return true;
     } catch (err) {
       logger.error(`Failed to ensure MongoDB entrypoint: ${err.message}`, {
@@ -364,13 +357,18 @@ class MongoDBService {
   /**
    * Restart Traefik container
    *
-   * @returns {Promise<boolean>} True if successful
+   * @returns {Promise<boolean>} Whether the restart was successful
    */
   async restartTraefik() {
+    logger.info(`Restarting ${this.traefikContainer} container`);
+
     try {
-      logger.info(`Restarting ${this.traefikContainer} container`);
-      execSync(`docker restart ${this.traefikContainer}`, { encoding: "utf8" });
-      logger.info(`${this.traefikContainer} container restarted`);
+      await execAsync(`docker restart ${this.traefikContainer}`);
+      logger.info(`${this.traefikContainer} container restarted successfully`);
+
+      // Wait for Traefik to start
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+
       return true;
     } catch (err) {
       logger.error(
@@ -380,6 +378,131 @@ class MongoDBService {
           stack: err.stack,
         }
       );
+      return false;
+    }
+  }
+
+  /**
+   * Test direct connection to MongoDB
+   *
+   * @private
+   * @param {string} targetIp - The target IP address
+   * @returns {Promise<Object>} Test result
+   */
+  async _testDirectConnection(targetIp) {
+    try {
+      // Try with TLS first
+      const tlsCommand = `timeout 5 mongosh "mongodb://admin:adminpassword@${targetIp}:${this.mongoPort}/admin?ssl=true&tlsAllowInvalidCertificates=true" --eval "db.serverStatus()" 2>&1 || echo "Connection failed"`;
+      const tlsResult = await execAsync(tlsCommand);
+
+      if (!tlsResult.includes("Connection failed")) {
+        return {
+          success: true,
+          useTls: true,
+        };
+      }
+
+      // Try without TLS
+      const noTlsCommand = `timeout 5 mongosh "mongodb://admin:adminpassword@${targetIp}:${this.mongoPort}/admin" --eval "db.serverStatus()" 2>&1 || echo "Connection failed"`;
+      const noTlsResult = await execAsync(noTlsCommand);
+
+      if (!noTlsResult.includes("Connection failed")) {
+        return {
+          success: true,
+          useTls: false,
+        };
+      }
+
+      return {
+        success: false,
+        error: "Failed to connect to MongoDB with or without TLS",
+      };
+    } catch (err) {
+      return {
+        success: false,
+        error: err.message,
+      };
+    }
+  }
+
+  /**
+   * Test connection through Traefik
+   *
+   * @private
+   * @param {string} agentId - The agent ID
+   * @returns {Promise<Object>} Test result
+   */
+  async _testTraefikConnection(agentId) {
+    try {
+      const hostname = `${agentId}.${this.mongoDomain}`;
+
+      // Try with TLS first
+      const tlsCommand = `timeout 10 mongosh "mongodb://admin:adminpassword@${hostname}:${this.mongoPort}/admin?ssl=true&tlsAllowInvalidCertificates=true" --eval "db.serverStatus()" 2>&1 || echo "Connection failed"`;
+      const tlsResult = await execAsync(tlsCommand);
+
+      if (!tlsResult.includes("Connection failed")) {
+        return {
+          success: true,
+          useTls: true,
+        };
+      }
+
+      // Try without TLS
+      const noTlsCommand = `timeout 10 mongosh "mongodb://admin:adminpassword@${hostname}:${this.mongoPort}/admin" --eval "db.serverStatus()" 2>&1 || echo "Connection failed"`;
+      const noTlsResult = await execAsync(noTlsCommand);
+
+      if (!noTlsResult.includes("Connection failed")) {
+        return {
+          success: true,
+          useTls: false,
+        };
+      }
+
+      return {
+        success: false,
+        error:
+          "Failed to connect to MongoDB through Traefik with or without TLS",
+      };
+    } catch (err) {
+      return {
+        success: false,
+        error: err.message,
+      };
+    }
+  }
+
+  /**
+   * Get Traefik static configuration
+   *
+   * @private
+   * @returns {Promise<Object>} Static configuration
+   */
+  async _getStaticConfig() {
+    try {
+      const staticConfigPath = "/etc/traefik/traefik.yml";
+      const content = await fs.readFile(staticConfigPath, "utf8");
+      return require("yaml").parse(content) || {};
+    } catch (err) {
+      logger.error(`Failed to get static configuration: ${err.message}`);
+      return {};
+    }
+  }
+
+  /**
+   * Save Traefik static configuration
+   *
+   * @private
+   * @param {Object} config - The configuration to save
+   * @returns {Promise<boolean>} Whether the save was successful
+   */
+  async _saveStaticConfig(config) {
+    try {
+      const staticConfigPath = "/etc/traefik/traefik.yml";
+      const content = require("yaml").stringify(config);
+      await fs.writeFile(staticConfigPath, content, "utf8");
+      return true;
+    } catch (err) {
+      logger.error(`Failed to save static configuration: ${err.message}`);
       return false;
     }
   }

@@ -1,45 +1,38 @@
 /**
- * Core Services Index
+ * Core Services
  *
- * Single entry point for all core services to ensure consistent initialization
- * and dependency management.
+ * This module initializes and exports all core services.
  */
 
-const configService = require("./configService");
-const agentService = require("./agentService");
-const routingService = require("./routingService");
-const mongodbService = require("./mongodbService");
-const certificateService = require("./certificateService");
+const ConfigManager = require("./configManager");
+const RoutingManager = require("./routingManager");
+const MongoDBService = require("./mongodbService");
+const AgentService = require("./agentService");
+const CertificateService = require("./certificateService");
 const logger = require("../../utils/logger").getLogger("coreServices");
+
+// Initialize services
+const configManager = new ConfigManager();
+const routingManager = new RoutingManager(configManager);
+const mongodbService = new MongoDBService(configManager, routingManager);
+const agentService = new AgentService(configManager);
+const certificateService = new CertificateService(configManager);
 
 /**
  * Initialize all core services
  */
 async function initialize() {
+  logger.info("Initializing core services");
+
   try {
-    logger.info("Initializing core services...");
-
-    // Initialize config first as other services depend on it
-    await configService.initialize();
-    logger.info("Configuration service initialized");
-
-    // Initialize MongoDB service
+    // Initialize in order of dependencies
+    await configManager.initialize();
+    await routingManager.initialize();
     await mongodbService.initialize();
-    logger.info("MongoDB service initialized");
-
-    // Initialize agent service
     await agentService.initialize();
-    logger.info("Agent service initialized");
-
-    // Initialize routing service
-    await routingService.initialize();
-    logger.info("Routing service initialized");
-
-    // Initialize certificate service
     await certificateService.initialize();
-    logger.info("Certificate service initialized");
 
-    logger.info("All core services initialized successfully");
+    logger.info("Core services initialized successfully");
     return true;
   } catch (err) {
     logger.error(`Failed to initialize core services: ${err.message}`, {
@@ -51,18 +44,21 @@ async function initialize() {
 }
 
 /**
- * Repair all services (for recovery)
+ * Repair core services
  */
 async function repair() {
-  try {
-    logger.info("Repairing core services...");
+  logger.info("Repairing core services");
 
-    // Repair in dependency order
-    await configService.repair();
-    await mongodbService.repair();
-    await agentService.repair();
-    await routingService.repair();
-    await certificateService.repair();
+  try {
+    // Repair configuration
+    await configManager.repair();
+
+    // Ensure MongoDB port and entrypoint
+    await mongodbService.ensureMongoDBPort();
+    await mongodbService.ensureMongoDBEntrypoint();
+
+    // Restart Traefik to apply changes
+    await mongodbService.restartTraefik();
 
     logger.info("Core services repaired successfully");
     return true;
@@ -71,16 +67,17 @@ async function repair() {
       error: err.message,
       stack: err.stack,
     });
-    throw err;
+    return false;
   }
 }
 
+// Export services
 module.exports = {
+  config: configManager,
+  routing: routingManager,
+  mongodb: mongodbService,
+  agent: agentService,
+  certificate: certificateService,
   initialize,
   repair,
-  config: configService,
-  agent: agentService,
-  routing: routingService,
-  mongodb: mongodbService,
-  certificate: certificateService,
 };

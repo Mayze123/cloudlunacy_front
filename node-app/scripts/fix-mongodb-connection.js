@@ -2,25 +2,37 @@
 /**
  * Fix MongoDB Connection Issues
  *
- * This script diagnoses and fixes common MongoDB connection issues through Traefik
+ * This script diagnoses and fixes common MongoDB connection issues.
  */
 
-const { execSync } = require("child_process");
 const fs = require("fs").promises;
-const yaml = require("yaml");
 const path = require("path");
-const net = require("net");
-const dns = require("dns").promises;
+const { exec } = require("child_process");
+const { promisify } = require("util");
+const execAsync = promisify(exec);
+const yaml = require("yaml");
 
 // Configuration
-const AGENT_ID = process.argv[2] || "240922b9-4d3b-4692-8d1c-1884d423092a";
-const TARGET_IP = process.argv[3] || "128.140.53.203";
-const MONGO_DOMAIN = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
 const MONGO_PORT = 27017;
 const TRAEFIK_CONTAINER = process.env.TRAEFIK_CONTAINER || "traefik";
-const DYNAMIC_CONFIG_PATH =
-  process.env.DYNAMIC_CONFIG_PATH || "/etc/traefik/dynamic.yml";
-const LOCAL_CONFIG_PATH = "./config/dynamic.yml";
+const MONGO_DOMAIN = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
+const CONFIG_PATHS = [
+  "/etc/traefik/dynamic.yml",
+  "/app/config/dynamic.yml",
+  "./config/dynamic.yml",
+  "/opt/cloudlunacy_front/config/dynamic.yml",
+];
+const STATIC_CONFIG_PATHS = [
+  "/etc/traefik/traefik.yml",
+  "/app/config/traefik.yml",
+  "./config/traefik.yml",
+  "/opt/cloudlunacy_front/config/traefik.yml",
+];
+const DOCKER_COMPOSE_PATHS = [
+  "/app/docker-compose.yml",
+  "./docker-compose.yml",
+  "/opt/cloudlunacy_front/docker-compose.yml",
+];
 
 // ANSI color codes for output
 const colors = {
@@ -54,450 +66,435 @@ function warning(message) {
 }
 
 function header(message) {
-  log(`\n${colors.bold}${message}${colors.reset}`);
+  log(`\n${message}`, colors.bold);
 }
 
-// Fix functions
-async function fixMongoDBPort() {
-  header("Checking MongoDB port exposure");
+// Read a file from multiple possible paths
+async function readFile(...paths) {
+  for (const filePath of paths) {
+    try {
+      const content = await fs.readFile(filePath, "utf8");
+      info(`Successfully read file from ${filePath}`);
+      return content;
+    } catch (err) {
+      // Try next path
+    }
+  }
+  return null;
+}
+
+// Parse YAML content
+function parseYaml(content) {
+  try {
+    return yaml.parse(content);
+  } catch (err) {
+    error(`Failed to parse YAML: ${err.message}`);
+    return null;
+  }
+}
+
+// Write YAML content to a file
+async function writeYaml(filePath, content) {
+  try {
+    const yamlContent = yaml.stringify(content);
+    await fs.writeFile(filePath, yamlContent, "utf8");
+    success(`Successfully wrote file to ${filePath}`);
+    return true;
+  } catch (err) {
+    error(`Failed to write file to ${filePath}: ${err.message}`);
+    return false;
+  }
+}
+
+// Check if MongoDB port is exposed in Traefik
+async function checkMongoDBPort() {
+  header("Checking MongoDB Port");
 
   try {
-    const portCheck = execSync(
-      `docker port ${TRAEFIK_CONTAINER} | grep 27017`,
-      { encoding: "utf8" }
+    const { stdout } = await execAsync(
+      `docker port ${TRAEFIK_CONTAINER} | grep ${MONGO_PORT}`
     );
-    if (portCheck) {
-      success(`MongoDB port is already exposed: ${portCheck.trim()}`);
+    if (stdout.trim()) {
+      success(`MongoDB port ${MONGO_PORT} is exposed in Traefik`);
       return true;
+    } else {
+      error(`MongoDB port ${MONGO_PORT} is not exposed in Traefik`);
+      return false;
     }
   } catch (err) {
-    error("MongoDB port 27017 is not exposed in Traefik");
+    error(`Failed to check MongoDB port: ${err.message}`);
+    return false;
   }
+}
 
-  info("Attempting to fix MongoDB port exposure...");
+// Fix MongoDB port in docker-compose.yml
+async function fixMongoDBPortInDockerCompose() {
+  header("Fixing MongoDB Port in Docker Compose");
 
-  // Try restarting Traefik first
-  try {
-    info("Restarting Traefik container...");
-    execSync(`docker restart ${TRAEFIK_CONTAINER}`, { encoding: "utf8" });
-
-    // Check if port is now exposed
-    try {
-      const portCheck = execSync(
-        `docker port ${TRAEFIK_CONTAINER} | grep 27017`,
-        { encoding: "utf8" }
-      );
-      if (portCheck) {
-        success(
-          `MongoDB port is now exposed after restart: ${portCheck.trim()}`
-        );
-        return true;
-      }
-    } catch (err) {
-      warning("MongoDB port is still not exposed after restart");
-    }
-  } catch (err) {
-    error(`Failed to restart Traefik: ${err.message}`);
-  }
-
-  // If restart didn't work, check docker-compose.yml
-  info("Checking docker-compose.yml configuration...");
-
-  const composeFiles = [
-    "/opt/cloudlunacy_front/docker-compose.yml",
-    "./docker-compose.yml",
-    "../docker-compose.yml",
-  ];
-
-  let composeFile = null;
-  let composeContent = null;
-
-  for (const file of composeFiles) {
-    try {
-      composeContent = await fs.readFile(file, "utf8");
-      composeFile = file;
-      info(`Found docker-compose.yml at ${file}`);
-      break;
-    } catch (err) {
-      // Continue to next file
-    }
-  }
-
-  if (!composeFile) {
+  // Read docker-compose.yml
+  const content = await readFile(...DOCKER_COMPOSE_PATHS);
+  if (!content) {
     error("Could not find docker-compose.yml");
     return false;
   }
 
-  // Parse and modify docker-compose.yml
-  try {
-    const compose = yaml.parse(composeContent);
-
-    if (
-      compose.services &&
-      compose.services.traefik &&
-      compose.services.traefik.ports
-    ) {
-      const ports = compose.services.traefik.ports;
-      const hasMongoPort = ports.some((port) => port.includes("27017:27017"));
-
-      if (!hasMongoPort) {
-        info("Adding MongoDB port 27017 to docker-compose.yml");
-        ports.push("27017:27017");
-
-        // Create backup
-        await fs.writeFile(`${composeFile}.bak`, composeContent);
-        info(`Created backup at ${composeFile}.bak`);
-
-        // Write updated file
-        const updatedContent = yaml.stringify(compose);
-        await fs.writeFile(composeFile, updatedContent);
-        success(`Updated ${composeFile}`);
-
-        // Apply changes
-        info("Restarting Traefik to apply changes...");
-        execSync(`docker restart ${TRAEFIK_CONTAINER}`, { encoding: "utf8" });
-
-        // Verify port is now exposed
-        try {
-          const portCheck = execSync(
-            `docker port ${TRAEFIK_CONTAINER} | grep 27017`,
-            { encoding: "utf8" }
-          );
-          if (portCheck) {
-            success(`MongoDB port is now exposed: ${portCheck.trim()}`);
-            return true;
-          } else {
-            error(
-              "MongoDB port is still not exposed after configuration update"
-            );
-            return false;
-          }
-        } catch (err) {
-          error("MongoDB port is still not exposed after configuration update");
-          return false;
-        }
-      } else {
-        info("MongoDB port 27017 is already configured in docker-compose.yml");
-        warning(
-          "Port is configured but not exposed. This might be a Docker issue."
-        );
-        return false;
-      }
-    } else {
-      error("Could not find Traefik service in docker-compose.yml");
-      return false;
-    }
-  } catch (err) {
-    error(`Failed to parse or update docker-compose.yml: ${err.message}`);
+  // Parse docker-compose.yml
+  const compose = parseYaml(content);
+  if (!compose) {
+    error("Failed to parse docker-compose.yml");
     return false;
   }
-}
 
-async function fixTraefikConfig() {
-  header("Checking Traefik configuration");
+  // Check if traefik service exists
+  if (!compose.services || !compose.services.traefik) {
+    error("Traefik service not found in docker-compose.yml");
+    return false;
+  }
 
-  // Find dynamic.yml
-  const configPaths = [DYNAMIC_CONFIG_PATH, LOCAL_CONFIG_PATH];
-  let configPath = null;
-  let configContent = null;
+  // Check if ports section exists
+  if (!compose.services.traefik.ports) {
+    compose.services.traefik.ports = [];
+  }
 
-  for (const path of configPaths) {
+  // Check if MongoDB port is already defined
+  const mongoPortDefined = compose.services.traefik.ports.some(
+    (port) =>
+      port === `${MONGO_PORT}:${MONGO_PORT}` ||
+      port === `"${MONGO_PORT}:${MONGO_PORT}"`
+  );
+
+  if (mongoPortDefined) {
+    info("MongoDB port is already defined in docker-compose.yml");
+  } else {
+    info("Adding MongoDB port to docker-compose.yml");
+    compose.services.traefik.ports.push(`"${MONGO_PORT}:${MONGO_PORT}"`);
+  }
+
+  // Write updated docker-compose.yml
+  for (const filePath of DOCKER_COMPOSE_PATHS) {
     try {
-      configContent = await fs.readFile(path, "utf8");
-      configPath = path;
-      info(`Found dynamic.yml at ${path}`);
-      break;
-    } catch (err) {
-      // Continue to next path
-    }
-  }
+      // Check if file exists
+      await fs.access(filePath);
 
-  if (!configPath) {
-    error("Could not find dynamic.yml");
-    return false;
-  }
-
-  // Parse and check configuration
-  try {
-    const config = yaml.parse(configContent);
-    let modified = false;
-
-    // Ensure TCP section exists
-    if (!config.tcp) {
-      info("Adding TCP section to configuration");
-      config.tcp = { routers: {}, services: {} };
-      modified = true;
-    }
-
-    // Check for MongoDB catchall router
-    if (!config.tcp.routers["mongodb-catchall"]) {
-      info("Adding MongoDB catchall router");
-      config.tcp.routers["mongodb-catchall"] = {
-        rule: `HostSNI(\`*.${MONGO_DOMAIN}\`)`,
-        entryPoints: ["mongodb"],
-        service: "mongodb-catchall-service",
-        tls: {
-          passthrough: true,
-        },
-      };
-      modified = true;
-    }
-
-    // Check for MongoDB catchall service
-    if (!config.tcp.services["mongodb-catchall-service"]) {
-      info("Adding MongoDB catchall service");
-      config.tcp.services["mongodb-catchall-service"] = {
-        loadBalancer: {
-          servers: [],
-        },
-      };
-      modified = true;
-    }
-
-    // Check for agent-specific router
-    const routerName = `mongodb-${AGENT_ID}`;
-    const serviceName = `${routerName}-service`;
-
-    if (!config.tcp.routers[routerName]) {
-      info(`Adding router for agent ${AGENT_ID}`);
-      config.tcp.routers[routerName] = {
-        rule: `HostSNI(\`${AGENT_ID}.${MONGO_DOMAIN}\`)`,
-        entryPoints: ["mongodb"],
-        service: serviceName,
-        tls: {
-          passthrough: true,
-        },
-      };
-      modified = true;
-    }
-
-    // Check for agent-specific service
-    if (!config.tcp.services[serviceName]) {
-      info(`Adding service for agent ${AGENT_ID}`);
-      config.tcp.services[serviceName] = {
-        loadBalancer: {
-          servers: [
-            {
-              address: `${TARGET_IP}:${MONGO_PORT}`,
-            },
-          ],
-        },
-      };
-      modified = true;
-    } else {
-      // Check if the target IP is correct
-      const servers = config.tcp.services[serviceName].loadBalancer.servers;
-      if (!servers || servers.length === 0) {
-        info(`Adding target server ${TARGET_IP}:${MONGO_PORT} to service`);
-        config.tcp.services[serviceName].loadBalancer.servers = [
-          {
-            address: `${TARGET_IP}:${MONGO_PORT}`,
-          },
-        ];
-        modified = true;
-      } else {
-        const hasCorrectServer = servers.some(
-          (server) => server.address === `${TARGET_IP}:${MONGO_PORT}`
-        );
-
-        if (!hasCorrectServer) {
-          info(`Updating target server to ${TARGET_IP}:${MONGO_PORT}`);
-          servers[0].address = `${TARGET_IP}:${MONGO_PORT}`;
-          modified = true;
-        }
-      }
-    }
-
-    // Save changes if modified
-    if (modified) {
       // Create backup
-      await fs.writeFile(`${configPath}.bak`, configContent);
-      info(`Created backup at ${configPath}.bak`);
+      await fs.copyFile(filePath, `${filePath}.bak.${Date.now()}`);
 
       // Write updated file
-      const updatedContent = yaml.stringify(config);
-      await fs.writeFile(configPath, updatedContent);
-      success(`Updated ${configPath}`);
-
-      // Restart Traefik to apply changes
-      info("Restarting Traefik to apply changes...");
-      execSync(`docker restart ${TRAEFIK_CONTAINER}`, { encoding: "utf8" });
-      success("Traefik restarted");
-
-      return true;
-    } else {
-      success("Traefik configuration is already correct");
-      return true;
+      if (await writeYaml(filePath, compose)) {
+        success(`Updated docker-compose.yml at ${filePath}`);
+        return true;
+      }
+    } catch (err) {
+      // Try next path
     }
-  } catch (err) {
-    error(`Failed to parse or update dynamic.yml: ${err.message}`);
+  }
+
+  error("Failed to update docker-compose.yml");
+  return false;
+}
+
+// Check MongoDB entrypoint in static configuration
+async function checkMongoDBEntrypoint() {
+  header("Checking MongoDB Entrypoint");
+
+  // Read static configuration
+  const content = await readFile(...STATIC_CONFIG_PATHS);
+  if (!content) {
+    error("Could not find static configuration");
+    return false;
+  }
+
+  // Parse static configuration
+  const config = parseYaml(content);
+  if (!config) {
+    error("Failed to parse static configuration");
+    return false;
+  }
+
+  // Check if entryPoints section exists
+  if (!config.entryPoints) {
+    error("entryPoints section not found in static configuration");
+    return false;
+  }
+
+  // Check if MongoDB entrypoint exists
+  if (
+    config.entryPoints.mongodb &&
+    config.entryPoints.mongodb.address === `:${MONGO_PORT}`
+  ) {
+    success("MongoDB entrypoint is properly configured");
+    return true;
+  } else {
+    error("MongoDB entrypoint is not properly configured");
     return false;
   }
 }
 
-async function testConnection() {
-  header("Testing MongoDB connection");
+// Fix MongoDB entrypoint in static configuration
+async function fixMongoDBEntrypoint() {
+  header("Fixing MongoDB Entrypoint");
 
-  const hostname = `${AGENT_ID}.${MONGO_DOMAIN}`;
-  info(`Testing connection to ${hostname}:${MONGO_PORT}`);
+  // Read static configuration
+  const content = await readFile(...STATIC_CONFIG_PATHS);
+  if (!content) {
+    error("Could not find static configuration");
+    return false;
+  }
 
-  // Test TCP connection first
-  const socket = new net.Socket();
+  // Parse static configuration
+  const config = parseYaml(content);
+  if (!config) {
+    error("Failed to parse static configuration");
+    return false;
+  }
 
-  try {
-    await new Promise((resolve, reject) => {
-      socket.setTimeout(5000);
+  // Ensure entryPoints section exists
+  if (!config.entryPoints) {
+    config.entryPoints = {};
+  }
 
-      socket.on("connect", () => {
-        success(`TCP connection to ${hostname}:${MONGO_PORT} successful`);
-        socket.destroy();
-        resolve();
-      });
+  // Add or update MongoDB entrypoint
+  config.entryPoints.mongodb = {
+    address: `:${MONGO_PORT}`,
+    transport: {
+      respondingTimeouts: {
+        idleTimeout: "1h",
+      },
+    },
+  };
 
-      socket.on("timeout", () => {
-        error(`TCP connection to ${hostname}:${MONGO_PORT} timed out`);
-        socket.destroy();
-        reject(new Error("Connection timed out"));
-      });
-
-      socket.on("error", (err) => {
-        error(`TCP connection error: ${err.message}`);
-        socket.destroy();
-        reject(err);
-      });
-
-      info(`Attempting to connect to ${hostname}:${MONGO_PORT}...`);
-      socket.connect(MONGO_PORT, hostname);
-    });
-  } catch (err) {
-    warning("TCP connection failed, trying localhost...");
-
+  // Write updated static configuration
+  for (const filePath of STATIC_CONFIG_PATHS) {
     try {
-      await new Promise((resolve, reject) => {
-        const localSocket = new net.Socket();
-        localSocket.setTimeout(5000);
+      // Check if file exists
+      await fs.access(filePath);
 
-        localSocket.on("connect", () => {
-          success(`TCP connection to localhost:${MONGO_PORT} successful`);
-          localSocket.destroy();
-          resolve();
-        });
+      // Create backup
+      await fs.copyFile(filePath, `${filePath}.bak.${Date.now()}`);
 
-        localSocket.on("timeout", () => {
-          error(`TCP connection to localhost:${MONGO_PORT} timed out`);
-          localSocket.destroy();
-          reject(new Error("Connection timed out"));
-        });
-
-        localSocket.on("error", (err) => {
-          error(`TCP connection error: ${err.message}`);
-          localSocket.destroy();
-          reject(err);
-        });
-
-        info(`Attempting to connect to localhost:${MONGO_PORT}...`);
-        localSocket.connect(MONGO_PORT, "localhost");
-      });
-    } catch (localErr) {
-      error("Both hostname and localhost connections failed");
+      // Write updated file
+      if (await writeYaml(filePath, config)) {
+        success(`Updated static configuration at ${filePath}`);
+        return true;
+      }
+    } catch (err) {
+      // Try next path
     }
   }
 
-  // Test MongoDB connection
-  info("Testing MongoDB connection with mongosh...");
+  error("Failed to update static configuration");
+  return false;
+}
 
-  // Test with TLS
-  try {
-    const tlsCommand = `timeout 10 mongosh "mongodb://admin:adminpassword@${hostname}:${MONGO_PORT}/admin?ssl=true&tlsAllowInvalidCertificates=true" --eval "db.serverStatus()" 2>&1 || echo "Connection failed"`;
-    const tlsResult = execSync(tlsCommand, { encoding: "utf8" });
+// Check MongoDB catchall router in dynamic configuration
+async function checkMongoDBCatchallRouter() {
+  header("Checking MongoDB Catchall Router");
 
-    if (tlsResult.includes("Connection failed")) {
-      warning("MongoDB connection with TLS failed, trying without TLS...");
+  // Read dynamic configuration
+  const content = await readFile(...CONFIG_PATHS);
+  if (!content) {
+    error("Could not find dynamic configuration");
+    return false;
+  }
 
-      // Try without TLS
-      const noTlsCommand = `timeout 10 mongosh "mongodb://admin:adminpassword@${hostname}:${MONGO_PORT}/admin" --eval "db.serverStatus()" 2>&1 || echo "Connection failed"`;
-      const noTlsResult = execSync(noTlsCommand, { encoding: "utf8" });
+  // Parse dynamic configuration
+  const config = parseYaml(content);
+  if (!config) {
+    error("Failed to parse dynamic configuration");
+    return false;
+  }
 
-      if (noTlsResult.includes("Connection failed")) {
-        error("MongoDB connection without TLS also failed");
+  // Check if tcp section exists
+  if (!config.tcp) {
+    error("tcp section not found in dynamic configuration");
+    return false;
+  }
 
-        // Try direct connection to target
-        info(`Testing direct connection to ${TARGET_IP}:${MONGO_PORT}...`);
-        const directCommand = `timeout 10 mongosh "mongodb://admin:adminpassword@${TARGET_IP}:${MONGO_PORT}/admin?ssl=true&tlsAllowInvalidCertificates=true" --eval "db.serverStatus()" 2>&1 || echo "Connection failed"`;
-        const directResult = execSync(directCommand, { encoding: "utf8" });
+  // Check if routers section exists
+  if (!config.tcp.routers) {
+    error("tcp.routers section not found in dynamic configuration");
+    return false;
+  }
 
-        if (directResult.includes("Connection failed")) {
-          error(`Direct connection to ${TARGET_IP}:${MONGO_PORT} failed`);
-          warning(
-            "The MongoDB server might not be running or has different credentials"
-          );
-        } else {
-          success(`Direct connection to ${TARGET_IP}:${MONGO_PORT} succeeded`);
-          warning(
-            "The issue is with Traefik routing, not the MongoDB server itself"
-          );
-        }
-      } else {
-        success("MongoDB connection without TLS succeeded");
-        warning(
-          "Your MongoDB server is not using TLS, but Traefik is configured for TLS passthrough"
-        );
-        warning("This mismatch might cause connection issues");
+  // Check if catchall router exists
+  if (
+    config.tcp.routers["mongodb-catchall"] &&
+    config.tcp.routers["mongodb-catchall"].rule ===
+      `HostSNI(\`*.${MONGO_DOMAIN}\`)` &&
+    config.tcp.routers["mongodb-catchall"].service ===
+      "mongodb-catchall-service" &&
+    config.tcp.routers["mongodb-catchall"].tls &&
+    config.tcp.routers["mongodb-catchall"].tls.passthrough === true
+  ) {
+    success("MongoDB catchall router is properly configured");
+    return true;
+  } else {
+    error("MongoDB catchall router is not properly configured");
+    return false;
+  }
+}
+
+// Fix MongoDB catchall router in dynamic configuration
+async function fixMongoDBCatchallRouter() {
+  header("Fixing MongoDB Catchall Router");
+
+  // Read dynamic configuration
+  const content = await readFile(...CONFIG_PATHS);
+  if (!content) {
+    error("Could not find dynamic configuration");
+    return false;
+  }
+
+  // Parse dynamic configuration
+  const config = parseYaml(content);
+  if (!config) {
+    error("Failed to parse dynamic configuration");
+    return false;
+  }
+
+  // Ensure tcp section exists
+  if (!config.tcp) {
+    config.tcp = {};
+  }
+
+  // Ensure routers section exists
+  if (!config.tcp.routers) {
+    config.tcp.routers = {};
+  }
+
+  // Ensure services section exists
+  if (!config.tcp.services) {
+    config.tcp.services = {};
+  }
+
+  // Add or update catchall router
+  config.tcp.routers["mongodb-catchall"] = {
+    rule: `HostSNI(\`*.${MONGO_DOMAIN}\`)`,
+    entryPoints: ["mongodb"],
+    service: "mongodb-catchall-service",
+    tls: {
+      passthrough: true,
+    },
+  };
+
+  // Add or update catchall service
+  config.tcp.services["mongodb-catchall-service"] = {
+    loadBalancer: {
+      servers: [],
+    },
+  };
+
+  // Write updated dynamic configuration
+  for (const filePath of CONFIG_PATHS) {
+    try {
+      // Check if file exists
+      await fs.access(filePath);
+
+      // Create backup
+      await fs.copyFile(filePath, `${filePath}.bak.${Date.now()}`);
+
+      // Write updated file
+      if (await writeYaml(filePath, config)) {
+        success(`Updated dynamic configuration at ${filePath}`);
+        return true;
       }
-    } else {
-      success("MongoDB connection with TLS succeeded");
+    } catch (err) {
+      // Try next path
     }
+  }
+
+  error("Failed to update dynamic configuration");
+  return false;
+}
+
+// Restart Traefik container
+async function restartTraefik() {
+  header("Restarting Traefik");
+
+  try {
+    await execAsync(`docker restart ${TRAEFIK_CONTAINER}`);
+    success(`${TRAEFIK_CONTAINER} container restarted successfully`);
+
+    // Wait for Traefik to start
+    info("Waiting for Traefik to start...");
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+
+    return true;
   } catch (err) {
-    error(`Error testing MongoDB connection: ${err.message}`);
+    error(`Failed to restart ${TRAEFIK_CONTAINER}: ${err.message}`);
+    return false;
   }
 }
 
 // Main function
 async function main() {
-  console.log(`${colors.bold}MongoDB Connection Fixer${colors.reset}`);
-  console.log("=========================");
+  log("MongoDB Connection Fixer", colors.bold);
+  log("======================", colors.bold);
 
-  // Step 1: Fix MongoDB port exposure
-  const portFixed = await fixMongoDBPort();
+  // Step 1: Check MongoDB port
+  const portOk = await checkMongoDBPort();
 
-  // Step 2: Fix Traefik configuration
-  const configFixed = await fixTraefikConfig();
+  // Step 2: Fix MongoDB port in docker-compose.yml if needed
+  let portFixed = false;
+  if (!portOk) {
+    portFixed = await fixMongoDBPortInDockerCompose();
+  }
 
-  // Step 3: Test connection
-  await testConnection();
+  // Step 3: Check MongoDB entrypoint
+  const entrypointOk = await checkMongoDBEntrypoint();
+
+  // Step 4: Fix MongoDB entrypoint if needed
+  let entrypointFixed = false;
+  if (!entrypointOk) {
+    entrypointFixed = await fixMongoDBEntrypoint();
+  }
+
+  // Step 5: Check MongoDB catchall router
+  const routerOk = await checkMongoDBCatchallRouter();
+
+  // Step 6: Fix MongoDB catchall router if needed
+  let routerFixed = false;
+  if (!routerOk) {
+    routerFixed = await fixMongoDBCatchallRouter();
+  }
+
+  // Step 7: Restart Traefik if any changes were made
+  if (portFixed || entrypointFixed || routerFixed) {
+    await restartTraefik();
+  }
 
   // Summary
   header("Summary");
 
-  if (portFixed) {
-    success("MongoDB port exposure: FIXED");
+  if (portOk || portFixed) {
+    success("MongoDB port is properly configured");
   } else {
-    warning("MongoDB port exposure: ISSUES REMAIN");
+    error("Failed to fix MongoDB port");
   }
 
-  if (configFixed) {
-    success("Traefik configuration: FIXED");
+  if (entrypointOk || entrypointFixed) {
+    success("MongoDB entrypoint is properly configured");
   } else {
-    warning("Traefik configuration: ISSUES REMAIN");
+    error("Failed to fix MongoDB entrypoint");
   }
 
-  // Final recommendations
-  header("Final Recommendations");
+  if (routerOk || routerFixed) {
+    success("MongoDB catchall router is properly configured");
+  } else {
+    error("Failed to fix MongoDB catchall router");
+  }
 
-  info("1. If connection issues persist, check the following:");
-  info("   - DNS resolution for your MongoDB domain");
-  info("   - Firewall rules on both Traefik and MongoDB servers");
-  info("   - MongoDB authentication settings");
-  info("   - TLS configuration on MongoDB server");
-
-  info("\n2. Run the test script to verify the connection:");
-  info("   node scripts/test-mongodb-connection.js");
-
-  info("\n3. Check Traefik logs for more details:");
-  info("   docker logs traefik | grep -i mongodb");
+  if (portOk && entrypointOk && routerOk) {
+    success("MongoDB connection is already properly configured");
+  } else if (portFixed || entrypointFixed || routerFixed) {
+    success("MongoDB connection has been fixed");
+  } else {
+    error("Failed to fix MongoDB connection");
+  }
 }
 
+// Run the main function
 main().catch((err) => {
-  console.error(`${colors.red}Fatal error: ${err.message}${colors.reset}`);
+  error(`Fatal error: ${err.message}`);
   process.exit(1);
 });

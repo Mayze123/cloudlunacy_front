@@ -10,7 +10,7 @@ const express = require("express");
 const router = express.Router();
 
 // Import controllers
-const agentController = require("./controllers/agentController.js");
+const agentController = require("./controllers/agentController");
 const appController = require("./controllers/appController");
 const mongodbController = require("./controllers/mongodbController");
 const configController = require("./controllers/configController");
@@ -90,7 +90,14 @@ router.get("/config", authMiddleware.requireAuth, configController.getConfig);
 router.get(
   "/config/:agentId",
   authMiddleware.requireAuth,
+  authMiddleware.requireAgentAccess(),
   configController.getAgentConfig
+);
+router.post(
+  "/config/repair",
+  authMiddleware.requireAuth,
+  authMiddleware.requireRole("admin"),
+  configController.repairConfig
 );
 
 /**
@@ -110,6 +117,7 @@ router.get(
 router.post(
   "/health/repair",
   authMiddleware.requireAuth,
+  authMiddleware.requireRole("admin"),
   healthController.repair
 );
 router.get(
@@ -121,11 +129,6 @@ router.get(
 /**
  * Certificate Routes
  */
-// Fix: Add optional middleware helper function if it doesn't exist
-if (!authMiddleware.optional) {
-  authMiddleware.optional = (req, res, next) => next();
-}
-
 // CA certificate is publicly available
 router.get(
   "/certificates/mongodb-ca",
