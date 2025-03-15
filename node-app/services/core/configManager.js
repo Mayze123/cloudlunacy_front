@@ -1,10 +1,16 @@
 /**
+ * Configuration Manager
+ * 
+ * Handles loading, validating, and updating Traefik configuration files
+ */
+
+/**
  * Validate the Traefik configuration
  * 
  * @param {object} config - The configuration to validate
  * @returns {boolean} - Whether the configuration is valid
  */
-validateConfig(config) {
+function validateConfig(config) {
   // Check if the config has the required sections
   if (!config) {
     logger.error('Configuration is null or undefined');
@@ -60,7 +66,7 @@ validateConfig(config) {
 async saveConfig(config) {
   try {
     // Validate the configuration before saving
-    this.validateConfig(config);
+    validateConfig(config);
     
     // Convert to YAML and save
     const yamlContent = yaml.stringify(config);
