@@ -210,8 +210,9 @@ async function main() {
       stdio: "inherit",
       env: {
         ...process.env,
-        DEBUG: "*", // Enable debug output
-        NODE_DEBUG: "net,http,stream", // More debugging
+        // Only debug specific subsystems if needed:
+        // DEBUG: "app:*", // Only app-specific debug output
+        // NODE_DEBUG: "http,stream", // Debug HTTP and streams but not module loading
       },
     });
 
@@ -265,5 +266,3 @@ main().catch((err) => {
   logError("Unhandled error in main()", err);
   process.exit(1);
 });
-
-// Check if start.js is using ES modules or has syntax errors
