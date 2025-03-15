@@ -230,7 +230,7 @@ class MongoDBService {
       const serviceName = `mongodb-${agentId}-service`;
 
       // Get the current Traefik configuration
-      const config = await this.configManager.getConfig();
+      const config = await configManager.getConfig();
 
       // Ensure tcp section exists
       if (!config.tcp) {
@@ -415,7 +415,7 @@ class MongoDBService {
       const serviceName = `mongodb-${agentId}-service`;
 
       // Get the current Traefik configuration
-      const config = await this.configManager.getConfig();
+      const config = await configManager.getConfig();
 
       // Remove the router and service if they exist
       if (config.tcp && config.tcp.routers && config.tcp.routers[routerName]) {
