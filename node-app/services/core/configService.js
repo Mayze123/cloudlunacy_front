@@ -296,6 +296,93 @@ class ConfigService {
     logger.info("Configuration repair completed");
     return true;
   }
+
+  /**
+   * Update a TCP router in the configuration
+   * @param {string} name - Router name
+   * @param {object} config - Router configuration
+   */
+  async updateTcpRouter(name, config) {
+    try {
+      logger.debug(`Updating TCP router: ${name}`);
+      await this.initialize();
+
+      // Make sure main config is loaded
+      if (!this.configs.main) {
+        await this.loadMainConfig();
+      }
+
+      // Ensure tcp section exists
+      if (!this.configs.main.tcp) {
+        this.configs.main.tcp = { routers: {}, services: {} };
+      }
+      if (!this.configs.main.tcp.routers) {
+        this.configs.main.tcp.routers = {};
+      }
+
+      // Update or add the router
+      this.configs.main.tcp.routers[name] = config;
+
+      // Save the configuration
+      await this.saveConfiguration();
+      logger.info(`TCP router ${name} updated successfully`);
+      return true;
+    } catch (err) {
+      logger.error(`Failed to update TCP router ${name}: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+        name,
+      });
+      throw err;
+    }
+  }
+
+  /**
+   * Update a TCP service in the configuration
+   * @param {string} name - Service name
+   * @param {object} config - Service configuration
+   */
+  async updateTcpService(name, config) {
+    try {
+      logger.debug(`Updating TCP service: ${name}`);
+      await this.initialize();
+
+      // Make sure main config is loaded
+      if (!this.configs.main) {
+        await this.loadMainConfig();
+      }
+
+      // Ensure tcp section exists
+      if (!this.configs.main.tcp) {
+        this.configs.main.tcp = { routers: {}, services: {} };
+      }
+      if (!this.configs.main.tcp.services) {
+        this.configs.main.tcp.services = {};
+      }
+
+      // Update or add the service
+      this.configs.main.tcp.services[name] = config;
+
+      // Save the configuration
+      await this.saveConfiguration();
+      logger.info(`TCP service ${name} updated successfully`);
+      return true;
+    } catch (err) {
+      logger.error(`Failed to update TCP service ${name}: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+        name,
+      });
+      throw err;
+    }
+  }
+
+  /**
+   * Save the configuration
+   */
+  async saveConfiguration() {
+    return this.saveConfig(this.paths.dynamic, this.configs.main);
+  }
 }
 
 module.exports = new ConfigService();
