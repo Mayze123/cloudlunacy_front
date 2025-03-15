@@ -126,11 +126,19 @@ if (!authMiddleware.optional) {
   authMiddleware.optional = (req, res, next) => next();
 }
 
-// Fix: Ensure the controller method exists
+// CA certificate is publicly available
 router.get(
   "/certificates/mongodb-ca",
   authMiddleware.optional,
   certificateController.getMongoCA
+);
+
+// Agent certificates require authentication
+router.get(
+  "/certificates/agent/:agentId",
+  authMiddleware.requireAuth,
+  authMiddleware.requireAgentAccess(),
+  certificateController.getAgentCertificates
 );
 
 // Apply error handling middleware

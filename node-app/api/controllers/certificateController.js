@@ -4,6 +4,7 @@
 const fs = require("fs").promises;
 const path = require("path");
 const logger = require("../../utils/logger").getLogger("certificateController");
+const coreServices = require("../../services/core");
 
 // Path to MongoDB CA certificate
 const MONGO_CA_PATH =
@@ -14,6 +15,19 @@ const MONGO_CA_PATH =
  */
 exports.getMongoCA = async (req, res) => {
   try {
+    // Check if certificate service is available
+    if (coreServices.certificate && coreServices.certificate.initialized) {
+      const caResult = await coreServices.certificate.getCA();
+
+      if (caResult.success) {
+        res.set("Content-Type", "application/x-pem-file");
+        res.set("Content-Disposition", 'attachment; filename="mongodb-ca.crt"');
+        res.send(caResult.caCert);
+        return;
+      }
+    }
+
+    // Fall back to reading the file directly if service isn't available
     let caCert;
 
     try {
@@ -44,6 +58,64 @@ exports.getMongoCA = async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Failed to get MongoDB CA certificate",
+      error: err.message,
+    });
+  }
+};
+
+/**
+ * Get agent certificates
+ * Requires authentication to access agent-specific certificates
+ */
+exports.getAgentCertificates = async (req, res) => {
+  try {
+    const { agentId } = req.params;
+
+    // Authentication check - ensure requesting agent can only access its own certificates
+    if (
+      req.user &&
+      (req.user.role === "admin" ||
+        (req.user.role === "agent" && req.user.agentId === agentId))
+    ) {
+      // Generate or retrieve certificates for this agent
+      if (!coreServices.certificate || !coreServices.certificate.initialized) {
+        await coreServices.certificate.initialize();
+      }
+
+      const certResult =
+        await coreServices.certificate.generateAgentCertificate(agentId);
+
+      if (certResult.success) {
+        return res.status(200).json({
+          success: true,
+          agentId,
+          certificates: {
+            caCert: certResult.caCert,
+            serverKey: certResult.serverKey,
+            serverCert: certResult.serverCert,
+          },
+        });
+      } else {
+        return res.status(500).json({
+          success: false,
+          message: "Failed to generate agent certificates",
+          error: certResult.error,
+        });
+      }
+    } else {
+      return res.status(403).json({
+        success: false,
+        message: "Unauthorized to access these certificates",
+      });
+    }
+  } catch (err) {
+    logger.error(`Failed to get agent certificates: ${err.message}`, {
+      error: err.message,
+      stack: err.stack,
+    });
+    res.status(500).json({
+      success: false,
+      message: "Failed to get agent certificates",
       error: err.message,
     });
   }

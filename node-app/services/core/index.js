@@ -9,6 +9,7 @@ const configService = require("./configService");
 const agentService = require("./agentService");
 const routingService = require("./routingService");
 const mongodbService = require("./mongodbService");
+const certificateService = require("./certificateService");
 const logger = require("../../utils/logger").getLogger("coreServices");
 
 /**
@@ -34,6 +35,10 @@ async function initialize() {
     await routingService.initialize();
     logger.info("Routing service initialized");
 
+    // Initialize certificate service
+    await certificateService.initialize();
+    logger.info("Certificate service initialized");
+
     logger.info("All core services initialized successfully");
     return true;
   } catch (err) {
@@ -57,6 +62,7 @@ async function repair() {
     await mongodbService.repair();
     await agentService.repair();
     await routingService.repair();
+    await certificateService.repair();
 
     logger.info("Core services repaired successfully");
     return true;
@@ -76,4 +82,5 @@ module.exports = {
   agent: agentService,
   routing: routingService,
   mongodb: mongodbService,
+  certificate: certificateService,
 };

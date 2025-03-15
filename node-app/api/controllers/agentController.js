@@ -36,6 +36,26 @@ exports.registerAgent = asyncHandler(async (req, res) => {
   // Register the agent using core service
   const result = await coreServices.agent.registerAgent(agentId, targetIp);
 
+  // Generate certificates for this agent if needed
+  let certificates = null;
+  if (coreServices.certificate) {
+    try {
+      const certResult =
+        await coreServices.certificate.generateAgentCertificate(agentId);
+      if (certResult.success) {
+        certificates = {
+          caCert: certResult.caCert,
+          serverKey: certResult.serverKey,
+          serverCert: certResult.serverCert,
+        };
+      }
+    } catch (err) {
+      logger.error(
+        `Failed to generate certificates for agent ${agentId}: ${err.message}`
+      );
+    }
+  }
+
   res.status(201).json({
     success: true,
     agentId,
@@ -43,6 +63,7 @@ exports.registerAgent = asyncHandler(async (req, res) => {
     mongodbUrl: result.mongodbUrl,
     targetIp,
     tlsEnabled: true,
+    certificates,
     // TLS is handled by the front server, so clients should use SSL
     connectionString: `mongodb://username:password@${agentId}.${
       process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk"
