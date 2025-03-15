@@ -202,12 +202,53 @@ IP.1 = 127.0.0.1
     }
   }
 
+  /**
+   * Ensure certificates directory exists
+   *
+   * @private
+   */
   async _ensureCertsDir() {
-    // Implementation of _ensureCertsDir method
+    try {
+      logger.info(`Ensuring certificates directory exists at ${this.certsDir}`);
+
+      // Create certificates directory if it doesn't exist
+      await fs.mkdir(this.certsDir, { recursive: true });
+
+      // Create agents directory if it doesn't exist
+      await fs.mkdir(path.join(this.certsDir, "agents"), { recursive: true });
+
+      logger.info("Certificates directory structure created");
+      return true;
+    } catch (err) {
+      logger.error(`Failed to create certificates directory: ${err.message}`);
+      throw err;
+    }
   }
 
+  /**
+   * Ensure CA certificate exists
+   *
+   * @private
+   */
   async _ensureCA() {
-    // Implementation of _ensureCA method
+    try {
+      logger.info("Checking if CA certificate exists");
+
+      // Check if CA certificate and key exist
+      const caExists = await this.checkCAExists();
+
+      if (!caExists) {
+        logger.info("CA certificate not found, generating new one");
+        await this.generateCA();
+      } else {
+        logger.info("CA certificate already exists");
+      }
+
+      return true;
+    } catch (err) {
+      logger.error(`Failed to ensure CA certificate: ${err.message}`);
+      throw err;
+    }
   }
 }
 

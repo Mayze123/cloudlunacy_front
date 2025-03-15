@@ -43,6 +43,56 @@ class AgentService {
   }
 
   /**
+   * Load agents from configuration
+   *
+   * @private
+   */
+  async _loadAgents() {
+    try {
+      logger.info("Loading registered agents");
+
+      // Clear existing registrations
+      this.agents.clear();
+
+      // Check if config manager is initialized
+      if (!this.configManager.initialized) {
+        await this.configManager.initialize();
+      }
+
+      // Get agent configs from main configuration
+      const mainConfig = this.configManager.configs.main;
+
+      // Check if agents section exists in config
+      if (mainConfig && mainConfig.agents) {
+        for (const [agentId, agentConfig] of Object.entries(
+          mainConfig.agents
+        )) {
+          if (agentConfig && agentConfig.registration) {
+            // Add to registry
+            this.agents.set(agentId, {
+              targetIp: agentConfig.registration.targetIp,
+              registeredAt:
+                agentConfig.registration.registeredAt ||
+                new Date().toISOString(),
+              lastSeen:
+                agentConfig.registration.lastSeen || new Date().toISOString(),
+            });
+
+            logger.debug(`Loaded agent: ${agentId}`);
+          }
+        }
+      }
+
+      logger.info(`Loaded ${this.agents.size} agents`);
+    } catch (err) {
+      logger.error(`Failed to load registered agents: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+      });
+    }
+  }
+
+  /**
    * Register a new agent
    */
   async registerAgent(agentId, targetIp) {
@@ -182,51 +232,6 @@ class AgentService {
         stack: err.stack,
       });
       return false;
-    }
-  }
-
-  /**
-   * Load registered agents from configuration
-   */
-  async loadRegisteredAgents() {
-    try {
-      logger.info("Loading registered agents");
-
-      // Clear existing registrations
-      this.agents.clear();
-
-      // Get agent configs
-      const agentConfigs = await configService.listAgents();
-
-      for (const agentId of agentConfigs) {
-        try {
-          // Load agent config
-          const agentConfig = await configService.loadAgentConfig(agentId);
-
-          if (agentConfig && agentConfig.registration) {
-            // Add to registry
-            this.agents.set(agentId, {
-              targetIp: agentConfig.registration.targetIp,
-              registeredAt:
-                agentConfig.registration.registeredAt ||
-                new Date().toISOString(),
-              lastSeen:
-                agentConfig.registration.lastSeen || new Date().toISOString(),
-            });
-
-            logger.debug(`Loaded agent: ${agentId}`);
-          }
-        } catch (err) {
-          logger.warn(`Failed to load agent ${agentId}: ${err.message}`);
-        }
-      }
-
-      logger.info(`Loaded ${this.agents.size} agents`);
-    } catch (err) {
-      logger.error(`Failed to load registered agents: ${err.message}`, {
-        error: err.message,
-        stack: err.stack,
-      });
     }
   }
 }
