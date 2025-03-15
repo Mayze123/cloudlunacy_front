@@ -94,8 +94,13 @@ class AgentService {
 
   /**
    * Register a new agent
+   *
+   * @param {string} agentId - The agent ID
+   * @param {string} targetIp - The target IP address
+   * @param {Object} options - Additional options
+   * @returns {Promise<Object>} Registration result
    */
-  async registerAgent(agentId, targetIp) {
+  async registerAgent(agentId, targetIp, options = {}) {
     try {
       if (!this.initialized) {
         await this.initialize();
@@ -112,15 +117,70 @@ class AgentService {
       const token = this.generateAgentToken(agentId);
 
       // Register MongoDB for this agent
-      const mongoResult = await mongodbService.registerMongoDBAgent(
-        agentId,
-        targetIp,
-        true // Enable TLS by default
-      );
+      let mongoResult = null;
+      if (mongodbService) {
+        try {
+          mongoResult = await mongodbService.registerAgent(
+            agentId,
+            targetIp,
+            { useTls: options.useTls !== false } // Default to true
+          );
 
-      logger.info(
-        `MongoDB registered for agent ${agentId} with target IP ${targetIp}`
-      );
+          if (!mongoResult.success) {
+            logger.warn(
+              `MongoDB registration warning for agent ${agentId}: ${mongoResult.error}`
+            );
+          } else {
+            logger.info(
+              `MongoDB registered for agent ${agentId} with target IP ${targetIp}`
+            );
+          }
+        } catch (mongoErr) {
+          logger.error(
+            `MongoDB registration failed for agent ${agentId}: ${mongoErr.message}`,
+            {
+              error: mongoErr.message,
+              stack: mongoErr.stack,
+            }
+          );
+          // Continue with agent registration even if MongoDB fails
+        }
+      }
+
+      // Generate certificates if needed
+      let certificates = null;
+      if (
+        options.generateCertificates !== false &&
+        this.configManager.certificate
+      ) {
+        try {
+          const certResult =
+            await this.configManager.certificate.generateAgentCertificate(
+              agentId
+            );
+          if (certResult.success) {
+            certificates = {
+              caCert: certResult.caCert,
+              serverKey: certResult.serverKey,
+              serverCert: certResult.serverCert,
+            };
+            logger.info(`Certificates generated for agent ${agentId}`);
+          } else {
+            logger.warn(
+              `Certificate generation warning for agent ${agentId}: ${certResult.error}`
+            );
+          }
+        } catch (certErr) {
+          logger.error(
+            `Certificate generation failed for agent ${agentId}: ${certErr.message}`,
+            {
+              error: certErr.message,
+              stack: certErr.stack,
+            }
+          );
+          // Continue with agent registration even if certificate generation fails
+        }
+      }
 
       // Save agent registration info
       this.agents.set(agentId, {
@@ -129,14 +189,27 @@ class AgentService {
         lastSeen: new Date().toISOString(),
       });
 
-      return {
+      // Build response
+      const response = {
         success: true,
         agentId,
         token,
         targetIp,
-        tlsEnabled: true,
-        connectionString: mongoResult.connectionString,
+        tlsEnabled: options.useTls !== false,
       };
+
+      // Add MongoDB info if available
+      if (mongoResult && mongoResult.success) {
+        response.mongodbUrl = mongoResult.mongodbUrl;
+        response.connectionString = mongoResult.connectionString;
+      }
+
+      // Add certificates if available
+      if (certificates) {
+        response.certificates = certificates;
+      }
+
+      return response;
     } catch (err) {
       logger.error(`Failed to register agent ${agentId}: ${err.message}`, {
         error: err.message,

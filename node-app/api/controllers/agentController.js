@@ -35,73 +35,37 @@ exports.registerAgent = asyncHandler(async (req, res) => {
 
   logger.info(`Registering agent ${agentId} with IP ${targetIp}`);
 
-  // Register the agent using core service
-  const result = await coreServices.agent.registerAgent(agentId, targetIp);
+  try {
+    // Register the agent using core service
+    const result = await coreServices.agent.registerAgent(agentId, targetIp, {
+      useTls: true,
+      generateCertificates: true,
+    });
 
-  // Register MongoDB for this agent
-  let mongodbResult = null;
-  if (coreServices.mongodb) {
-    try {
-      // Check if registerAgent method exists, otherwise try registerMongoDBAgent
-      const registerMethod =
-        coreServices.mongodb.registerAgent ||
-        coreServices.mongodb.registerMongoDBAgent;
+    res.status(201).json({
+      success: true,
+      agentId,
+      token: result.token,
+      mongodbUrl: result.mongodbUrl,
+      targetIp,
+      tlsEnabled: result.tlsEnabled,
+      certificates: result.certificates,
+      connectionString:
+        result.connectionString ||
+        `mongodb://username:password@${agentId}.${
+          process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk"
+        }:27017/admin?ssl=true&tlsAllowInvalidCertificates=true`,
+    });
+  } catch (err) {
+    logger.error(`Agent registration failed: ${err.message}`, {
+      error: err.message,
+      stack: err.stack,
+      agentId,
+      targetIp,
+    });
 
-      if (registerMethod) {
-        mongodbResult = await registerMethod.call(
-          coreServices.mongodb,
-          agentId,
-          targetIp,
-          {
-            useTls: true,
-          }
-        );
-        logger.info(`MongoDB registered for agent ${agentId}`);
-      } else {
-        logger.error("MongoDB registration method not found");
-      }
-    } catch (err) {
-      logger.error(
-        `Failed to register MongoDB for agent ${agentId}: ${err.message}`
-      );
-    }
-  } else {
-    logger.error("MongoDB service is not available");
+    throw new AppError(`Agent registration failed: ${err.message}`, 500);
   }
-
-  // Generate certificates for this agent if needed
-  let certificates = null;
-  if (coreServices.certificate) {
-    try {
-      const certResult =
-        await coreServices.certificate.generateAgentCertificate(agentId);
-      if (certResult.success) {
-        certificates = {
-          caCert: certResult.caCert,
-          serverKey: certResult.serverKey,
-          serverCert: certResult.serverCert,
-        };
-      }
-    } catch (err) {
-      logger.error(
-        `Failed to generate certificates for agent ${agentId}: ${err.message}`
-      );
-    }
-  }
-
-  res.status(201).json({
-    success: true,
-    agentId,
-    token: result.token,
-    mongodbUrl: mongodbResult ? mongodbResult.mongodbUrl : null,
-    targetIp,
-    tlsEnabled: true,
-    certificates,
-    // TLS is handled by the front server, so clients should use SSL
-    connectionString: `mongodb://username:password@${agentId}.${
-      process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk"
-    }:27017/admin?ssl=true&tlsAllowInvalidCertificates=true`,
-  });
 });
 
 /**
@@ -183,51 +147,3 @@ exports.deregisterAgent = asyncHandler(async (req, res) => {
     message: `Agent ${agentId} deregistered successfully`,
   });
 });
-
-// Update the register method to include certificates
-exports.register = async (req, res) => {
-  try {
-    const { agentId } = req.body;
-    const agentIp = req.headers["x-agent-ip"] || req.ip;
-
-    // Validate inputs
-    if (!agentId) {
-      return res.status(400).json({
-        success: false,
-        message: "Agent ID is required",
-      });
-    }
-
-    // Register the agent
-    const result = await coreServices.agent.registerAgent(agentId, agentIp);
-
-    // Register MongoDB for this agent
-    const mongoResult = await coreServices.mongodb.registerAgent(
-      agentId,
-      agentIp,
-      {
-        useTls: true,
-      }
-    );
-
-    // Include MongoDB information in the response
-    const response = {
-      ...result,
-      mongodbUrl: mongoResult.mongodbUrl,
-      certificates: mongoResult.certificates,
-    };
-
-    res.json(response);
-  } catch (err) {
-    logger.error(`Agent registration failed: ${err.message}`, {
-      error: err.message,
-      stack: err.stack,
-    });
-
-    res.status(500).json({
-      success: false,
-      message: "Agent registration failed",
-      error: err.message,
-    });
-  }
-};

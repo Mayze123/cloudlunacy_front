@@ -4,6 +4,8 @@
 const fs = require("fs").promises;
 const logger = require("../../utils/logger").getLogger("certificateController");
 const coreServices = require("../../services/core");
+const { asyncHandler } = require("../../utils/asyncHandler");
+const { AppError } = require("../../utils/appError");
 
 // Path to MongoDB CA certificate
 const MONGO_CA_PATH =
@@ -67,74 +69,55 @@ exports.getMongoCA = async (req, res) => {
  *
  * GET /api/certificates/agent/:agentId
  */
-exports.getAgentCertificates = async (req, res) => {
-  try {
-    const { agentId } = req.params;
-    logger.info(`Generating certificates for agent ${agentId}`);
+exports.getAgentCertificates = asyncHandler(async (req, res) => {
+  const { agentId } = req.params;
+  logger.info(`Generating certificates for agent ${agentId}`);
 
-    // Check if user is authorized to access these certificates
-    if (
-      req.user &&
-      (req.user.role === "admin" ||
-        (req.user.role === "agent" && req.user.agentId === agentId))
-    ) {
-      // Initialize certificate service if needed
-      if (!coreServices.certificate) {
-        logger.error("Certificate service not available");
-        return res.status(500).json({
-          success: false,
-          message: "Certificate service not available",
-        });
-      }
-
-      if (!coreServices.certificate.initialized) {
-        logger.info("Initializing certificate service");
-        await coreServices.certificate.initialize();
-      }
-
-      logger.info(`Generating certificate for agent ${agentId}`);
-      const certResult =
-        await coreServices.certificate.generateAgentCertificate(agentId);
-
-      logger.info(
-        `Certificate generation result: ${JSON.stringify({
-          success: certResult.success,
-          error: certResult.error || null,
-        })}`
-      );
-
-      if (certResult.success) {
-        return res.status(200).json({
-          success: true,
-          agentId,
-          certificates: {
-            caCert: certResult.caCert,
-            serverKey: certResult.serverKey,
-            serverCert: certResult.serverCert,
-          },
-        });
-      } else {
-        return res.status(500).json({
-          success: false,
-          message: "Failed to generate agent certificates",
-          error: certResult.error,
-        });
-      }
-    } else {
-      return res.status(403).json({
-        success: false,
-        message: "Unauthorized to access these certificates",
-      });
+  // Check if user is authorized to access these certificates
+  if (
+    req.user &&
+    (req.user.role === "admin" ||
+      (req.user.role === "agent" && req.user.agentId === agentId))
+  ) {
+    // Initialize certificate service if needed
+    if (!coreServices.certificate) {
+      throw new AppError("Certificate service not available", 500);
     }
-  } catch (err) {
-    logger.error(`Failed to get agent certificates: ${err.message}`, {
-      error: err.message,
-      stack: err.stack,
-    });
-    res.status(500).json({
-      success: false,
-      message: "Failed to get agent certificates",
-      error: err.message,
-    });
+
+    if (!coreServices.certificate.initialized) {
+      logger.info("Initializing certificate service");
+      await coreServices.certificate.initialize();
+    }
+
+    logger.info(`Generating certificate for agent ${agentId}`);
+    const certResult = await coreServices.certificate.generateAgentCertificate(
+      agentId
+    );
+
+    logger.info(
+      `Certificate generation result: ${JSON.stringify({
+        success: certResult.success,
+        error: certResult.error || null,
+      })}`
+    );
+
+    if (certResult.success) {
+      return res.status(200).json({
+        success: true,
+        agentId,
+        certificates: {
+          caCert: certResult.caCert,
+          serverKey: certResult.serverKey,
+          serverCert: certResult.serverCert,
+        },
+      });
+    } else {
+      throw new AppError(
+        `Failed to generate agent certificates: ${certResult.error}`,
+        500
+      );
+    }
+  } else {
+    throw new AppError("Unauthorized to access these certificates", 403);
   }
-};
+});
