@@ -16,8 +16,9 @@ RUN apk add --no-cache \
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies
-RUN npm ci
+# Install dependencies with clean npm cache
+RUN npm cache clean --force && \
+    npm ci --production
 
 # Copy start.sh and start.js scripts
 COPY start.sh /app/start.sh

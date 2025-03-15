@@ -15,6 +15,21 @@
 require("dotenv").config();
 const path = require("path");
 const fs = require("fs");
+const { execSync } = require("child_process");
+
+// ANSI color codes for output
+const colors = {
+  reset: "\x1b[0m",
+  red: "\x1b[31m",
+  green: "\x1b[32m",
+  yellow: "\x1b[33m",
+  blue: "\x1b[34m",
+  bold: "\x1b[1m",
+};
+
+function log(message, color = colors.reset) {
+  console.log(`${color}${message}${colors.reset}`);
+}
 
 // Helper function to safely require modules with multiple path attempts
 function safeRequire(modulePath, altPaths = []) {
@@ -292,7 +307,6 @@ async function validateMongoDBConnections() {
 
       // Restart Traefik
       try {
-        const { execSync } = require("child_process");
         logger.info("Restarting Traefik to apply configuration changes");
         execSync(
           `docker restart ${process.env.TRAEFIK_CONTAINER || "traefik"}`
@@ -315,25 +329,126 @@ async function validateMongoDBConnections() {
   }
 }
 
+// Validate dependencies
+function validateDependencies() {
+  log("Validating dependencies...", colors.blue);
+
+  const packageJsonPath = path.join(process.cwd(), "package.json");
+
+  if (!fs.existsSync(packageJsonPath)) {
+    log("Error: package.json not found!", colors.red);
+    return false;
+  }
+
+  const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+  const dependencies = packageJson.dependencies || {};
+
+  let allValid = true;
+  const failedDeps = [];
+
+  for (const dep in dependencies) {
+    if (!checkModule(dep)) {
+      allValid = false;
+      failedDeps.push(dep);
+    }
+  }
+
+  if (allValid) {
+    log("All dependencies are valid!", colors.green);
+    return true;
+  } else {
+    log("Failed to load the following dependencies:", colors.red);
+    failedDeps.forEach((dep) => log(`  - ${dep}`, colors.yellow));
+    log("\nTry running: npm ci", colors.blue);
+    return false;
+  }
+}
+
+// Validate environment variables
+function validateEnvironment() {
+  log("Validating environment...", colors.blue);
+
+  const requiredVars = [
+    "NODE_PORT",
+    "JWT_SECRET",
+    "MONGO_DOMAIN",
+    "APP_DOMAIN",
+  ];
+
+  const missingVars = requiredVars.filter((varName) => !process.env[varName]);
+
+  if (missingVars.length === 0) {
+    log("All required environment variables are set!", colors.green);
+    return true;
+  } else {
+    log("Missing required environment variables:", colors.red);
+    missingVars.forEach((varName) => log(`  - ${varName}`, colors.yellow));
+    return false;
+  }
+}
+
+// Validate file system permissions
+function validateFileSystem() {
+  log("Validating file system permissions...", colors.blue);
+
+  const dirsToCheck = ["/app/config", "/app/logs", "/app/scripts"];
+
+  const invalidDirs = dirsToCheck.filter((dir) => {
+    try {
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+
+      // Check if we can write to the directory
+      const testFile = path.join(dir, ".test-write-permission");
+      fs.writeFileSync(testFile, "test");
+      fs.unlinkSync(testFile);
+      return false;
+    } catch (err) {
+      return true;
+    }
+  });
+
+  if (invalidDirs.length === 0) {
+    log("All directories have proper permissions!", colors.green);
+    return true;
+  } else {
+    log("Permission issues with the following directories:", colors.red);
+    invalidDirs.forEach((dir) => log(`  - ${dir}`, colors.yellow));
+    return false;
+  }
+}
+
+// Main validation function
+function validate() {
+  log("Starting validation checks...", colors.bold);
+
+  const depsValid = validateDependencies();
+  const envValid = validateEnvironment();
+  const fsValid = validateFileSystem();
+
+  if (depsValid && envValid && fsValid) {
+    log(
+      "\n✅ All validation checks passed! The application can start.",
+      colors.green + colors.bold
+    );
+    return true;
+  } else {
+    log(
+      "\n❌ Validation failed! Please fix the issues above before starting the application.",
+      colors.red + colors.bold
+    );
+    return false;
+  }
+}
+
 // Run the validation if this script is executed directly
 if (require.main === module) {
-  runStartupValidation()
-    .then((result) => {
-      // Log final status
-      if (result.error) {
-        logger.error("Startup validation completed with errors");
-        process.exit(1);
-      } else {
-        logger.info("Startup validation completed successfully");
-        process.exit(0);
-      }
-    })
-    .catch((err) => {
-      logger.error(`Unhandled error in startup validation: ${err.message}`);
-      process.exit(1);
-    });
+  const valid = validate();
+  process.exit(valid ? 0 : 1);
 }
 
 module.exports = {
   runStartupValidation,
+  validate,
 };
