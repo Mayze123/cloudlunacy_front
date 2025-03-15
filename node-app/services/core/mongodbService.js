@@ -9,14 +9,13 @@ const { promisify } = require("util");
 const net = require("net");
 const dns = require("dns").promises;
 const Docker = require("dockerode");
-const configService = require("./configService");
+const configManager = require("./configManager");
 const logger = require("../../utils/logger").getLogger("mongodbService");
 const fs = require("fs").promises;
 const yaml = require("yaml");
 const certificateService = require("./certificateService");
 const path = require("path");
 const { MongoClient } = require("mongodb");
-const configManager = require("./configManager");
 const routingService = require("./routingService");
 
 const execAsync = promisify(exec);
@@ -30,7 +29,7 @@ class MongoDBService {
     this.initialized = false;
     this.registeredAgents = new Map(); // Store agent registrations
     this.certificate = certificateService;
-    this.config = configService;
+    this.config = configManager;
     this.traefikContainer = process.env.TRAEFIK_CONTAINER || "traefik";
     this.certsDir = process.env.CERTS_DIR || "/app/config/certs";
     this.agentCertsDir =
@@ -49,8 +48,8 @@ class MongoDBService {
       logger.info("Initializing MongoDB service");
 
       // Use configService instead of configManager
-      if (!configService.initialized) {
-        await configService.initialize();
+      if (!configManager.initialized) {
+        await configManager.initialize();
       }
 
       // Ensure MongoDB port is exposed in Traefik
@@ -136,7 +135,7 @@ class MongoDBService {
         );
 
         // Update docker-compose.yml to expose port 27017
-        await this.configManager.updateDockerCompose((compose) => {
+        await configManager.updateDockerCompose((compose) => {
           if (
             compose.services &&
             compose.services.traefik &&
@@ -175,7 +174,7 @@ class MongoDBService {
       );
 
       // Check if MongoDB entrypoint is configured in Traefik static config
-      const staticConfig = await this.configManager.getStaticConfig();
+      const staticConfig = await configManager.getStaticConfig();
 
       let needsUpdate = false;
 
@@ -201,7 +200,7 @@ class MongoDBService {
       }
 
       if (needsUpdate) {
-        await this.configManager.updateStaticConfig(staticConfig);
+        await configManager.updateStaticConfig(staticConfig);
         return true;
       }
 
@@ -290,7 +289,7 @@ class MongoDBService {
       };
 
       // Save the updated configuration
-      await this.configManager.saveConfig(config);
+      await configManager.saveConfig(config);
       logger.info(`Updated Traefik configuration for agent ${agentId}`);
 
       // Restart Traefik to apply changes
@@ -433,7 +432,7 @@ class MongoDBService {
       }
 
       // Save the updated configuration
-      await this.configManager.saveConfig(config);
+      await configManager.saveConfig(config);
       logger.info(
         `Updated Traefik configuration after removing agent ${agentId}`
       );
@@ -578,7 +577,7 @@ class MongoDBService {
       this.registeredAgents.clear();
 
       // Make sure config is loaded
-      if (!configService.configs || !configService.configs.main) {
+      if (!configManager.configs || !configManager.configs.main) {
         logger.warn(
           "Main configuration not loaded, cannot load MongoDB agents"
         );
@@ -586,7 +585,7 @@ class MongoDBService {
       }
 
       // Get main config
-      const mainConfig = configService.configs.main;
+      const mainConfig = configManager.configs.main;
       if (!mainConfig || !mainConfig.tcp || !mainConfig.tcp.routers) {
         logger.warn("No TCP routers found in configuration");
         return;
@@ -639,7 +638,7 @@ class MongoDBService {
       logger.info("Fixing MongoDB connection issues");
 
       // Get main config
-      const mainConfig = configService.configs.main;
+      const mainConfig = configManager.configs.main;
       if (!mainConfig) {
         logger.error("Main configuration not loaded");
         return false;
@@ -682,7 +681,7 @@ class MongoDBService {
       }
 
       // Save updated config
-      await configService.saveConfig(configService.paths.dynamic, mainConfig);
+      await configManager.saveConfig(configManager.paths.dynamic, mainConfig);
 
       if (fixedCount > 0) {
         logger.info(

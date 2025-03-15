@@ -306,6 +306,125 @@ class ConfigManager {
       env: process.env.NODE_ENV || "development",
     };
   }
+
+  /**
+   * Update Traefik static configuration
+   *
+   * @param {Object} config - The updated configuration
+   * @returns {Promise<boolean>} Success status
+   */
+  async updateStaticConfig(config) {
+    const staticConfigPath =
+      process.env.STATIC_CONFIG_PATH || "/etc/traefik/traefik.yml";
+
+    try {
+      logger.info(`Updating static configuration at ${staticConfigPath}`);
+
+      // Create a backup
+      const backupPath = `${staticConfigPath}.bak`;
+      try {
+        const originalContent = await fs.readFile(staticConfigPath, "utf8");
+        await fs.writeFile(backupPath, originalContent, "utf8");
+        logger.info(`Created backup at ${backupPath}`);
+      } catch (_backupErr) {
+        logger.warn(`Failed to create backup of static configuration`);
+      }
+
+      // Convert to YAML and save
+      const yamlContent = yaml.stringify(config);
+      await fs.writeFile(staticConfigPath, yamlContent, "utf8");
+      logger.info(`Static configuration updated at ${staticConfigPath}`);
+
+      return true;
+    } catch (err) {
+      logger.error(`Failed to update static configuration: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Get Traefik static configuration
+   *
+   * @returns {Promise<Object>} The static configuration
+   */
+  async getStaticConfig() {
+    const staticConfigPath =
+      process.env.STATIC_CONFIG_PATH || "/etc/traefik/traefik.yml";
+
+    try {
+      logger.info(`Loading static configuration from ${staticConfigPath}`);
+
+      // Read and parse the configuration
+      const content = await fs.readFile(staticConfigPath, "utf8");
+      return yaml.parse(content) || {};
+    } catch (err) {
+      logger.error(`Failed to load static configuration: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+      });
+      return {};
+    }
+  }
+
+  /**
+   * Update Docker Compose configuration
+   *
+   * @param {Function} updateFn - Function to update the compose configuration
+   * @returns {Promise<boolean>} Success status
+   */
+  async updateDockerCompose(updateFn) {
+    const composeConfigPath =
+      process.env.DOCKER_COMPOSE_PATH || "/app/docker-compose.yml";
+
+    try {
+      logger.info(
+        `Updating Docker Compose configuration at ${composeConfigPath}`
+      );
+
+      // Read and parse the configuration
+      const content = await fs.readFile(composeConfigPath, "utf8");
+      const compose = yaml.parse(content) || {};
+
+      // Apply the update function
+      const updated = updateFn(compose);
+
+      if (updated) {
+        // Create a backup
+        const backupPath = `${composeConfigPath}.bak`;
+        try {
+          await fs.writeFile(backupPath, content, "utf8");
+          logger.info(`Created backup at ${backupPath}`);
+        } catch (_err) {
+          logger.warn(
+            `Failed to create backup of Docker Compose configuration`
+          );
+        }
+
+        // Convert to YAML and save
+        const yamlContent = yaml.stringify(compose);
+        await fs.writeFile(composeConfigPath, yamlContent, "utf8");
+        logger.info(
+          `Docker Compose configuration updated at ${composeConfigPath}`
+        );
+      } else {
+        logger.info(`No changes needed for Docker Compose configuration`);
+      }
+
+      return updated;
+    } catch (err) {
+      logger.error(
+        `Failed to update Docker Compose configuration: ${err.message}`,
+        {
+          error: err.message,
+          stack: err.stack,
+        }
+      );
+      return false;
+    }
+  }
 }
 
 // Export a singleton instance
