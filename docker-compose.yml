@@ -68,6 +68,7 @@ services:
       - DYNAMIC_CONFIG_PATH=/app/config/dynamic.yml
       - TRAEFIK_CONTAINER=traefik
       - NODE_ENV=production
+      - NODE_DEBUG=${NODE_DEBUG_FILTERED:-}
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3005/health"]
       interval: 30s

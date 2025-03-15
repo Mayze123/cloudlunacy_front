@@ -20,7 +20,12 @@ export NODE_ENV=${NODE_ENV:-production}
 export MONGO_DOMAIN=${MONGO_DOMAIN:-mongodb.cloudlunacy.uk}
 export APP_DOMAIN=${APP_DOMAIN:-apps.cloudlunacy.uk}
 
-
+# Filter out 'module' from NODE_DEBUG if it exists
+if [ -n "$NODE_DEBUG" ]; then
+  # Remove 'module' and 'module,' and ',module' from NODE_DEBUG
+  NODE_DEBUG_FILTERED=$(echo "$NODE_DEBUG" | sed 's/module,//g' | sed 's/,module//g' | sed 's/module//g')
+  export NODE_DEBUG="$NODE_DEBUG_FILTERED"
+fi
 
 # Check if validation passed
 if [ $? -ne 0 ]; then
@@ -64,3 +69,6 @@ else
   ls -la /app
   exit 1
 fi
+
+# Start the application
+node start.js
