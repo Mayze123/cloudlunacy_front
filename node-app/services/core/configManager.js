@@ -434,5 +434,5 @@ class ConfigManager {
   }
 }
 
-// Export a singleton instance
-module.exports = new ConfigManager();
+// Export the class instead of a singleton instance
+module.exports = ConfigManager;
