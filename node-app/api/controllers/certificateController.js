@@ -71,6 +71,7 @@ exports.getMongoCA = async (req, res) => {
 exports.getAgentCertificates = async (req, res) => {
   try {
     const { agentId } = req.params;
+    logger.info(`Generating certificates for agent ${agentId}`);
 
     // Check if user is authorized to access these certificates
     if (
@@ -79,12 +80,29 @@ exports.getAgentCertificates = async (req, res) => {
         (req.user.role === "agent" && req.user.agentId === agentId))
     ) {
       // Initialize certificate service if needed
-      if (!coreServices.certificate || !coreServices.certificate.initialized) {
+      if (!coreServices.certificate) {
+        logger.error("Certificate service not available");
+        return res.status(500).json({
+          success: false,
+          message: "Certificate service not available",
+        });
+      }
+
+      if (!coreServices.certificate.initialized) {
+        logger.info("Initializing certificate service");
         await coreServices.certificate.initialize();
       }
 
+      logger.info(`Generating certificate for agent ${agentId}`);
       const certResult =
         await coreServices.certificate.generateAgentCertificate(agentId);
+
+      logger.info(
+        `Certificate generation result: ${JSON.stringify({
+          success: certResult.success,
+          error: certResult.error || null,
+        })}`
+      );
 
       if (certResult.success) {
         return res.status(200).json({
