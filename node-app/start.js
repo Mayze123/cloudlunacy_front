@@ -112,15 +112,6 @@ function listDirectory(dir) {
   return [];
 }
 
-// Filter out 'module' from NODE_DEBUG environment variable
-if (process.env.NODE_DEBUG) {
-  const debugModules = process.env.NODE_DEBUG.split(",")
-    .filter((module) => module !== "module")
-    .join(",");
-
-  process.env.NODE_DEBUG = debugModules;
-}
-
 // Main function
 async function main() {
   try {
