@@ -37,6 +37,7 @@ RUN chmod +x /app/start.sh
 # Set environment variables
 ENV NODE_ENV=production
 ENV TZ=UTC
+ENV NODE_DEBUG=
 
 # Expose port
 EXPOSE 3005
