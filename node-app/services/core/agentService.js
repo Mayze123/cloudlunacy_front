@@ -74,10 +74,15 @@ class AgentService {
       // Generate JWT token for agent authentication
       const token = this.generateAgentToken(agentId);
 
-      // Register MongoDB for the agent
-      const mongodbResult = await mongodbService.registerAgent(
+      // Register MongoDB for this agent
+      const mongoResult = await this.mongodbService.registerMongoDBAgent(
         agentId,
-        targetIp
+        targetIp,
+        true // Enable TLS by default
+      );
+
+      logger.info(
+        `MongoDB registered for agent ${agentId} with target IP ${targetIp}`
       );
 
       // Save agent registration info
@@ -91,8 +96,9 @@ class AgentService {
         success: true,
         agentId,
         token,
-        mongodbUrl: mongodbResult.mongodbUrl,
         targetIp,
+        tlsEnabled: true,
+        connectionString: mongoResult.connectionString,
       };
     } catch (err) {
       logger.error(`Failed to register agent ${agentId}: ${err.message}`, {

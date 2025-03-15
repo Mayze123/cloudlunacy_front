@@ -128,6 +128,83 @@ exports.repair = asyncHandler(async (req, res) => {
   });
 });
 
+/**
+ * Check MongoDB connections
+ *
+ * @param {object} req - The request object
+ * @param {object} res - The response object
+ * @returns {Promise<void>}
+ */
+exports.checkMongoDBConnections = async (req, res) => {
+  try {
+    const configManager = require("../../services/core/configManager");
+    await configManager.initialize();
+
+    const config = await configManager.getConfig();
+    const issues = [];
+
+    // Check MongoDB services
+    if (config.tcp && config.tcp.services) {
+      for (const [serviceName, service] of Object.entries(
+        config.tcp.services
+      )) {
+        if (
+          serviceName.startsWith("mongodb-") &&
+          serviceName !== "mongodb-catchall-service"
+        ) {
+          // Extract agent ID from service name
+          const agentId = serviceName
+            .replace("mongodb-", "")
+            .replace("-service", "");
+
+          // Check if the service has servers
+          if (
+            !service.loadBalancer ||
+            !service.loadBalancer.servers ||
+            service.loadBalancer.servers.length === 0
+          ) {
+            issues.push({
+              type: "missing_servers",
+              agentId,
+              serviceName,
+            });
+          }
+
+          // Check if there's a corresponding router
+          const routerName = `mongodb-${agentId}`;
+          if (!config.tcp.routers[routerName]) {
+            issues.push({
+              type: "missing_router",
+              agentId,
+              serviceName,
+              routerName,
+            });
+          }
+        }
+      }
+    }
+
+    // Return the results
+    res.status(200).json({
+      success: true,
+      mongodbConnections: {
+        issues: issues,
+        healthy: issues.length === 0,
+      },
+    });
+  } catch (err) {
+    logger.error(`Failed to check MongoDB connections: ${err.message}`, {
+      error: err.message,
+      stack: err.stack,
+    });
+    res.status(500).json({
+      success: false,
+      message: "Failed to check MongoDB connections",
+      error: err.message,
+    });
+  }
+};
+
 // Helper functions
 
 /**

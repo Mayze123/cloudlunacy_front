@@ -16,6 +16,7 @@ const yaml = require("yaml");
 const certificateService = require("./certificateService");
 const path = require("path");
 const { MongoClient } = require("mongodb");
+const configManager = require("./configManager");
 
 const execAsync = promisify(exec);
 const docker = new Docker({ socketPath: "/var/run/docker.sock" });
@@ -29,21 +30,25 @@ class MongoDBService {
     this.registeredAgents = new Map(); // Store agent registrations
     this.certificate = certificateService;
     this.config = configService;
-    this.configManager = null;
+    this.configManager = configManager;
+    this.traefikContainer = process.env.TRAEFIK_CONTAINER || "traefik";
   }
 
   /**
    * Initialize the MongoDB service
    */
-  async initialize(configManager) {
+  async initialize() {
     if (this.initialized) {
       return true;
     }
 
-    this.configManager = configManager;
-
     try {
       logger.info("Initializing MongoDB service");
+
+      // Ensure the config manager is initialized
+      if (!this.configManager.initialized) {
+        await this.configManager.initialize();
+      }
 
       // Ensure MongoDB port is exposed in Traefik
       const portExposed = await this.checkMongoDBPort();
@@ -207,100 +212,120 @@ class MongoDBService {
   /**
    * Register a new agent for MongoDB access with TLS termination at Traefik
    */
-  async registerAgent(agentId, targetIp, options = {}) {
+  async registerMongoDBAgent(agentId, targetIp, useTls = true) {
     try {
-      logger.info(
-        `Registering MongoDB for agent ${agentId} with IP ${targetIp}`
-      );
-
-      // Default options
-      const defaultOptions = {
-        useTls: true,
-        port: 27017,
-      };
-
-      const config = { ...defaultOptions, ...options };
-
-      // Generate a unique router name and service name
-      const routerName = `mongodb-${agentId}`;
-      const serviceName = `mongodb-${agentId}-service`;
-      const domain = `${agentId}.${this.mongoDomain}`;
-
-      // Create router configuration
-      const routerConfig = {
-        rule: `HostSNI(\`${domain}\`)`,
-        entryPoints: ["mongodb"],
-        service: serviceName,
-      };
-
-      // Add TLS passthrough if TLS is enabled
-      if (config.useTls) {
-        routerConfig.tls = {
-          passthrough: true,
-        };
+      if (!this.initialized) {
+        await this.initialize();
       }
 
-      // Create service configuration
-      const serviceConfig = {
+      logger.info(
+        `Registering MongoDB agent ${agentId} with IP ${targetIp}, TLS: ${useTls}`
+      );
+
+      // Create router and service names
+      const routerName = `mongodb-${agentId}`;
+      const serviceName = `mongodb-${agentId}-service`;
+
+      // Get the current Traefik configuration
+      const config = await this.configManager.getConfig();
+
+      // Ensure tcp section exists
+      if (!config.tcp) {
+        config.tcp = { routers: {}, services: {} };
+      }
+
+      if (!config.tcp.routers) {
+        config.tcp.routers = {};
+      }
+
+      if (!config.tcp.services) {
+        config.tcp.services = {};
+      }
+
+      // Add the catchall router if it doesn't exist
+      if (!config.tcp.routers["mongodb-catchall"]) {
+        logger.info("Adding MongoDB catchall router");
+        config.tcp.routers["mongodb-catchall"] = {
+          rule: `HostSNI(\`*.${this.mongoDomain}\`)`,
+          entryPoints: ["mongodb"],
+          service: "mongodb-catchall-service",
+          tls: {
+            passthrough: true,
+          },
+        };
+
+        if (!config.tcp.services["mongodb-catchall-service"]) {
+          config.tcp.services["mongodb-catchall-service"] = {
+            loadBalancer: {
+              servers: [],
+            },
+          };
+        }
+      }
+
+      // Add the router for this specific agent
+      logger.info(`Adding router for ${agentId}.${this.mongoDomain}`);
+      config.tcp.routers[routerName] = {
+        rule: `HostSNI(\`${agentId}.${this.mongoDomain}\`)`,
+        entryPoints: ["mongodb"],
+        service: serviceName,
+        tls: {
+          passthrough: useTls,
+        },
+      };
+
+      // Add the service with the target IP
+      logger.info(`Adding service for ${targetIp}:27017`);
+      config.tcp.services[serviceName] = {
         loadBalancer: {
           servers: [
             {
-              address: `${targetIp}:${config.port}`,
+              address: `${targetIp}:27017`,
             },
           ],
         },
       };
 
-      // Update Traefik configuration
-      await this.configManager.addTcpRouter(routerName, routerConfig);
-      await this.configManager.addTcpService(serviceName, serviceConfig);
+      // Save the updated configuration
+      await this.configManager.saveConfig(config);
+      logger.info(`Updated Traefik configuration for agent ${agentId}`);
 
-      // Store agent information
-      this.registeredAgents.set(agentId, {
-        agentId,
-        targetIp,
-        domain,
-        useTls: config.useTls,
-        registeredAt: new Date().toISOString(),
-      });
-
-      // Generate certificates if TLS is enabled
-      let certificates = null;
-      if (config.useTls && this.certificate) {
-        try {
-          const certResult = await this.certificate.generateAgentCertificate(
-            agentId
-          );
-          if (certResult.success) {
-            certificates = {
-              caCert: certResult.caCert,
-              serverKey: certResult.serverKey,
-              serverCert: certResult.serverCert,
-            };
-          }
-        } catch (err) {
-          logger.error(
-            `Failed to generate certificates for agent ${agentId}: ${err.message}`
-          );
-        }
+      // Restart Traefik to apply changes
+      try {
+        logger.info("Restarting Traefik to apply configuration changes");
+        execSync(`docker restart ${this.traefikContainer}`);
+        logger.info("Traefik restarted successfully");
+      } catch (err) {
+        logger.error(`Failed to restart Traefik: ${err.message}`, {
+          error: err.message,
+          stack: err.stack,
+        });
+        // Continue anyway, as the config is updated
       }
 
-      // Return success with MongoDB URL and certificates
+      // Return the registration result
       return {
         success: true,
         agentId,
-        mongodbUrl: `${domain}:27017`,
-        useTls: config.useTls,
-        certificates,
+        targetIp,
+        tlsEnabled: useTls,
+        connectionString: `mongodb://username:password@${agentId}.${
+          this.mongoDomain
+        }:27017/admin?${
+          useTls ? "ssl=true&tlsAllowInvalidCertificates=true" : ""
+        }`,
       };
     } catch (err) {
       logger.error(
-        `Failed to register MongoDB for agent ${agentId}: ${err.message}`
+        `Failed to register MongoDB agent ${agentId}: ${err.message}`,
+        {
+          error: err.message,
+          stack: err.stack,
+          agentId,
+          targetIp,
+        }
       );
-      return {
-        success: false,
-        error: err.message,
-      };
+      throw err;
     }
   }
 
@@ -361,7 +386,6 @@ class MongoDBService {
     try {
       logger.info("Restarting Traefik to apply changes");
 
-      const { execSync } = require("child_process");
       execSync("docker restart traefik");
 
       logger.info("Traefik restarted successfully");
@@ -375,32 +399,70 @@ class MongoDBService {
   /**
    * Deregister an agent
    */
-  async deregisterAgent(agentId) {
+  async unregisterMongoDBAgent(agentId) {
     try {
-      logger.info(`Deregistering MongoDB for agent ${agentId}`);
+      if (!this.initialized) {
+        await this.initialize();
+      }
 
-      // Remove router and service from Traefik configuration
+      logger.info(`Unregistering MongoDB agent ${agentId}`);
+
+      // Create router and service names
       const routerName = `mongodb-${agentId}`;
       const serviceName = `mongodb-${agentId}-service`;
 
-      await this.configManager.removeTcpRouter(routerName);
-      await this.configManager.removeTcpService(serviceName);
+      // Get the current Traefik configuration
+      const config = await this.configManager.getConfig();
 
-      // Remove agent from registry
-      this.registeredAgents.delete(agentId);
+      // Remove the router and service if they exist
+      if (config.tcp && config.tcp.routers && config.tcp.routers[routerName]) {
+        delete config.tcp.routers[routerName];
+        logger.info(`Removed router ${routerName}`);
+      }
+
+      if (
+        config.tcp &&
+        config.tcp.services &&
+        config.tcp.services[serviceName]
+      ) {
+        delete config.tcp.services[serviceName];
+        logger.info(`Removed service ${serviceName}`);
+      }
+
+      // Save the updated configuration
+      await this.configManager.saveConfig(config);
+      logger.info(
+        `Updated Traefik configuration after removing agent ${agentId}`
+      );
+
+      // Restart Traefik to apply changes
+      try {
+        logger.info("Restarting Traefik to apply configuration changes");
+        execSync(`docker restart ${this.traefikContainer}`);
+        logger.info("Traefik restarted successfully");
+      } catch (err) {
+        logger.error(`Failed to restart Traefik: ${err.message}`, {
+          error: err.message,
+          stack: err.stack,
+        });
+        // Continue anyway, as the config is updated
+      }
 
       return {
         success: true,
-        message: `MongoDB for agent ${agentId} deregistered successfully`,
+        agentId,
+        message: `MongoDB agent ${agentId} unregistered successfully`,
       };
     } catch (err) {
       logger.error(
-        `Failed to deregister MongoDB for agent ${agentId}: ${err.message}`
+        `Failed to unregister MongoDB agent ${agentId}: ${err.message}`,
+        {
+          error: err.message,
+          stack: err.stack,
+          agentId,
+        }
       );
-      return {
-        success: false,
-        error: err.message,
-      };
+      throw err;
     }
   }
 

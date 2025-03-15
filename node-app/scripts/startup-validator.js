@@ -219,6 +219,102 @@ async function validateDockerCompose() {
   }
 }
 
+/**
+ * Validate MongoDB connections on startup
+ */
+async function validateMongoDBConnections() {
+  try {
+    logger.info("Validating MongoDB connections...");
+
+    const configManager = require("../services/core/configManager");
+    await configManager.initialize();
+
+    const config = await configManager.getConfig();
+    let fixed = false;
+
+    // Check MongoDB services
+    if (config.tcp && config.tcp.services) {
+      for (const [serviceName, service] of Object.entries(
+        config.tcp.services
+      )) {
+        if (
+          serviceName.startsWith("mongodb-") &&
+          serviceName !== "mongodb-catchall-service"
+        ) {
+          // Extract agent ID from service name
+          const agentId = serviceName
+            .replace("mongodb-", "")
+            .replace("-service", "");
+
+          // Check if the service has servers
+          if (
+            !service.loadBalancer ||
+            !service.loadBalancer.servers ||
+            service.loadBalancer.servers.length === 0
+          ) {
+            logger.warn(
+              `Service ${serviceName} has no servers, checking agent database`
+            );
+
+            // Try to find the agent in the database
+            const agentService = require("../services/core/agentService");
+            const agent = await agentService.getAgentById(agentId);
+
+            if (agent && agent.targetIp) {
+              logger.info(
+                `Found agent ${agentId} with IP ${agent.targetIp}, fixing service`
+              );
+
+              // Fix the service
+              if (!service.loadBalancer) {
+                service.loadBalancer = { servers: [] };
+              }
+
+              service.loadBalancer.servers = [
+                { address: `${agent.targetIp}:27017` },
+              ];
+
+              fixed = true;
+            } else {
+              logger.warn(
+                `Could not find agent ${agentId} in database, cannot fix service`
+              );
+            }
+          }
+        }
+      }
+    }
+
+    // Save the config if we fixed anything
+    if (fixed) {
+      logger.info("Fixed MongoDB connection issues, saving configuration");
+      await configManager.saveConfig(config);
+
+      // Restart Traefik
+      try {
+        const { execSync } = require("child_process");
+        logger.info("Restarting Traefik to apply configuration changes");
+        execSync(
+          `docker restart ${process.env.TRAEFIK_CONTAINER || "traefik"}`
+        );
+        logger.info("Traefik restarted successfully");
+      } catch (err) {
+        logger.error(`Failed to restart Traefik: ${err.message}`);
+      }
+    } else {
+      logger.info("No MongoDB connection issues found");
+    }
+
+    return true;
+  } catch (err) {
+    logger.error(`Failed to validate MongoDB connections: ${err.message}`, {
+      error: err.message,
+      stack: err.stack,
+    });
+    return false;
+  }
+}
+
 // Run the validation if this script is executed directly
 if (require.main === module) {
   runStartupValidation()

@@ -14,6 +14,8 @@ const path = require("path");
 // Configuration
 const AGENT_ID = process.argv[2] || "240922b9-4d3b-4692-8d1c-1884d423092a";
 const TARGET_IP = process.argv[3] || "128.140.53.203";
+const TRAEFIK_CONFIG_PATH = "/etc/traefik/dynamic.yml";
+const TRAEFIK_CONTAINER = "traefik";
 
 // Try multiple possible config paths
 const CONFIG_PATHS = [
@@ -66,100 +68,49 @@ async function findConfigFile() {
 }
 
 async function main() {
-  console.log(
-    `Fixing MongoDB connection for agent ${AGENT_ID} with target IP ${TARGET_IP}`
-  );
+  console.log(`Fixing MongoDB connection for agent ${AGENT_ID}...`);
 
   try {
-    // Find or create config file
-    const configPath = await findConfigFile();
-
-    // Read the current configuration
-    const configContent = await fs.readFile(configPath, "utf8");
+    // Read the current Traefik configuration
+    const configContent = await fs.readFile(TRAEFIK_CONFIG_PATH, "utf8");
     const config = yaml.parse(configContent);
 
-    // Ensure tcp section exists
+    // Check if the TCP configuration exists
     if (!config.tcp) {
-      config.tcp = { routers: {}, services: {} };
+      console.error("TCP configuration not found in Traefik config");
+      process.exit(1);
     }
 
-    if (!config.tcp.routers) {
-      config.tcp.routers = {};
-    }
-
-    if (!config.tcp.services) {
-      config.tcp.services = {};
-    }
-
-    // Create router name and service name
-    const routerName = `mongodb-${AGENT_ID}`;
+    // Check if the service exists
     const serviceName = `mongodb-${AGENT_ID}-service`;
-    const domain = `${AGENT_ID}.${MONGO_DOMAIN}`;
-
-    // Add the catchall router if it doesn't exist
-    if (!config.tcp.routers["mongodb-catchall"]) {
-      console.log("Adding MongoDB catchall router");
-      config.tcp.routers["mongodb-catchall"] = {
-        rule: `HostSNI(\`*.${MONGO_DOMAIN}\`)`,
-        entryPoints: ["mongodb"],
-        service: "mongodb-catchall-service",
-        tls: {
-          passthrough: true,
+    if (!config.tcp.services[serviceName]) {
+      console.log(`Service ${serviceName} not found, creating it...`);
+      config.tcp.services[serviceName] = {
+        loadBalancer: {
+          servers: [],
         },
       };
-
-      if (!config.tcp.services["mongodb-catchall-service"]) {
-        config.tcp.services["mongodb-catchall-service"] = {
-          loadBalancer: {
-            servers: [],
-          },
-        };
-      }
     }
 
-    // Add the router
-    console.log(`Adding router for ${domain}`);
-    config.tcp.routers[routerName] = {
-      rule: `HostSNI(\`${domain}\`)`,
-      entryPoints: ["mongodb"],
-      service: serviceName,
-      tls: {
-        passthrough: true,
-      },
-    };
+    // Update the server address
+    config.tcp.services[serviceName].loadBalancer.servers = [
+      { address: `${TARGET_IP}:27017` },
+    ];
 
-    // Add the service
-    console.log(`Adding service for ${TARGET_IP}:27017`);
-    config.tcp.services[serviceName] = {
-      loadBalancer: {
-        servers: [
-          {
-            address: `${TARGET_IP}:27017`,
-          },
-        ],
-      },
-    };
+    console.log(
+      `Updated service ${serviceName} with address ${TARGET_IP}:27017`
+    );
 
-    // Write the updated configuration
-    await fs.writeFile(configPath, yaml.stringify(config), "utf8");
-    console.log(`Updated configuration at ${configPath}`);
+    // Write the updated configuration back
+    await fs.writeFile(TRAEFIK_CONFIG_PATH, yaml.stringify(config), "utf8");
+    console.log("Traefik configuration updated successfully");
 
-    // Restart Traefik
+    // Restart Traefik to apply changes
     console.log("Restarting Traefik...");
-    try {
-      execSync("docker restart traefik");
-      console.log("Traefik restarted");
-    } catch (err) {
-      console.error(`Failed to restart Traefik: ${err.message}`);
-      console.log("You may need to restart Traefik manually");
-    }
+    execSync(`docker restart ${TRAEFIK_CONTAINER}`);
+    console.log("Traefik restarted successfully");
 
-    console.log(
-      `\nMongoDB connection should now be available at: ${domain}:27017`
-    );
-    console.log(
-      `Try connecting with: mongosh "mongodb://admin:adminpassword@${domain}:27017/admin?ssl=true&authSource=admin&tlsAllowInvalidCertificates=true"`
-    );
+    console.log("MongoDB connection fix completed successfully");
   } catch (err) {
     console.error(`Error: ${err.message}`);
     process.exit(1);
