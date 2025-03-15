@@ -232,11 +232,11 @@ class MongoDBService {
         routerConfig.tls = { passthrough: true };
       }
 
-      // Use addTcpRouter instead of updateTcpRouter
-      await this.config.addTcpRouter(routerName, routerConfig);
+      // Use updateTcpRouter instead of addTcpRouter
+      await this.config.updateTcpRouter(routerName, routerConfig);
 
-      // Use addTcpService instead of updateTcpService
-      await this.config.addTcpService(serviceName, {
+      // Use updateTcpService instead of addTcpService
+      await this.config.updateTcpService(serviceName, {
         loadBalancer: {
           servers: [{ address: `${targetIp}:27017` }],
         },
@@ -251,15 +251,12 @@ class MongoDBService {
           tls: { passthrough: true },
         };
 
-        // Use addTcpRouter instead of updateTcpRouter
-        await this.config.addTcpRouter("mongodb-catchall", catchallRouter);
+        // Use updateTcpRouter instead of addTcpRouter
+        await this.config.updateTcpRouter("mongodb-catchall", catchallRouter);
       }
 
-      // Save changes - Use existing method to save config
-      await this.config.saveConfig(
-        this.config.paths.dynamic,
-        this.config.configs.main
-      );
+      // Save changes - Use the saveConfiguration method
+      await this.config.saveConfiguration();
 
       // Return result
       return {
