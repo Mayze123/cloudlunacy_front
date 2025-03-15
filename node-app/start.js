@@ -189,15 +189,54 @@ async function main() {
 
     // Check for required dependencies before starting the server
     try {
-      require("mongodb");
-      require("express");
-      require("yaml");
-      // Add other critical dependencies here
+      log("Checking for required dependencies...");
 
-      // If all dependencies are available, start the server
-      require("./server");
+      try {
+        require("mongodb");
+        log("✓ mongodb module loaded");
+      } catch (err) {
+        logError("Failed to load mongodb module", err);
+      }
+
+      try {
+        require("express");
+        log("✓ express module loaded");
+      } catch (err) {
+        logError("Failed to load express module", err);
+      }
+
+      try {
+        require("yaml");
+        log("✓ yaml module loaded");
+      } catch (err) {
+        logError("Failed to load yaml module", err);
+      }
+
+      try {
+        require("winston");
+        log("✓ winston module loaded");
+      } catch (err) {
+        logError("Failed to load winston module", err);
+      }
+
+      // Now try to load the server module
+      log("Loading server module...");
+      try {
+        require("./server");
+        log("✓ server module loaded successfully");
+      } catch (err) {
+        logError("Failed to load server module", err);
+        console.error(
+          "Missing dependency or syntax error in server.js:",
+          err.message
+        );
+        console.error(
+          "Please run: npm install or check server.js for syntax errors"
+        );
+        process.exit(1);
+      }
     } catch (err) {
-      console.error("Missing dependency:", err.message);
+      logError("Dependency check failed", err);
       console.error("Please run: npm install");
       process.exit(1);
     }

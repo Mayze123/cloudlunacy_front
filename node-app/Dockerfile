@@ -18,7 +18,9 @@ COPY package*.json ./
 
 # Install dependencies with clean npm cache
 RUN npm cache clean --force && \
-    npm ci --production
+    npm ci --production && \
+    # Install specific versions of problematic packages if needed
+    npm install mongodb@5.7.0 express@4.18.2 yaml@2.7.0 winston@3.17.0 --save
 
 # Copy start.sh and start.js scripts
 COPY start.sh /app/start.sh
