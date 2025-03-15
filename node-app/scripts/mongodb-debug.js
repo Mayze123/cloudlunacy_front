@@ -327,9 +327,6 @@ async function checkDynamicConfig() {
       return true;
     } else {
       error("Traefik dynamic configuration does not have MongoDB TCP routing");
-      info(
-        "Run the config validator: node /opt/cloudlunacy_front/node-app/scripts/startup-validator.js"
-      );
       return false;
     }
   } catch (err) {

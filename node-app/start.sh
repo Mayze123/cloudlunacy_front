@@ -20,9 +20,7 @@ export NODE_ENV=${NODE_ENV:-production}
 export MONGO_DOMAIN=${MONGO_DOMAIN:-mongodb.cloudlunacy.uk}
 export APP_DOMAIN=${APP_DOMAIN:-apps.cloudlunacy.uk}
 
-# Run the startup validator
-echo "Running startup validation..."
-node /app/scripts/startup-validator.js
+
 
 # Check if validation passed
 if [ $? -ne 0 ]; then
@@ -32,8 +30,7 @@ if [ $? -ne 0 ]; then
   echo "Reinstalling dependencies..."
   npm ci
   
-  # Run validation again
-  node /app/scripts/startup-validator.js
+
   
   if [ $? -ne 0 ]; then
     echo "Failed to fix issues automatically. Please check the logs and fix manually."

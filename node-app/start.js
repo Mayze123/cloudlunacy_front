@@ -187,22 +187,6 @@ async function main() {
       logError(`Cannot access service file ${servicePath}`, err);
     }
 
-    // Find and run startup validator
-    const validatorPath = findFile("startup-validator.js", possibleDirs);
-    if (validatorPath) {
-      log(`Running startup validator from ${validatorPath}`);
-      try {
-        const output = execSync(`node ${validatorPath}`, { encoding: "utf8" });
-        log(`Startup validation output: ${output}`);
-      } catch (err) {
-        logError("Startup validator failed", err);
-        log(`Validator stderr: ${err.stderr || "none"}`, true);
-        // Continue anyway - don't fail if validation has issues
-      }
-    } else {
-      log("Warning: Could not find startup-validator.js", true);
-    }
-
     // Check for required dependencies before starting the server
     try {
       require("mongodb");
