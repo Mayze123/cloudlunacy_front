@@ -25,13 +25,12 @@ const docker = new Docker({ socketPath: "/var/run/docker.sock" });
 class MongoDBService {
   constructor() {
     this.mongoDomain = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
-    this.portNumber = 27018;
+    this.mongoPort = 27017;
     this.connectTimeout = 5000; // 5 seconds
     this.initialized = false;
     this.registeredAgents = new Map(); // Store agent registrations
     this.certificate = certificateService;
     this.config = configService;
-    this.configManager = configManager;
     this.traefikContainer = process.env.TRAEFIK_CONTAINER || "traefik";
     this.certsDir = process.env.CERTS_DIR || "/app/config/certs";
     this.agentCertsDir =
@@ -49,9 +48,9 @@ class MongoDBService {
     try {
       logger.info("Initializing MongoDB service");
 
-      // Ensure the config manager is initialized
-      if (!this.configManager.initialized) {
-        await this.configManager.initialize();
+      // Use configService instead of configManager
+      if (!configService.initialized) {
+        await configService.initialize();
       }
 
       // Ensure MongoDB port is exposed in Traefik
@@ -105,7 +104,7 @@ class MongoDBService {
 
       // Check if port 27017 is exposed
       const mongoPortExposed = ports.some(
-        (port) => port.PublicPort === this.portNumber
+        (port) => port.PublicPort === this.mongoPort
       );
 
       if (mongoPortExposed) {
@@ -579,7 +578,7 @@ class MongoDBService {
       this.registeredAgents.clear();
 
       // Make sure config is loaded
-      if (!configService.configs.main) {
+      if (!configService.configs || !configService.configs.main) {
         logger.warn(
           "Main configuration not loaded, cannot load MongoDB agents"
         );
