@@ -11,7 +11,7 @@ const { promisify } = require("util");
 const execAsync = promisify(exec);
 const coreServices = require("../../services/core");
 const logger = require("../../utils/logger").getLogger("healthController");
-const { AppError, asyncHandler } = require("../../utils/errorHandler");
+const { asyncHandler } = require("../../utils/errorHandler");
 
 /**
  * Get system health

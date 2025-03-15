@@ -4,12 +4,15 @@
  * Centralized service for HTTP and TCP routing configuration.
  */
 
+/* global process */
 const configService = require("./configService");
-const mongodbService = require("./mongodbService");
 const logger = require("../../utils/logger").getLogger("routingService");
 const Docker = require("dockerode");
 
 const docker = new Docker({ socketPath: "/var/run/docker.sock" });
+
+// Configuration
+const APP_DOMAIN = process.env.APP_DOMAIN || "apps.cloudlunacy.uk";
 
 class RoutingService {
   constructor() {
@@ -92,15 +95,13 @@ class RoutingService {
   /**
    * Add an HTTP route
    */
-  async addHttpRoute(agentId, subdomain, targetUrl, options = {}) {
+  async addHttpRoute(agentId, subdomain, targetUrl, _options = {}) {
+    logger.info(`Adding HTTP route for ${subdomain} to ${targetUrl}`);
+
     try {
       if (!this.initialized) {
         await this.initialize();
       }
-
-      logger.info(
-        `Adding HTTP route for ${subdomain}.${this.appDomain} -> ${targetUrl}`
-      );
 
       // Validate inputs
       if (!this.validateRouteInputs(subdomain, targetUrl)) {
@@ -158,18 +159,13 @@ class RoutingService {
 
       return {
         success: true,
+        agentId,
+        subdomain,
         domain: `${subdomain}.${this.appDomain}`,
         targetUrl,
-        agentId,
       };
     } catch (err) {
-      logger.error(`Failed to add HTTP route: ${err.message}`, {
-        error: err.message,
-        stack: err.stack,
-        subdomain,
-        targetUrl,
-        agentId,
-      });
+      logger.error(`Failed to add HTTP route for ${subdomain}: ${err.message}`);
       throw err;
     }
   }

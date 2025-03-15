@@ -1,3 +1,4 @@
+/* global process */
 // api/controllers/agentController.js
 /**
  * Agent Controller
@@ -198,12 +199,16 @@ exports.register = async (req, res) => {
     }
 
     // Register the agent
-    const result = await agentService.registerAgent(agentId, agentIp);
+    const result = await coreServices.agent.registerAgent(agentId, agentIp);
 
     // Register MongoDB for this agent
-    const mongoResult = await mongodbService.registerAgent(agentId, agentIp, {
-      useTls: true,
-    });
+    const mongoResult = await coreServices.mongodb.registerAgent(
+      agentId,
+      agentIp,
+      {
+        useTls: true,
+      }
+    );
 
     // Include MongoDB information in the response
     const response = {

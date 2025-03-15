@@ -5,7 +5,9 @@
   "main": "server.js",
   "scripts": {
     "start": "node start.js",
-    "dev": "nodemon server.js"
+    "dev": "nodemon server.js",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix"
   },
   "dependencies": {
     "axios": "^1.8.3",
@@ -20,6 +22,30 @@
     "winston-daily-rotate-file": "^5.0.0",
     "yaml": "^2.7.0"
   },
+  "eslintConfig": {
+    "env": {
+      "node": true,
+      "es6": true
+    },
+    "globals": {
+      "process": "readonly",
+      "Buffer": "readonly",
+      "__dirname": "readonly"
+    },
+    "rules": {
+      "no-unused-vars": [
+        "error",
+        {
+          "argsIgnorePattern": "^_|^err|^next"
+        }
+      ]
+    }
+  },
   "author": "",
-  "license": "ISC"
+  "license": "ISC",
+  "devDependencies": {
+    "@eslint/js": "^9.22.0",
+    "eslint": "^9.22.0",
+    "globals": "^16.0.0"
+  }
 }

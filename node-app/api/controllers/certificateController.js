@@ -2,7 +2,6 @@
  * Certificate Controller
  */
 const fs = require("fs").promises;
-const path = require("path");
 const logger = require("../../utils/logger").getLogger("certificateController");
 const coreServices = require("../../services/core");
 
@@ -33,9 +32,9 @@ exports.getMongoCA = async (req, res) => {
     try {
       // Try to read the certificate file
       caCert = await fs.readFile(MONGO_CA_PATH, "utf8");
-    } catch (err) {
+    } catch (error) {
       logger.warn(
-        `Failed to read MongoDB CA certificate from ${MONGO_CA_PATH}: ${err.message}`
+        `Failed to read MongoDB CA certificate from ${MONGO_CA_PATH}: ${error.message}`
       );
 
       // Instead of returning a placeholder, return a proper error

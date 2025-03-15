@@ -7,7 +7,6 @@
 
 const coreServices = require("../../services/core");
 const logger = require("../../utils/logger").getLogger("auth");
-const { AppError } = require("../../utils/errorHandler");
 
 /**
  * Require authentication for protected routes

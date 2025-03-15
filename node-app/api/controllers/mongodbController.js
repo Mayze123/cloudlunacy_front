@@ -35,10 +35,7 @@ exports.addSubdomain = asyncHandler(async (req, res) => {
   );
 
   // Register the MongoDB subdomain
-  const result = await coreServices.mongodb.registerAgent(
-    agentId || subdomain,
-    targetIp
-  );
+  await coreServices.mongodb.registerAgent(agentId || subdomain, targetIp);
 
   res.status(201).json({
     success: true,
@@ -59,7 +56,7 @@ exports.listSubdomains = asyncHandler(async (req, res) => {
   // Get all TCP routes from cache
   const routes = Array.from(coreServices.routing.routeCache.entries())
     .filter(([key]) => key.startsWith("tcp:") && !key.includes("catchall"))
-    .map(([_, route]) => ({
+    .map(([, route]) => ({
       name: route.name,
       domain: extractDomainFromTcpRule(route.rule),
       targetIp: extractTargetFromService(route.service),

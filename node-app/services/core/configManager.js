@@ -18,6 +18,10 @@ class ConfigManager {
       main: null,
     };
     this.initialized = false;
+    this.paths = {
+      dynamic: process.env.DYNAMIC_CONFIG_PATH || "/app/config/dynamic.yml",
+      // other paths...
+    };
 
     logger.info(`ConfigManager initialized with path: ${this.configPath}`);
   }
@@ -275,6 +279,32 @@ class ConfigManager {
     }
 
     return services;
+  }
+
+  /**
+   * Get configuration
+   *
+   * @returns {Object} The current configuration
+   */
+  async getConfig() {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+
+    return {
+      configs: this.configs,
+      paths: this.paths,
+      domains: {
+        app: process.env.APP_DOMAIN || "apps.cloudlunacy.uk",
+        mongo: process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk",
+      },
+      ports: {
+        node: process.env.NODE_PORT || 3005,
+        traefik: 8081,
+        mongo: 27017,
+      },
+      env: process.env.NODE_ENV || "development",
+    };
   }
 }
 

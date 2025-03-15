@@ -55,7 +55,7 @@ exports.listApps = asyncHandler(async (req, res) => {
   // Get all HTTP routes from cache
   const routes = Array.from(coreServices.routing.routeCache.entries())
     .filter(([key]) => key.startsWith("http:"))
-    .map(([_, route]) => ({
+    .map(([, route]) => ({
       name: route.name,
       domain: route.domain || extractDomainFromRule(route.rule),
       targetUrl: route.targetUrl || extractServiceFromConfig(route.service),

@@ -8,7 +8,7 @@
 // Replace old imports with core services
 const coreServices = require("../../services/core");
 const logger = require("../../utils/logger").getLogger("configController");
-const { AppError, asyncHandler } = require("../../utils/errorHandler");
+const { asyncHandler } = require("../../utils/errorHandler");
 
 /**
  * Get global configuration
