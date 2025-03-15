@@ -205,14 +205,18 @@ async function main() {
     // Start the main service
     log(`Starting main service from ${servicePath}`);
 
-    // Use spawn to run in the same process
+    // Add this before spawning the process
+    log(
+      `Current environment variables: DEBUG=${process.env.DEBUG}, NODE_DEBUG=${process.env.NODE_DEBUG}`
+    );
+
+    // Then use spawn with explicitly unset variables
     const serviceProcess = spawn("node", [servicePath], {
       stdio: "inherit",
       env: {
         ...process.env,
-        // Only debug specific subsystems if needed:
-        // DEBUG: "app:*", // Only app-specific debug output
-        // NODE_DEBUG: "http,stream", // Debug HTTP and streams but not module loading
+        DEBUG: undefined,
+        NODE_DEBUG: undefined,
       },
     });
 
