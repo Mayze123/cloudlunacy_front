@@ -329,6 +329,16 @@ async function validateMongoDBConnections() {
   }
 }
 
+// Check if a module can be required
+function checkModule(moduleName) {
+  try {
+    require(moduleName);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
 // Validate dependencies
 function validateDependencies() {
   log("Validating dependencies...", colors.blue);
