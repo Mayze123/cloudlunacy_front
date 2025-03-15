@@ -2,7 +2,7 @@
 /**
  * Path Resolver Utility
  *
- * Provides consistent path resolution across the application.
+ * Provides consistent path resolution across the application
  */
 
 const path = require("path");
