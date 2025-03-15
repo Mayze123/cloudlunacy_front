@@ -14,6 +14,7 @@ const logger = require("../../utils/logger").getLogger("mongodbService");
 const fs = require("fs").promises;
 const yaml = require("yaml");
 const certificateService = require("./certificateService");
+const path = require("path");
 
 const execAsync = promisify(exec);
 const docker = new Docker({ socketPath: "/var/run/docker.sock" });
@@ -26,6 +27,7 @@ class MongoDBService {
     this.initialized = false;
     this.registeredAgents = new Map(); // Store agent registrations
     this.certificate = certificateService;
+    this.config = configService;
   }
 
   /**
@@ -303,24 +305,23 @@ class MongoDBService {
    */
   async repair() {
     try {
-      logger.info("Repairing MongoDB configuration");
+      logger.info("Repairing MongoDB service");
 
-      // Ensure port is exposed
-      await this.ensureMongoDBPort();
+      // Re-initialize
+      this.initialized = false;
+      await this.initialize();
 
-      // Ensure entrypoint is configured
+      // Check and fix MongoDB configuration
       await this.ensureMongoDBEntrypoint();
 
-      // Restart Traefik to apply changes
-      await this.restartTraefik();
-
+      logger.info("MongoDB service repaired successfully");
       return true;
     } catch (err) {
-      logger.error(`Failed to repair MongoDB configuration: ${err.message}`, {
+      logger.error(`Failed to repair MongoDB service: ${err.message}`, {
         error: err.message,
         stack: err.stack,
       });
-      return false;
+      throw err;
     }
   }
 
