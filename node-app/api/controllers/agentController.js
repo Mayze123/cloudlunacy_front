@@ -41,14 +41,24 @@ exports.registerAgent = asyncHandler(async (req, res) => {
   let mongodbResult = null;
   if (coreServices.mongodb) {
     try {
-      mongodbResult = await coreServices.mongodb.registerAgent(
-        agentId,
-        targetIp,
-        {
-          useTls: true,
-        }
-      );
-      logger.info(`MongoDB registered for agent ${agentId}`);
+      // Check if registerAgent method exists, otherwise try registerMongoDBAgent
+      const registerMethod =
+        coreServices.mongodb.registerAgent ||
+        coreServices.mongodb.registerMongoDBAgent;
+
+      if (registerMethod) {
+        mongodbResult = await registerMethod.call(
+          coreServices.mongodb,
+          agentId,
+          targetIp,
+          {
+            useTls: true,
+          }
+        );
+        logger.info(`MongoDB registered for agent ${agentId}`);
+      } else {
+        logger.error("MongoDB registration method not found");
+      }
     } catch (err) {
       logger.error(
         `Failed to register MongoDB for agent ${agentId}: ${err.message}`

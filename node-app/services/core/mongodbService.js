@@ -17,7 +17,7 @@ const certificateService = require("./certificateService");
 const path = require("path");
 const { MongoClient } = require("mongodb");
 const configManager = require("./configManager");
-const routingManager = require("./routingManager");
+const routingService = require("./routingService");
 
 const execAsync = promisify(exec);
 const docker = new Docker({ socketPath: "/var/run/docker.sock" });
@@ -722,7 +722,7 @@ class MongoDBService {
 
       // Add TCP route for this agent
       const subdomain = `${agentId}.${this.mongoDomain}`;
-      const result = await routingManager.addTcpRoute(
+      const result = await routingService.addTcpRoute(
         agentId,
         subdomain,
         `${targetIp}:27017`,
@@ -737,9 +737,7 @@ class MongoDBService {
       let certificates = null;
       if (options.useTls) {
         try {
-          // This will be implemented by the certificate service
-          const certService = require("./certificateService");
-          const certResult = await certService.generateAgentCertificate(
+          const certResult = await certificateService.generateAgentCertificate(
             agentId
           );
           if (certResult.success) {
@@ -790,7 +788,7 @@ class MongoDBService {
       }
 
       // Remove TCP route for this agent
-      const result = await routingManager.removeTcpRoute(agentId);
+      const result = await routingService.removeTcpRoute(agentId);
 
       return {
         success: true,
@@ -864,6 +862,15 @@ class MongoDBService {
       };
     }
   }
+}
+
+// Create an alias for registerMongoDBAgent if it exists but registerAgent doesn't
+if (
+  MongoDBService.prototype.registerMongoDBAgent &&
+  !MongoDBService.prototype.registerAgent
+) {
+  MongoDBService.prototype.registerAgent =
+    MongoDBService.prototype.registerMongoDBAgent;
 }
 
 module.exports = new MongoDBService();
