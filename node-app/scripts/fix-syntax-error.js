@@ -30,8 +30,8 @@ try {
   process.exit(1);
 }
 
-// Look for the problematic pattern
-const methodPattern = /(\w+)\s*\(([^)]*)\)\s*{/g;
+// Look for the problematic pattern - now including async methods
+const methodPattern = /(async\s+)?(\w+)\s*\(([^)]*)\)\s*{/g;
 let matches = [];
 let match;
 
@@ -50,8 +50,9 @@ while ((match = methodPattern.exec(content)) !== null) {
   ) {
     matches.push({
       fullMatch: match[0],
-      methodName: match[1],
-      params: match[2],
+      isAsync: !!match[1],
+      methodName: match[2],
+      params: match[3],
       index: match.index,
     });
   }
@@ -66,7 +67,11 @@ if (matches.length === 0) {
 
 console.log(`Found ${matches.length} potential issues:`);
 matches.forEach((m, i) => {
-  console.log(`${i + 1}. ${m.methodName}(${m.params}) at position ${m.index}`);
+  console.log(
+    `${i + 1}. ${m.isAsync ? "async " : ""}${m.methodName}(${
+      m.params
+    }) at position ${m.index}`
+  );
 });
 
 // Fix the issues
@@ -76,7 +81,9 @@ let offset = 0;
 matches.forEach((m) => {
   // Create the fixed version (convert to proper function declaration)
   const original = m.fullMatch;
-  const fixed = `function ${m.methodName}(${m.params}) {`;
+  const fixed = `${m.isAsync ? "async " : ""}function ${m.methodName}(${
+    m.params
+  }) {`;
 
   // Replace in the content with offset adjustment
   const position = m.index + offset;

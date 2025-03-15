@@ -1,51 +1,61 @@
 /**
  * Configuration Manager
- * 
+ *
  * Handles loading, validating, and updating Traefik configuration files
  */
 
 /**
  * Validate the Traefik configuration
- * 
+ *
  * @param {object} config - The configuration to validate
  * @returns {boolean} - Whether the configuration is valid
  */
 function validateConfig(config) {
   // Check if the config has the required sections
   if (!config) {
-    logger.error('Configuration is null or undefined');
+    logger.error("Configuration is null or undefined");
     return false;
   }
-  
+
   // Ensure tcp section exists
   if (!config.tcp) {
-    logger.warn('TCP section missing from configuration, adding it');
+    logger.warn("TCP section missing from configuration, adding it");
     config.tcp = { routers: {}, services: {} };
   }
-  
+
   if (!config.tcp.routers) {
-    logger.warn('TCP routers section missing from configuration, adding it');
+    logger.warn("TCP routers section missing from configuration, adding it");
     config.tcp.routers = {};
   }
-  
+
   if (!config.tcp.services) {
-    logger.warn('TCP services section missing from configuration, adding it');
+    logger.warn("TCP services section missing from configuration, adding it");
     config.tcp.services = {};
   }
-  
+
   // Check MongoDB services to ensure they have servers
   for (const [serviceName, service] of Object.entries(config.tcp.services)) {
-    if (serviceName.startsWith('mongodb-') && serviceName.endsWith('-service')) {
+    if (
+      serviceName.startsWith("mongodb-") &&
+      serviceName.endsWith("-service")
+    ) {
       if (!service.loadBalancer) {
-        logger.warn(`Service ${serviceName} is missing loadBalancer, adding it`);
+        logger.warn(
+          `Service ${serviceName} is missing loadBalancer, adding it`
+        );
         service.loadBalancer = { servers: [] };
       }
-      
-      if (!service.loadBalancer.servers || !Array.isArray(service.loadBalancer.servers)) {
-        logger.warn(`Service ${serviceName} is missing servers array, adding it`);
+
+      if (
+        !service.loadBalancer.servers ||
+        !Array.isArray(service.loadBalancer.servers)
+      ) {
+        logger.warn(
+          `Service ${serviceName} is missing servers array, adding it`
+        );
         service.loadBalancer.servers = [];
       }
-      
+
       // Check if the service has any servers
       if (service.loadBalancer.servers.length === 0) {
         logger.warn(`Service ${serviceName} has no servers`);
@@ -53,30 +63,36 @@ function validateConfig(config) {
       }
     }
   }
-  
+
   return true;
 }
 
 /**
  * Save the Traefik configuration
- * 
+ *
  * @param {object} config - The configuration to save
  * @returns {Promise<void>}
  */
-async saveConfig(config) {
+async function saveConfig(config) {
   try {
     // Validate the configuration before saving
     validateConfig(config);
-    
+
     // Convert to YAML and save
     const yamlContent = yaml.stringify(config);
-    await fs.writeFile(this.configPath, yamlContent, 'utf8');
+    await fs.writeFile(this.configPath, yamlContent, "utf8");
     logger.info(`Configuration saved to ${this.configPath}`);
   } catch (err) {
     logger.error(`Failed to save configuration: ${err.message}`, {
       error: err.message,
-      stack: err.stack
+      stack: err.stack,
     });
     throw err;
   }
-} 
+}
+
+// Export the functions
+module.exports = {
+  validateConfig,
+  saveConfig,
+};
