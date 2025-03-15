@@ -1,7 +1,7 @@
 # Dynamic configuration for Traefik
 http:
   routers:
-    # Example router for dashboard
+    # Dashboard router with basic auth
     dashboard:
       rule: "Host(`traefik.localhost`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))"
       service: "api@internal"
@@ -11,13 +11,13 @@ http:
         - "auth"
 
   middlewares:
-    # Authentication middleware for dashboard
+    # Dashboard authentication middleware
     auth:
       basicAuth:
         users:
-          - "admin:$apr1$H6uskkkW$IgXLP6ewTrSuBkTrqE8wj/" # admin:admin - PLEASE CHANGE IN PRODUCTION
+          - "admin:$apr1$H6uskkkW$IgXLP6ewTrSuBkTrqE8wj/"
 
-    # Global redirection middleware
+    # Global redirection middleware - web to websecure
     web-to-websecure:
       redirectScheme:
         scheme: https
@@ -25,7 +25,7 @@ http:
 
   services: {}
 
-# TCP configuration for MongoDB
+# TCP configuration for MongoDB routing
 tcp:
   routers:
     mongodb-catchall:
@@ -36,7 +36,20 @@ tcp:
       tls:
         passthrough: true
 
+    mongodb-240922b9-4d3b-4692-8d1c-1884d423092a:
+      rule: "HostSNI(`240922b9-4d3b-4692-8d1c-1884d423092a.mongodb.cloudlunacy.uk`)"
+      service: "mongodb-240922b9-4d3b-4692-8d1c-1884d423092a-service"
+      entryPoints:
+        - "mongodb"
+      tls:
+        passthrough: true
+
   services:
     mongodb-catchall-service:
       loadBalancer:
         servers: []
+
+    mongodb-240922b9-4d3b-4692-8d1c-1884d423092a-service:
+      loadBalancer:
+        servers:
+          - address: "128.140.53.203:27017"

@@ -1,22 +1,18 @@
 #!/usr/bin/env node
 /**
- * MongoDB Connection Tester
+ * Test MongoDB Connection
  *
- * This script tests MongoDB connections with different configurations
- * to help diagnose and verify TLS termination setup.
+ * This script tests MongoDB connectivity through Traefik
  */
 
-const { MongoClient } = require("mongodb");
-const dns = require("dns").promises;
-const net = require("net");
-const tls = require("tls");
 const { execSync } = require("child_process");
+const net = require("net");
+const dns = require("dns").promises;
 
-// Configuration - update these values
+// Configuration
 const AGENT_ID = process.argv[2] || "240922b9-4d3b-4692-8d1c-1884d423092a";
+const TARGET_IP = process.argv[3] || "128.140.53.203";
 const MONGO_DOMAIN = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
-const MONGO_USERNAME = "admin";
-const MONGO_PASSWORD = "adminpassword";
 const MONGO_PORT = 27017;
 
 // ANSI color codes for output
@@ -30,296 +26,314 @@ const colors = {
 };
 
 // Helper functions
-function log(message, color = colors.reset) {
-  console.log(`${color}${message}${colors.reset}`);
-}
-
 function success(message) {
-  log(`✓ ${message}`, colors.green);
+  console.log(`${colors.green}✓ ${message}${colors.reset}`);
 }
 
 function error(message) {
-  log(`✗ ${message}`, colors.red);
+  console.log(`${colors.red}✗ ${message}${colors.reset}`);
+}
+
+function info(message) {
+  console.log(`${colors.blue}ℹ ${message}${colors.reset}`);
 }
 
 function warning(message) {
-  log(`⚠ ${message}`, colors.yellow);
+  console.log(`${colors.yellow}⚠ ${message}${colors.reset}`);
 }
 
-function header(title) {
-  log(`\n${colors.bold}${colors.blue}${title}${colors.reset}`);
-  log("=".repeat(title.length));
+function header(message) {
+  console.log(`\n${colors.bold}${message}${colors.reset}`);
 }
 
-// Test DNS resolution
-async function testDnsResolution() {
-  header("DNS Resolution Test");
-
-  const hostname = `${AGENT_ID}.${MONGO_DOMAIN}`;
-  log(`Testing DNS resolution for ${hostname}...`);
-
+// Test functions
+async function checkDNS(hostname) {
+  header(`Checking DNS resolution for ${hostname}`);
   try {
     const addresses = await dns.resolve4(hostname);
-    success(
-      `DNS resolution successful: ${hostname} -> ${addresses.join(", ")}`
-    );
-    return addresses[0];
+    success(`DNS resolution successful: ${addresses.join(", ")}`);
+    return addresses;
   } catch (err) {
     error(`DNS resolution failed: ${err.message}`);
     return null;
   }
 }
 
-// Test TCP connection
-async function testTcpConnection(host) {
-  header("TCP Connection Test");
-
-  log(`Testing TCP connection to ${host}:${MONGO_PORT}...`);
+async function testTcpConnection(host, port) {
+  header(`Testing TCP connection to ${host}:${port}`);
 
   return new Promise((resolve) => {
-    const socket = net.createConnection({
-      host,
-      port: MONGO_PORT,
-      timeout: 5000,
-    });
+    const socket = new net.Socket();
+    socket.setTimeout(5000);
 
     socket.on("connect", () => {
-      success(`TCP connection successful to ${host}:${MONGO_PORT}`);
-      socket.end();
+      success(`Successfully connected to ${host}:${port}`);
+      socket.destroy();
       resolve(true);
     });
 
     socket.on("timeout", () => {
-      error(`TCP connection timed out to ${host}:${MONGO_PORT}`);
+      error(`Connection to ${host}:${port} timed out`);
       socket.destroy();
       resolve(false);
     });
 
     socket.on("error", (err) => {
-      error(`TCP connection failed: ${err.message}`);
+      error(`Connection error: ${err.message}`);
+      socket.destroy();
       resolve(false);
     });
+
+    info(`Attempting to connect to ${host}:${port}...`);
+    socket.connect(port, host);
   });
 }
 
-// Test TLS handshake
-async function testTlsHandshake(host) {
-  header("TLS Handshake Test");
+function checkTraefikConfig() {
+  header("Checking Traefik configuration");
 
-  log(`Testing TLS handshake with ${host}:${MONGO_PORT}...`);
+  // Check if Traefik is running
+  const traefikStatus = execSync("docker ps | grep traefik", {
+    encoding: "utf8",
+  });
+  if (traefikStatus) {
+    success("Traefik container is running");
+  } else {
+    error("Traefik container is not running");
+    return false;
+  }
 
-  return new Promise((resolve) => {
-    const socket = tls.connect({
-      host,
-      port: MONGO_PORT,
-      rejectUnauthorized: false,
-      timeout: 5000,
+  // Check if port 27017 is exposed
+  try {
+    const portExposed = execSync("docker port traefik | grep 27017", {
+      encoding: "utf8",
     });
+    if (portExposed) {
+      success(`MongoDB port is exposed: ${portExposed.trim()}`);
+    } else {
+      error("MongoDB port 27017 is not exposed in Traefik");
+      warning("Run: docker restart traefik");
+      return false;
+    }
+  } catch (err) {
+    error("MongoDB port 27017 is not exposed in Traefik");
+    warning("Run: docker restart traefik");
+    return false;
+  }
 
-    socket.on("secureConnect", () => {
-      success(`TLS handshake successful with ${host}:${MONGO_PORT}`);
-      const protocol = socket.getProtocol();
-      log(`TLS Protocol: ${protocol}`);
-      const cert = socket.getPeerCertificate();
-      log(`Certificate Subject: ${cert.subject.CN}`);
-      log(`Certificate Issuer: ${cert.issuer.CN}`);
-      log(
-        `Certificate Valid Until: ${new Date(cert.valid_to).toLocaleString()}`
+  // Check dynamic configuration
+  try {
+    const dynamicConfig = execSync(
+      "cat /etc/traefik/dynamic.yml || cat /app/config/dynamic.yml || cat config/dynamic.yml",
+      { encoding: "utf8" }
+    );
+
+    if (dynamicConfig.includes("mongodb-catchall")) {
+      success("MongoDB catchall router is configured");
+    } else {
+      error("MongoDB catchall router is not configured");
+      return false;
+    }
+
+    if (dynamicConfig.includes(`mongodb-${AGENT_ID}`)) {
+      success(`Agent-specific MongoDB router for ${AGENT_ID} is configured`);
+    } else {
+      warning(`No agent-specific MongoDB router found for ${AGENT_ID}`);
+    }
+
+    if (dynamicConfig.includes("passthrough: true")) {
+      success("TLS passthrough is configured");
+    } else {
+      error("TLS passthrough is not configured properly");
+      return false;
+    }
+  } catch (err) {
+    error(`Error checking dynamic configuration: ${err.message}`);
+    return false;
+  }
+
+  return true;
+}
+
+async function testDirectConnection() {
+  header(`Testing direct connection to MongoDB at ${TARGET_IP}:${MONGO_PORT}`);
+
+  // Test TCP connection
+  const tcpResult = await testTcpConnection(TARGET_IP, MONGO_PORT);
+
+  if (!tcpResult) {
+    error("Cannot establish TCP connection to MongoDB server");
+    return false;
+  }
+
+  // Try MongoDB connection
+  info("Testing MongoDB connection...");
+  try {
+    const result = execSync(
+      `timeout 5 mongosh "mongodb://admin:adminpassword@${TARGET_IP}:${MONGO_PORT}/admin" --eval "db.serverStatus()" 2>&1 || echo "Connection failed"`,
+      { encoding: "utf8" }
+    );
+
+    if (result.includes("Connection failed")) {
+      warning("Direct MongoDB connection failed");
+
+      // Try with TLS
+      info("Testing MongoDB connection with TLS...");
+      const tlsResult = execSync(
+        `timeout 5 mongosh "mongodb://admin:adminpassword@${TARGET_IP}:${MONGO_PORT}/admin?ssl=true&tlsAllowInvalidCertificates=true" --eval "db.serverStatus()" 2>&1 || echo "Connection failed"`,
+        { encoding: "utf8" }
       );
-      socket.end();
-      resolve(true);
-    });
 
-    socket.on("timeout", () => {
-      error(`TLS handshake timed out with ${host}:${MONGO_PORT}`);
-      socket.destroy();
-      resolve(false);
-    });
-
-    socket.on("error", (err) => {
-      error(`TLS handshake failed: ${err.message}`);
-      resolve(false);
-    });
-  });
-}
-
-// Test MongoDB connection with TLS
-async function testMongoDbConnectionWithTls(host) {
-  header("MongoDB Connection Test (with TLS)");
-
-  const uri = `mongodb://${MONGO_USERNAME}:${MONGO_PASSWORD}@${host}:${MONGO_PORT}/admin?ssl=true&authSource=admin&tlsAllowInvalidCertificates=true`;
-  log(`Testing MongoDB connection with TLS: ${uri}`);
-
-  const client = new MongoClient(uri, {
-    serverSelectionTimeoutMS: 5000,
-  });
-
-  try {
-    await client.connect();
-    const adminDb = client.db("admin");
-    const result = await adminDb.command({ ping: 1 });
-    success(
-      `MongoDB connection with TLS successful: ${JSON.stringify(result)}`
-    );
-
-    // Get server info
-    const serverInfo = await adminDb.command({ buildInfo: 1 });
-    log(`MongoDB Version: ${serverInfo.version}`);
-
-    await client.close();
-    return true;
+      if (tlsResult.includes("Connection failed")) {
+        error("Direct MongoDB connection with TLS also failed");
+        return false;
+      } else {
+        success("Direct MongoDB connection with TLS succeeded");
+        return true;
+      }
+    } else {
+      success("Direct MongoDB connection succeeded");
+      return true;
+    }
   } catch (err) {
-    error(`MongoDB connection with TLS failed: ${err.message}`);
+    error(`Error testing direct connection: ${err.message}`);
     return false;
   }
 }
 
-// Test MongoDB connection without TLS
-async function testMongoDbConnectionWithoutTls(host) {
-  header("MongoDB Connection Test (without TLS)");
+async function testTraefikConnection() {
+  header("Testing MongoDB connection through Traefik");
 
-  const uri = `mongodb://${MONGO_USERNAME}:${MONGO_PASSWORD}@${host}:${MONGO_PORT}/admin`;
-  log(`Testing MongoDB connection without TLS: ${uri}`);
+  const hostname = `${AGENT_ID}.${MONGO_DOMAIN}`;
+  const connectionString = `mongodb://admin:adminpassword@${hostname}:${MONGO_PORT}/admin?ssl=true&authSource=admin&tlsAllowInvalidCertificates=true`;
 
-  const client = new MongoClient(uri, {
-    serverSelectionTimeoutMS: 5000,
-  });
+  info(`Connection string: ${connectionString}`);
 
   try {
-    await client.connect();
-    const adminDb = client.db("admin");
-    const result = await adminDb.command({ ping: 1 });
-    success(
-      `MongoDB connection without TLS successful: ${JSON.stringify(result)}`
+    const result = execSync(
+      `timeout 10 mongosh "${connectionString}" --eval "db.serverStatus()" 2>&1 || echo "Connection failed"`,
+      { encoding: "utf8" }
     );
-    await client.close();
-    return true;
+
+    if (result.includes("Connection failed")) {
+      error("MongoDB connection through Traefik failed");
+
+      // Try without TLS
+      info("Testing MongoDB connection without TLS...");
+      const noTlsResult = execSync(
+        `timeout 10 mongosh "mongodb://admin:adminpassword@${hostname}:${MONGO_PORT}/admin" --eval "db.serverStatus()" 2>&1 || echo "Connection failed"`,
+        { encoding: "utf8" }
+      );
+
+      if (noTlsResult.includes("Connection failed")) {
+        error("MongoDB connection without TLS also failed");
+        return false;
+      } else {
+        success("MongoDB connection without TLS succeeded");
+        warning(
+          "Your MongoDB server is not using TLS, but Traefik is configured for TLS passthrough"
+        );
+        return true;
+      }
+    } else {
+      success("MongoDB connection through Traefik succeeded");
+      return true;
+    }
   } catch (err) {
-    error(`MongoDB connection without TLS failed: ${err.message}`);
+    error(`Error testing Traefik connection: ${err.message}`);
     return false;
-  }
-}
-
-// Suggest fixes based on test results
-async function suggestFixes(results) {
-  header("Recommendations");
-
-  if (!results.dnsOk) {
-    warning("DNS resolution failed. Check the following:");
-    log("1. Ensure the domain is properly registered");
-    log("2. Verify that Traefik is configured to handle the subdomain");
-    log("3. Check if the agent is properly registered with the front server");
-    return;
-  }
-
-  if (!results.tcpOk) {
-    warning("TCP connection failed. Check the following:");
-    log("1. Ensure MongoDB is running on the agent");
-    log("2. Verify that port 27017 is open on the agent");
-    log("3. Check if Traefik is properly routing traffic to the agent");
-    return;
-  }
-
-  if (results.tlsOk && results.mongoTlsOk) {
-    success(
-      "All tests passed! Your MongoDB TLS termination is working correctly."
-    );
-    log("Connection string for clients:");
-    log(
-      `mongodb://${MONGO_USERNAME}:${MONGO_PASSWORD}@${AGENT_ID}.${MONGO_DOMAIN}:${MONGO_PORT}/admin?ssl=true&authSource=admin&tlsAllowInvalidCertificates=true`
-    );
-    return;
-  }
-
-  if (!results.tlsOk) {
-    warning("TLS handshake failed. Check the following:");
-    log("1. Ensure Traefik is configured for TLS termination");
-    log("2. Verify that the certificate resolver is working");
-    log("3. Check if the MongoDB entrypoint in Traefik has TLS enabled");
-  }
-
-  if (!results.mongoTlsOk && !results.mongoNoTlsOk) {
-    warning("Both MongoDB connection tests failed. Check the following:");
-    log("1. Verify MongoDB credentials (username/password)");
-    log("2. Ensure MongoDB is properly configured on the agent");
-    log("3. Check MongoDB logs for authentication or connection issues");
-  } else if (!results.mongoTlsOk && results.mongoNoTlsOk) {
-    warning("MongoDB works without TLS but fails with TLS. This suggests:");
-    log("1. Traefik is not properly terminating TLS");
-    log("2. Try using the non-TLS connection string:");
-    log(
-      `mongodb://${MONGO_USERNAME}:${MONGO_PASSWORD}@${AGENT_ID}.${MONGO_DOMAIN}:${MONGO_PORT}/admin`
-    );
-  } else if (results.mongoTlsOk && !results.mongoNoTlsOk) {
-    success(
-      "MongoDB works with TLS but not without TLS. This is expected if TLS is required."
-    );
-    log("Use the TLS connection string:");
-    log(
-      `mongodb://${MONGO_USERNAME}:${MONGO_PASSWORD}@${AGENT_ID}.${MONGO_DOMAIN}:${MONGO_PORT}/admin?ssl=true&authSource=admin&tlsAllowInvalidCertificates=true`
-    );
   }
 }
 
 // Main function
 async function main() {
-  log(`${colors.bold}MongoDB Connection Tester${colors.reset}`);
-  log(`Testing MongoDB connection for agent: ${AGENT_ID}`);
-  log(`Domain: ${MONGO_DOMAIN}`);
+  console.log(`${colors.bold}MongoDB Connection Test${colors.reset}`);
+  console.log("=========================");
 
-  const results = {
-    dnsOk: false,
-    tcpOk: false,
-    tlsOk: false,
-    mongoTlsOk: false,
-    mongoNoTlsOk: false,
-  };
+  const hostname = `${AGENT_ID}.${MONGO_DOMAIN}`;
+  info(`Testing connection to: ${hostname}:${MONGO_PORT}`);
 
-  // Step 1: Test DNS resolution
-  const resolvedIp = await testDnsResolution();
-  results.dnsOk = !!resolvedIp;
+  // Step 1: Check DNS resolution
+  const addresses = await checkDNS(hostname);
 
-  if (!resolvedIp) {
-    error("DNS resolution failed. Cannot continue with further tests.");
-    await suggestFixes(results);
-    return;
+  // Step 2: Check Traefik configuration
+  const traefikConfigOk = checkTraefikConfig();
+
+  // Step 3: Test TCP connection
+  if (addresses && addresses.length > 0) {
+    await testTcpConnection(addresses[0], MONGO_PORT);
+  } else {
+    warning("DNS resolution failed, trying localhost");
+    await testTcpConnection("localhost", MONGO_PORT);
   }
 
-  // Step 2: Test TCP connection
-  results.tcpOk = await testTcpConnection(`${AGENT_ID}.${MONGO_DOMAIN}`);
+  // Step 4: Test direct connection to MongoDB server
+  const directConnectionOk = await testDirectConnection();
 
-  if (!results.tcpOk) {
-    error("TCP connection failed. Cannot continue with further tests.");
-    await suggestFixes(results);
-    return;
-  }
-
-  // Step 3: Test TLS handshake
-  results.tlsOk = await testTlsHandshake(`${AGENT_ID}.${MONGO_DOMAIN}`);
-
-  // Step 4: Test MongoDB connection with TLS
-  results.mongoTlsOk = await testMongoDbConnectionWithTls(
-    `${AGENT_ID}.${MONGO_DOMAIN}`
-  );
-
-  // Step 5: Test MongoDB connection without TLS
-  results.mongoNoTlsOk = await testMongoDbConnectionWithoutTls(
-    `${AGENT_ID}.${MONGO_DOMAIN}`
-  );
+  // Step 5: Test MongoDB connection through Traefik
+  const traefikConnectionOk = await testTraefikConnection();
 
   // Summary
-  header("Test Results Summary");
-  log(`DNS Resolution: ${results.dnsOk ? "✓" : "✗"}`);
-  log(`TCP Connection: ${results.tcpOk ? "✓" : "✗"}`);
-  log(`TLS Handshake: ${results.tlsOk ? "✓" : "✗"}`);
-  log(`MongoDB with TLS: ${results.mongoTlsOk ? "✓" : "✗"}`);
-  log(`MongoDB without TLS: ${results.mongoNoTlsOk ? "✓" : "✗"}`);
+  header("Summary");
 
-  // Suggest fixes
-  await suggestFixes(results);
+  if (addresses) {
+    success("DNS resolution: OK");
+  } else {
+    error("DNS resolution: FAILED");
+  }
+
+  if (traefikConfigOk) {
+    success("Traefik configuration: OK");
+  } else {
+    error("Traefik configuration: ISSUES FOUND");
+  }
+
+  if (directConnectionOk) {
+    success("Direct MongoDB connection: OK");
+  } else {
+    error("Direct MongoDB connection: FAILED");
+  }
+
+  if (traefikConnectionOk) {
+    success("MongoDB connection through Traefik: OK");
+  } else {
+    error("MongoDB connection through Traefik: FAILED");
+  }
+
+  // Recommendations
+  header("Recommendations");
+
+  if (!addresses) {
+    info("1. Fix DNS resolution for your MongoDB domain");
+    info(
+      "   - Ensure your DNS provider has a wildcard record for *.mongodb.cloudlunacy.uk"
+    );
+  }
+
+  if (!traefikConfigOk) {
+    info("2. Fix Traefik configuration for MongoDB routing");
+    info("   - Ensure port 27017 is exposed in Traefik");
+    info("   - Check that dynamic.yml has the correct MongoDB configuration");
+    info("   - Restart Traefik: docker restart traefik");
+  }
+
+  if (!directConnectionOk) {
+    info("3. Check if MongoDB is running correctly on the target server");
+    info(`   - Verify you can connect directly to ${TARGET_IP}:27017`);
+    info("   - Check MongoDB authentication settings");
+  }
+
+  if (!traefikConnectionOk) {
+    info("4. Check if MongoDB requires TLS or not");
+    info(
+      "   - If MongoDB uses TLS, ensure Traefik has TLS passthrough enabled"
+    );
+    info(
+      "   - If MongoDB does not use TLS, update your connection string accordingly"
+    );
+  }
 }
 
-// Run the main function
 main().catch((err) => {
   console.error(`${colors.red}Fatal error: ${err.message}${colors.reset}`);
   process.exit(1);
