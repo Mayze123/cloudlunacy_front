@@ -3,7 +3,15 @@ FROM node:18-alpine
 WORKDIR /app
 
 # Install necessary tools
-RUN apk add --no-cache curl bash wget
+RUN apk add --no-cache \
+    curl \
+    bash \
+    wget \
+    openssl \
+    jq \
+    docker-cli \
+    ca-certificates \
+    tzdata
 
 # Copy package files
 COPY package*.json ./
@@ -19,16 +27,22 @@ COPY start.js /app/start.js
 COPY . .
 
 # Create necessary directories
-RUN mkdir -p /app/scripts /app/config
+RUN mkdir -p /app/scripts /app/config/certs /app/config/certs/agents /app/logs
 
-# Make the startup script executable
+# Make scripts executable
+RUN find /app/scripts -type f -name "*.sh" -exec chmod +x {} \;
 RUN chmod +x /app/start.sh
 
 # Set environment variables
 ENV NODE_ENV=production
+ENV TZ=UTC
 
 # Expose port
 EXPOSE 3005
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD wget -qO- http://localhost:3005/health || exit 1
 
 # Command to start the application
 CMD ["/bin/sh", "/app/start.sh"]
