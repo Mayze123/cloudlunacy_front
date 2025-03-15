@@ -4,8 +4,7 @@
 const fs = require("fs").promises;
 const logger = require("../../utils/logger").getLogger("certificateController");
 const coreServices = require("../../services/core");
-const { AppError } = require("../../utils/appError");
-const { asyncHandler } = require("../../utils/errorHandler");
+const { asyncHandler, AppError } = require("../../utils/errorHandler");
 
 // Path to MongoDB CA certificate
 const MONGO_CA_PATH =
