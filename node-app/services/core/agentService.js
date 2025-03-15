@@ -9,49 +9,36 @@ const jwt = require("jsonwebtoken");
 const configService = require("./configService");
 const mongodbService = require("./mongodbService");
 const logger = require("../../utils/logger").getLogger("agentService");
+const crypto = require("crypto");
 
 class AgentService {
-  constructor() {
-    this.jwtSecret = process.env.JWT_SECRET;
-    if (!this.jwtSecret) {
-      logger.warn(
-        "JWT_SECRET environment variable is not set. Agent authentication will not work properly."
-      );
-    }
-
-    this.registeredAgents = new Map();
+  constructor(configManager) {
+    this.configManager = configManager;
     this.initialized = false;
+    this.agents = new Map();
+    this.jwtSecret = process.env.JWT_SECRET || "default-secret-change-me";
+    this.tokenExpiration = "7d"; // Default token expiration
   }
 
   /**
    * Initialize the agent service
    */
   async initialize() {
-    if (this.initialized) {
-      return true;
-    }
+    logger.info("Initializing agent service");
 
     try {
-      logger.info("Initializing agent service");
+      // Load existing agents from configuration if available
+      await this._loadAgents();
 
-      // Load registered agents from configuration
-      const agentIds = await configService.listAgents();
-
-      for (const agentId of agentIds) {
-        this.registeredAgents.set(agentId, {
-          registeredAt: new Date().toISOString(),
-        });
-      }
-
-      logger.info(`Loaded ${this.registeredAgents.size} registered agents`);
       this.initialized = true;
+      logger.info("Agent service initialized successfully");
       return true;
     } catch (err) {
       logger.error(`Failed to initialize agent service: ${err.message}`, {
         error: err.message,
         stack: err.stack,
       });
-      throw err;
+      return false;
     }
   }
 
@@ -86,7 +73,7 @@ class AgentService {
       );
 
       // Save agent registration info
-      this.registeredAgents.set(agentId, {
+      this.agents.set(agentId, {
         targetIp,
         registeredAt: new Date().toISOString(),
         lastSeen: new Date().toISOString(),
@@ -182,7 +169,7 @@ class AgentService {
 
       // Reset state
       this.initialized = false;
-      this.registeredAgents.clear();
+      this.agents.clear();
 
       // Re-initialize
       await this.initialize();
@@ -206,7 +193,7 @@ class AgentService {
       logger.info("Loading registered agents");
 
       // Clear existing registrations
-      this.registeredAgents.clear();
+      this.agents.clear();
 
       // Get agent configs
       const agentConfigs = await configService.listAgents();
@@ -218,7 +205,7 @@ class AgentService {
 
           if (agentConfig && agentConfig.registration) {
             // Add to registry
-            this.registeredAgents.set(agentId, {
+            this.agents.set(agentId, {
               targetIp: agentConfig.registration.targetIp,
               registeredAt:
                 agentConfig.registration.registeredAt ||
@@ -234,7 +221,7 @@ class AgentService {
         }
       }
 
-      logger.info(`Loaded ${this.registeredAgents.size} agents`);
+      logger.info(`Loaded ${this.agents.size} agents`);
     } catch (err) {
       logger.error(`Failed to load registered agents: ${err.message}`, {
         error: err.message,
@@ -244,4 +231,4 @@ class AgentService {
   }
 }
 
-module.exports = new AgentService();
+module.exports = AgentService;

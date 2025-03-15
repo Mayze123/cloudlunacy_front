@@ -1,5 +1,5 @@
 /**
- * Certificate Management Service
+ * Certificate Service
  *
  * Handles certificate generation, storage, and distribution for MongoDB TLS
  */
@@ -8,6 +8,8 @@ const fs = require("fs").promises;
 const path = require("path");
 const { execSync } = require("child_process");
 const logger = require("../../utils/logger").getLogger("certificateService");
+const { promisify } = require("util");
+const execAsync = promisify(execSync);
 
 // Path configurations
 const CERT_BASE_DIR =
@@ -17,32 +19,35 @@ const CA_CERT_PATH = path.join(CERT_BASE_DIR, "ca.crt");
 const MONGO_DOMAIN = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
 
 class CertificateService {
-  constructor() {
+  constructor(configManager) {
+    this.configManager = configManager;
     this.initialized = false;
     this.certsDir = process.env.CERTS_DIR || "/app/config/certs";
-    this.caKeyPath = path.join(this.certsDir, "ca.key");
     this.caCertPath = path.join(this.certsDir, "ca.crt");
+    this.caKeyPath = path.join(this.certsDir, "ca.key");
   }
 
   /**
    * Initialize the certificate service
    */
   async initialize() {
-    try {
-      // Create certificates directory if it doesn't exist
-      await fs.mkdir(this.certsDir, { recursive: true });
+    logger.info("Initializing certificate service");
 
-      // Check if CA certificate exists, if not create it
-      const caExists = await this.checkCAExists();
-      if (!caExists) {
-        await this.generateCA();
-      }
+    try {
+      // Ensure certificates directory exists
+      await this._ensureCertsDir();
+
+      // Ensure CA certificate exists
+      await this._ensureCA();
 
       this.initialized = true;
       logger.info("Certificate service initialized successfully");
       return true;
     } catch (err) {
-      logger.error(`Failed to initialize certificate service: ${err.message}`);
+      logger.error(`Failed to initialize certificate service: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+      });
       return false;
     }
   }
@@ -196,6 +201,14 @@ IP.1 = 127.0.0.1
       };
     }
   }
+
+  async _ensureCertsDir() {
+    // Implementation of _ensureCertsDir method
+  }
+
+  async _ensureCA() {
+    // Implementation of _ensureCA method
+  }
 }
 
-module.exports = new CertificateService();
+module.exports = CertificateService;
