@@ -29,12 +29,34 @@ exports.registerAgent = asyncHandler(async (req, res) => {
   const targetIp =
     req.headers["x-forwarded-for"] ||
     req.headers["x-real-ip"] ||
+    req.headers["x-agent-ip"] ||
     req.connection.remoteAddress.replace(/^::ffff:/, "");
 
   logger.info(`Registering agent ${agentId} with IP ${targetIp}`);
 
   // Register the agent using core service
   const result = await coreServices.agent.registerAgent(agentId, targetIp);
+
+  // Register MongoDB for this agent
+  let mongodbResult = null;
+  if (coreServices.mongodb) {
+    try {
+      mongodbResult = await coreServices.mongodb.registerAgent(
+        agentId,
+        targetIp,
+        {
+          useTls: true,
+        }
+      );
+      logger.info(`MongoDB registered for agent ${agentId}`);
+    } catch (err) {
+      logger.error(
+        `Failed to register MongoDB for agent ${agentId}: ${err.message}`
+      );
+    }
+  } else {
+    logger.error("MongoDB service is not available");
+  }
 
   // Generate certificates for this agent if needed
   let certificates = null;
@@ -60,7 +82,7 @@ exports.registerAgent = asyncHandler(async (req, res) => {
     success: true,
     agentId,
     token: result.token,
-    mongodbUrl: result.mongodbUrl,
+    mongodbUrl: mongodbResult ? mongodbResult.mongodbUrl : null,
     targetIp,
     tlsEnabled: true,
     certificates,

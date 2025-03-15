@@ -17,6 +17,7 @@ const certificateService = require("./certificateService");
 const path = require("path");
 const { MongoClient } = require("mongodb");
 const configManager = require("./configManager");
+const routingManager = require("./routingManager");
 
 const execAsync = promisify(exec);
 const docker = new Docker({ socketPath: "/var/run/docker.sock" });
@@ -32,6 +33,9 @@ class MongoDBService {
     this.config = configService;
     this.configManager = configManager;
     this.traefikContainer = process.env.TRAEFIK_CONTAINER || "traefik";
+    this.certsDir = process.env.CERTS_DIR || "/app/config/certs";
+    this.agentCertsDir =
+      process.env.AGENT_CERTS_DIR || "/app/config/certs/agents";
   }
 
   /**
@@ -697,6 +701,167 @@ class MongoDBService {
         stack: err.stack,
       });
       return false;
+    }
+  }
+
+  /**
+   * Register a MongoDB agent
+   *
+   * @param {string} agentId - The agent ID
+   * @param {string} targetIp - The target IP address
+   * @param {Object} options - Additional options
+   * @returns {Promise<Object>} - Registration result
+   */
+  async registerAgent(agentId, targetIp, options = {}) {
+    try {
+      logger.info(`Registering MongoDB agent ${agentId} with IP ${targetIp}`);
+
+      if (!this.initialized) {
+        await this.initialize();
+      }
+
+      // Add TCP route for this agent
+      const subdomain = `${agentId}.${this.mongoDomain}`;
+      const result = await routingManager.addTcpRoute(
+        agentId,
+        subdomain,
+        `${targetIp}:27017`,
+        {
+          tls: true,
+          passthrough: true,
+          ...options,
+        }
+      );
+
+      // Generate certificates for this agent if needed
+      let certificates = null;
+      if (options.useTls) {
+        try {
+          // This will be implemented by the certificate service
+          const certService = require("./certificateService");
+          const certResult = await certService.generateAgentCertificate(
+            agentId
+          );
+          if (certResult.success) {
+            certificates = {
+              caCert: certResult.caCert,
+              serverKey: certResult.serverKey,
+              serverCert: certResult.serverCert,
+            };
+          }
+        } catch (err) {
+          logger.error(
+            `Failed to generate certificates for agent ${agentId}: ${err.message}`
+          );
+        }
+      }
+
+      return {
+        success: true,
+        agentId,
+        subdomain,
+        mongodbUrl: `${subdomain}:${this.mongoPort}`,
+        targetIp,
+        certificates,
+      };
+    } catch (err) {
+      logger.error(
+        `Failed to register MongoDB agent ${agentId}: ${err.message}`
+      );
+      return {
+        success: false,
+        error: err.message,
+      };
+    }
+  }
+
+  /**
+   * Deregister a MongoDB agent
+   *
+   * @param {string} agentId - The agent ID
+   * @returns {Promise<Object>} - Deregistration result
+   */
+  async deregisterAgent(agentId) {
+    try {
+      logger.info(`Deregistering MongoDB agent ${agentId}`);
+
+      if (!this.initialized) {
+        await this.initialize();
+      }
+
+      // Remove TCP route for this agent
+      const result = await routingManager.removeTcpRoute(agentId);
+
+      return {
+        success: true,
+        agentId,
+        message: `MongoDB agent ${agentId} deregistered successfully`,
+      };
+    } catch (err) {
+      logger.error(
+        `Failed to deregister MongoDB agent ${agentId}: ${err.message}`
+      );
+      return {
+        success: false,
+        error: err.message,
+      };
+    }
+  }
+
+  /**
+   * Test direct connection to MongoDB
+   *
+   * @param {string} targetIp - The target IP address
+   * @returns {Promise<Object>} - Test result
+   */
+  async testDirectConnection(targetIp) {
+    try {
+      logger.info(`Testing direct connection to MongoDB at ${targetIp}:27017`);
+
+      const result = await execAsync(
+        `timeout 5 nc -z -v ${targetIp} 27017 2>&1 || echo "Connection failed"`
+      );
+
+      return {
+        success: !result.stdout.includes("Connection failed"),
+        message: result.stdout,
+      };
+    } catch (err) {
+      logger.error(
+        `Failed to test direct connection to MongoDB: ${err.message}`
+      );
+      return {
+        success: false,
+        error: err.message,
+      };
+    }
+  }
+
+  /**
+   * Test connection through Traefik
+   *
+   * @param {string} agentId - The agent ID
+   * @returns {Promise<Object>} - Test result
+   */
+  async testTraefikConnection(agentId) {
+    try {
+      logger.info(`Testing connection through Traefik for agent ${agentId}`);
+
+      const subdomain = `${agentId}.${this.mongoDomain}`;
+      const result = await execAsync(
+        `timeout 5 nc -z -v ${subdomain} ${this.mongoPort} 2>&1 || echo "Connection failed"`
+      );
+
+      return {
+        success: !result.stdout.includes("Connection failed"),
+        message: result.stdout,
+      };
+    } catch (err) {
+      logger.error(`Failed to test connection through Traefik: ${err.message}`);
+      return {
+        success: false,
+        error: err.message,
+      };
     }
   }
 }

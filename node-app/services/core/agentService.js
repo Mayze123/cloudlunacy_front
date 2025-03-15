@@ -75,7 +75,7 @@ class AgentService {
       const token = this.generateAgentToken(agentId);
 
       // Register MongoDB for this agent
-      const mongoResult = await this.mongodbService.registerMongoDBAgent(
+      const mongoResult = await mongodbService.registerMongoDBAgent(
         agentId,
         targetIp,
         true // Enable TLS by default
