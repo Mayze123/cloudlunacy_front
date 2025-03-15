@@ -281,3 +281,5 @@ main().catch((err) => {
   logError("Unhandled error in main()", err);
   process.exit(1);
 });
+
+// Check if start.js is using ES modules or has syntax errors

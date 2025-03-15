@@ -41,17 +41,26 @@ if [ $? -ne 0 ]; then
   fi
 fi
 
+# Add debug information
+echo "Node.js version: $(node -v)"
+echo "NPM version: $(npm -v)"
+echo "Listing files in /app:"
+ls -la /app
+echo "Checking for ES modules in package.json:"
+grep -E "\"type\":\s*\"module\"" /app/package.json || echo "Not using ES modules in package.json"
+
 # Run the application with fallbacks
 echo "Starting application..."
 if [ -f "/app/start.js" ]; then
   echo "Found start.js, using it as entry point"
-  exec node /app/start.js
+  # Add debugging to see where the error occurs
+  NODE_DEBUG=module exec node /app/start.js
 elif [ -f "/opt/cloudlunacy_front/node-app/start.js" ]; then
   echo "Found start.js in /opt/cloudlunacy_front/node-app, using it"
-  exec node /opt/cloudlunacy_front/node-app/start.js
+  NODE_DEBUG=module exec node /opt/cloudlunacy_front/node-app/start.js
 elif [ -f "/app/server.js" ]; then
   echo "Found server.js, using it as entry point"
-  exec node /app/server.js
+  NODE_DEBUG=module exec node /app/server.js
 else
   echo "ERROR: Could not find start.js or server.js"
   echo "Available files in /app:"
