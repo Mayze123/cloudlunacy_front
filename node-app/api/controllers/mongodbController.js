@@ -35,13 +35,21 @@ exports.addSubdomain = asyncHandler(async (req, res) => {
   );
 
   // Register the MongoDB subdomain
-  await coreServices.mongodb.registerAgent(agentId || subdomain, targetIp);
+  const result = await coreServices.mongodb.registerAgent(
+    agentId || subdomain,
+    targetIp,
+    {
+      useTls: true,
+    }
+  );
 
   res.status(201).json({
     success: true,
     subdomain: agentId || subdomain,
     domain: `${agentId || subdomain}.${coreServices.mongodb.mongoDomain}`,
     targetIp,
+    mongodbUrl: result.mongodbUrl,
+    connectionString: result.connectionString,
   });
 });
 

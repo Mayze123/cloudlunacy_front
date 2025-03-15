@@ -53,11 +53,6 @@ providers:
     filename: "/etc/traefik/dynamic.yml"
     watch: true
 
-  # Per-agent configuration directory
-  # directory:
-  #   directory: "/etc/traefik/agents"
-  #   watch: true
-
   # Docker provider for container discovery
   docker:
     endpoint: "unix:///var/run/docker.sock"

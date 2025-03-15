@@ -195,26 +195,38 @@ class ConfigManager {
   }
 
   /**
-   * Save the Traefik configuration
+   * Save configuration to file
    *
-   * @param {object} config - The configuration to save
-   * @returns {Promise<void>}
+   * @param {string} filePath - Path to save the configuration
+   * @param {Object} config - Configuration to save
+   * @returns {Promise<boolean>} - Success status
    */
-  async saveConfig(config) {
+  async saveConfig(filePath, config) {
     try {
-      // Validate the configuration before saving
-      this.validateConfig(config);
+      logger.info(`Saving configuration to ${filePath}`);
+
+      // Extract only the Traefik configuration parts
+      const traefikConfig = {
+        http: config.http || {},
+        tcp: config.tcp || {},
+      };
+
+      // Create directory if it doesn't exist
+      const dir = path.dirname(filePath);
+      await fs.mkdir(dir, { recursive: true });
 
       // Convert to YAML and save
-      const yamlContent = yaml.stringify(config);
-      await fs.writeFile(this.configPath, yamlContent, "utf8");
-      logger.info(`Configuration saved to ${this.configPath}`);
+      const yamlContent = yaml.stringify(traefikConfig);
+      await fs.writeFile(filePath, yamlContent, "utf8");
+
+      logger.info(`Configuration saved to ${filePath}`);
+      return true;
     } catch (err) {
       logger.error(`Failed to save configuration: ${err.message}`, {
         error: err.message,
         stack: err.stack,
       });
-      throw err;
+      return false;
     }
   }
 
@@ -225,60 +237,19 @@ class ConfigManager {
    * @returns {object} - The agent configuration
    */
   async getAgentConfig(agentId) {
-    // Make sure we're initialized
     if (!this.initialized) {
       await this.initialize();
     }
 
-    // Return the relevant parts of the configuration for this agent
+    // Get base configuration
+    const config = await this.getConfig();
+
+    // Add agent-specific configuration
     return {
-      tcp: {
-        routers: this.getAgentRouters(agentId),
-        services: this.getAgentServices(agentId),
-      },
+      ...config,
+      agentId,
+      // Add any other agent-specific configuration here
     };
-  }
-
-  /**
-   * Get agent routers
-   *
-   * @param {string} agentId - The agent ID
-   * @returns {object} - The agent routers
-   */
-  getAgentRouters(agentId) {
-    const routers = {};
-
-    // Find all routers for this agent
-    for (const [routerName, router] of Object.entries(
-      this.configs.main?.tcp?.routers || {}
-    )) {
-      if (routerName.includes(agentId)) {
-        routers[routerName] = router;
-      }
-    }
-
-    return routers;
-  }
-
-  /**
-   * Get agent services
-   *
-   * @param {string} agentId - The agent ID
-   * @returns {object} - The agent services
-   */
-  getAgentServices(agentId) {
-    const services = {};
-
-    // Find all services for this agent
-    for (const [serviceName, service] of Object.entries(
-      this.configs.main?.tcp?.services || {}
-    )) {
-      if (serviceName.includes(agentId)) {
-        services[serviceName] = service;
-      }
-    }
-
-    return services;
   }
 
   /**
@@ -314,10 +285,10 @@ class ConfigManager {
    * @returns {Promise<boolean>} Success status
    */
   async updateStaticConfig(config) {
-    const staticConfigPath =
-      process.env.STATIC_CONFIG_PATH || "/etc/traefik/traefik.yml";
-
     try {
+      const staticConfigPath =
+        process.env.STATIC_CONFIG_PATH || "/etc/traefik/traefik.yml";
+
       logger.info(`Updating static configuration at ${staticConfigPath}`);
 
       // Create a backup
@@ -326,7 +297,7 @@ class ConfigManager {
         const originalContent = await fs.readFile(staticConfigPath, "utf8");
         await fs.writeFile(backupPath, originalContent, "utf8");
         logger.info(`Created backup at ${backupPath}`);
-      } catch (_backupErr) {
+      } catch (_err) {
         logger.warn(`Failed to create backup of static configuration`);
       }
 
@@ -351,10 +322,10 @@ class ConfigManager {
    * @returns {Promise<Object>} The static configuration
    */
   async getStaticConfig() {
-    const staticConfigPath =
-      process.env.STATIC_CONFIG_PATH || "/etc/traefik/traefik.yml";
-
     try {
+      const staticConfigPath =
+        process.env.STATIC_CONFIG_PATH || "/etc/traefik/traefik.yml";
+
       logger.info(`Loading static configuration from ${staticConfigPath}`);
 
       // Read and parse the configuration
@@ -376,10 +347,10 @@ class ConfigManager {
    * @returns {Promise<boolean>} Success status
    */
   async updateDockerCompose(updateFn) {
-    const composeConfigPath =
-      process.env.DOCKER_COMPOSE_PATH || "/app/docker-compose.yml";
-
     try {
+      const composeConfigPath =
+        process.env.DOCKER_COMPOSE_PATH || "/app/docker-compose.yml";
+
       logger.info(
         `Updating Docker Compose configuration at ${composeConfigPath}`
       );

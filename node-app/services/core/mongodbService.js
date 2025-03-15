@@ -473,24 +473,30 @@ class MongoDBService {
    */
   async testConnection(agentId, targetIp) {
     try {
+      if (!this.initialized) {
+        await this.initialize();
+      }
+
       logger.info(`Testing MongoDB connection for agent ${agentId}`);
 
-      const agent = this.registeredAgents.get(agentId);
-      const domain = agent ? agent.domain : `${agentId}.${this.mongoDomain}`;
+      // Get target IP from registry if not provided
+      if (!targetIp) {
+        const agent = this.registeredAgents.get(agentId);
+        if (!agent) {
+          return {
+            success: false,
+            message: `Agent ${agentId} not found`,
+          };
+        }
+        targetIp = agent.targetIp;
+      }
 
-      // Test direct connection to target IP
-      const directResult = await this.testMongoDBConnection(
-        targetIp,
-        27017,
-        agent?.useTls || true
-      );
+      // Test direct connection to MongoDB
+      const directResult = await this.testDirectConnection(targetIp);
 
       // Test connection through Traefik
-      const traefikResult = await this.testMongoDBConnection(
-        domain,
-        27017,
-        agent?.useTls || true
-      );
+      const subdomain = `${agentId}.${this.mongoDomain}`;
+      const traefikResult = await this.testTraefikConnection(subdomain);
 
       return {
         success: directResult.success || traefikResult.success,
@@ -499,71 +505,146 @@ class MongoDBService {
       };
     } catch (err) {
       logger.error(
-        `Failed to test MongoDB connection for agent ${agentId}: ${err.message}`
+        `Failed to test MongoDB connection for agent ${agentId}: ${err.message}`,
+        {
+          error: err.message,
+          stack: err.stack,
+        }
       );
       return {
         success: false,
-        error: err.message,
+        message: err.message,
       };
     }
   }
 
-  async testMongoDBConnection(host, port, useTls) {
+  /**
+   * Test direct connection to MongoDB
+   * @private
+   * @param {string} targetIp - The target IP address
+   * @returns {Promise<Object>} - Test result
+   */
+  async testDirectConnection(targetIp) {
     try {
-      logger.info(
-        `Testing MongoDB connection to ${host}:${port} (TLS: ${useTls})`
-      );
+      logger.debug(`Testing direct connection to MongoDB at ${targetIp}:27017`);
 
-      // Create connection options
-      const options = {
-        serverSelectionTimeoutMS: 5000,
-        connectTimeoutMS: 5000,
-        auth: {
-          username: "admin",
-          password: "adminpassword",
-        },
-        authSource: "admin",
-      };
-
-      // Add TLS options if enabled
-      if (useTls) {
-        options.tls = true;
-        options.tlsAllowInvalidCertificates = true;
-        options.tlsAllowInvalidHostnames = true;
+      // Test TCP connection
+      const tcpResult = await this.testTcpConnection(targetIp, 27017);
+      if (!tcpResult.success) {
+        return {
+          success: false,
+          message: "TCP connection failed",
+          details: tcpResult,
+        };
       }
 
-      // Create connection string
-      const uri = `mongodb://admin:adminpassword@${host}:${port}/admin`;
+      // Try MongoDB connection
+      const client = new MongoClient(`mongodb://${targetIp}:27017`, {
+        serverSelectionTimeoutMS: 5000,
+      });
 
-      // Connect to MongoDB
-      const client = new MongoClient(uri, options);
       await client.connect();
-
-      // Test connection with ping
-      const pingResult = await client.db("admin").command({ ping: 1 });
-
-      // Close connection
+      await client.db("admin").command({ ping: 1 });
       await client.close();
 
       return {
         success: true,
-        host,
-        port,
-        useTls,
-        pingResult,
+        message: "Direct connection successful",
       };
     } catch (err) {
-      logger.warn(
-        `MongoDB connection test failed for ${host}:${port}: ${err.message}`
-      );
+      logger.error(`Direct MongoDB connection failed: ${err.message}`);
       return {
         success: false,
-        host,
-        port,
-        useTls,
-        error: err.message,
+        message: `Direct connection failed: ${err.message}`,
       };
     }
+  }
+
+  /**
+   * Test connection through Traefik
+   * @private
+   * @param {string} subdomain - The MongoDB subdomain
+   * @returns {Promise<Object>} - Test result
+   */
+  async testTraefikConnection(subdomain) {
+    try {
+      logger.debug(
+        `Testing MongoDB connection through Traefik to ${subdomain}`
+      );
+
+      // Test TCP connection
+      const tcpResult = await this.testTcpConnection(subdomain, 27017);
+      if (!tcpResult.success) {
+        return {
+          success: false,
+          message: "TCP connection failed",
+          details: tcpResult,
+        };
+      }
+
+      // Try MongoDB connection with TLS
+      const client = new MongoClient(
+        `mongodb://${subdomain}:27017?ssl=true&tlsAllowInvalidCertificates=true`,
+        {
+          serverSelectionTimeoutMS: 5000,
+        }
+      );
+
+      await client.connect();
+      await client.db("admin").command({ ping: 1 });
+      await client.close();
+
+      return {
+        success: true,
+        message: "Traefik connection successful",
+      };
+    } catch (err) {
+      logger.error(`Traefik MongoDB connection failed: ${err.message}`);
+      return {
+        success: false,
+        message: `Traefik connection failed: ${err.message}`,
+      };
+    }
+  }
+
+  /**
+   * Test TCP connection
+   * @private
+   * @param {string} host - The host to connect to
+   * @param {number} port - The port to connect to
+   * @returns {Promise<Object>} - Test result
+   */
+  async testTcpConnection(host, port) {
+    return new Promise((resolve) => {
+      const socket = new net.Socket();
+      socket.setTimeout(this.connectTimeout);
+
+      socket.on("connect", () => {
+        socket.destroy();
+        resolve({
+          success: true,
+          message: `TCP connection to ${host}:${port} successful`,
+        });
+      });
+
+      socket.on("timeout", () => {
+        socket.destroy();
+        resolve({
+          success: false,
+          message: `TCP connection to ${host}:${port} timed out`,
+        });
+      });
+
+      socket.on("error", (err) => {
+        socket.destroy();
+        resolve({
+          success: false,
+          message: `TCP connection to ${host}:${port} failed: ${err.message}`,
+        });
+      });
+
+      socket.connect(port, host);
+    });
   }
 
   /**
@@ -704,7 +785,6 @@ class MongoDBService {
 
   /**
    * Register a MongoDB agent
-   *
    * @param {string} agentId - The agent ID
    * @param {string} targetIp - The target IP address
    * @param {Object} options - Additional options
@@ -712,30 +792,84 @@ class MongoDBService {
    */
   async registerAgent(agentId, targetIp, options = {}) {
     try {
-      logger.info(`Registering MongoDB agent ${agentId} with IP ${targetIp}`);
-
       if (!this.initialized) {
         await this.initialize();
       }
 
-      // Add TCP route for this agent
-      const subdomain = `${agentId}.${this.mongoDomain}`;
-      const result = await routingService.addTcpRoute(
-        agentId,
-        subdomain,
-        `${targetIp}:27017`,
-        {
-          tls: true,
-          passthrough: true,
-          ...options,
-        }
-      );
+      logger.info(`Registering MongoDB agent ${agentId} with IP ${targetIp}`);
 
-      // Generate certificates for this agent if needed
+      // Validate inputs
+      if (!this.validateInputs(agentId, targetIp)) {
+        throw new Error(
+          `Invalid agent ID or IP address: ${agentId}, ${targetIp}`
+        );
+      }
+
+      // Ensure MongoDB port is exposed
+      await this.ensureMongoDBPort();
+
+      // Ensure MongoDB entrypoint is configured
+      await this.ensureMongoDBEntrypoint();
+
+      // Create MongoDB subdomain in Traefik
+      const subdomain = `${agentId}.${this.mongoDomain}`;
+      const routerName = `mongodb-${agentId}`;
+      const serviceName = `mongodb-${agentId}-service`;
+
+      // Get main config
+      const mainConfig = configManager.configs.main;
+      if (!mainConfig) {
+        throw new Error("Main configuration not loaded");
+      }
+
+      // Ensure tcp section exists
+      if (!mainConfig.tcp) {
+        mainConfig.tcp = { routers: {}, services: {} };
+      }
+      if (!mainConfig.tcp.routers) {
+        mainConfig.tcp.routers = {};
+      }
+      if (!mainConfig.tcp.services) {
+        mainConfig.tcp.services = {};
+      }
+
+      // Create router
+      mainConfig.tcp.routers[routerName] = {
+        rule: `HostSNI(\`${subdomain}\`)`,
+        service: serviceName,
+        entryPoints: ["mongodb"],
+        tls: {
+          passthrough: true,
+        },
+      };
+
+      // Create service
+      mainConfig.tcp.services[serviceName] = {
+        loadBalancer: {
+          servers: [
+            {
+              address: `${targetIp}:27017`,
+            },
+          ],
+        },
+      };
+
+      // Save updated config
+      await configManager.saveConfig(configManager.paths.dynamic, mainConfig);
+
+      // Add to registry
+      this.registeredAgents.set(agentId, {
+        targetIp,
+        registeredAt: new Date().toISOString(),
+      });
+
+      logger.info(`MongoDB agent ${agentId} registered successfully`);
+
+      // Generate certificates if needed
       let certificates = null;
-      if (options.useTls) {
+      if (options.useTls && this.certificate) {
         try {
-          const certResult = await certificateService.generateAgentCertificate(
+          const certResult = await this.certificate.generateAgentCertificate(
             agentId
           );
           if (certResult.success) {
@@ -756,107 +890,89 @@ class MongoDBService {
         success: true,
         agentId,
         subdomain,
-        mongodbUrl: `${subdomain}:${this.mongoPort}`,
         targetIp,
+        mongodbUrl: `mongodb://${subdomain}:27017`,
         certificates,
+        connectionString: `mongodb://username:password@${subdomain}:27017/admin?ssl=true&tlsAllowInvalidCertificates=true`,
       };
     } catch (err) {
       logger.error(
-        `Failed to register MongoDB agent ${agentId}: ${err.message}`
+        `Failed to register MongoDB agent ${agentId}: ${err.message}`,
+        {
+          error: err.message,
+          stack: err.stack,
+        }
       );
-      return {
-        success: false,
-        error: err.message,
-      };
+      throw err;
     }
   }
 
   /**
    * Deregister a MongoDB agent
-   *
    * @param {string} agentId - The agent ID
    * @returns {Promise<Object>} - Deregistration result
    */
   async deregisterAgent(agentId) {
     try {
-      logger.info(`Deregistering MongoDB agent ${agentId}`);
-
       if (!this.initialized) {
         await this.initialize();
       }
 
-      // Remove TCP route for this agent
-      const result = await routingService.removeTcpRoute(agentId);
+      logger.info(`Deregistering MongoDB agent ${agentId}`);
+
+      // Check if agent exists
+      if (!this.registeredAgents.has(agentId)) {
+        return {
+          success: false,
+          message: `Agent ${agentId} not found`,
+        };
+      }
+
+      // Get main config
+      const mainConfig = configManager.configs.main;
+      if (!mainConfig || !mainConfig.tcp) {
+        return {
+          success: false,
+          message: "Main configuration not loaded or invalid",
+        };
+      }
+
+      // Remove router and service
+      const routerName = `mongodb-${agentId}`;
+      const serviceName = `mongodb-${agentId}-service`;
+
+      if (mainConfig.tcp.routers && mainConfig.tcp.routers[routerName]) {
+        delete mainConfig.tcp.routers[routerName];
+      }
+
+      if (mainConfig.tcp.services && mainConfig.tcp.services[serviceName]) {
+        delete mainConfig.tcp.services[serviceName];
+      }
+
+      // Save updated config
+      await configManager.saveConfig(configManager.paths.dynamic, mainConfig);
+
+      // Remove from registry
+      this.registeredAgents.delete(agentId);
+
+      logger.info(`MongoDB agent ${agentId} deregistered successfully`);
 
       return {
         success: true,
         agentId,
-        message: `MongoDB agent ${agentId} deregistered successfully`,
+        message: `Agent ${agentId} deregistered successfully`,
       };
     } catch (err) {
       logger.error(
-        `Failed to deregister MongoDB agent ${agentId}: ${err.message}`
+        `Failed to deregister MongoDB agent ${agentId}: ${err.message}`,
+        {
+          error: err.message,
+          stack: err.stack,
+        }
       );
       return {
         success: false,
-        error: err.message,
-      };
-    }
-  }
-
-  /**
-   * Test direct connection to MongoDB
-   *
-   * @param {string} targetIp - The target IP address
-   * @returns {Promise<Object>} - Test result
-   */
-  async testDirectConnection(targetIp) {
-    try {
-      logger.info(`Testing direct connection to MongoDB at ${targetIp}:27017`);
-
-      const result = await execAsync(
-        `timeout 5 nc -z -v ${targetIp} 27017 2>&1 || echo "Connection failed"`
-      );
-
-      return {
-        success: !result.stdout.includes("Connection failed"),
-        message: result.stdout,
-      };
-    } catch (err) {
-      logger.error(
-        `Failed to test direct connection to MongoDB: ${err.message}`
-      );
-      return {
-        success: false,
-        error: err.message,
-      };
-    }
-  }
-
-  /**
-   * Test connection through Traefik
-   *
-   * @param {string} agentId - The agent ID
-   * @returns {Promise<Object>} - Test result
-   */
-  async testTraefikConnection(agentId) {
-    try {
-      logger.info(`Testing connection through Traefik for agent ${agentId}`);
-
-      const subdomain = `${agentId}.${this.mongoDomain}`;
-      const result = await execAsync(
-        `timeout 5 nc -z -v ${subdomain} ${this.mongoPort} 2>&1 || echo "Connection failed"`
-      );
-
-      return {
-        success: !result.stdout.includes("Connection failed"),
-        message: result.stdout,
-      };
-    } catch (err) {
-      logger.error(`Failed to test connection through Traefik: ${err.message}`);
-      return {
-        success: false,
-        error: err.message,
+        message: err.message,
       };
     }
   }
