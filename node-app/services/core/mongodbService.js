@@ -124,42 +124,92 @@ class MongoDBService {
    */
   async ensureMongoDBPort() {
     try {
-      logger.info("Ensuring MongoDB port is properly configured in Traefik");
+      logger.info("Ensuring MongoDB port is properly exposed and configured");
 
-      // Check if port 27017 is exposed in Traefik
+      // Check if MongoDB port is already exposed
       const portExposed = await this.checkMongoDBPort();
-
-      if (!portExposed) {
-        logger.warn(
-          "MongoDB port 27017 is not exposed in Traefik, attempting to fix"
-        );
-
-        // Update docker-compose.yml to expose port 27017
-        await configManager.updateDockerCompose((compose) => {
-          if (
-            compose.services &&
-            compose.services.traefik &&
-            compose.services.traefik.ports
-          ) {
-            // Check if port 27017 is already mapped
-            const hasPort = compose.services.traefik.ports.some(
-              (port) => port === "27017:27017" || port === 27017
-            );
-
-            if (!hasPort) {
-              compose.services.traefik.ports.push("27017:27017");
-              return true; // Indicate that compose was modified
-            }
-          }
-          return false; // No changes needed
-        });
-
+      if (portExposed) {
+        logger.info("MongoDB port is already properly exposed");
         return true;
       }
 
-      return false; // No changes needed
+      // Check if MongoDB container exists
+      const mongoContainer = await docker.listContainers({
+        all: true,
+        filters: { name: ["mongodb-agent"] },
+      });
+
+      if (mongoContainer.length > 0) {
+        logger.info("MongoDB container exists, checking TLS configuration");
+
+        // Check if MongoDB is using TLS
+        const tlsConfigured = await this.checkMongoDBTLS();
+        if (!tlsConfigured) {
+          logger.warn("MongoDB TLS is not properly configured, fixing...");
+
+          // Run the fix-mongodb-tls.js script
+          const scriptPath = path.join(
+            __dirname,
+            "../../scripts/fix-mongodb-tls.js"
+          );
+
+          const { stdout, stderr } = await execAsync(`node ${scriptPath}`);
+          logger.debug("MongoDB TLS fix script output:", { stdout, stderr });
+
+          // Wait for MongoDB to restart
+          await new Promise((resolve) => setTimeout(resolve, 5000));
+        }
+      }
+
+      // Update Traefik configuration to expose MongoDB port
+      logger.info("Updating Traefik configuration to expose MongoDB port");
+
+      // Get current configuration
+      const config = await configManager.getConfig();
+
+      // Ensure entryPoints section exists and has mongodb entry
+      if (!config.entryPoints) {
+        config.entryPoints = {};
+      }
+
+      if (!config.entryPoints.mongodb) {
+        config.entryPoints.mongodb = {
+          address: ":27017",
+          transport: {
+            respondingTimeouts: {
+              idleTimeout: "1h",
+            },
+          },
+        };
+
+        // Save updated configuration
+        await configManager.saveConfig(configManager.configPath, config);
+        logger.info("Added MongoDB entrypoint to Traefik configuration");
+      }
+
+      // Restart Traefik to apply changes
+      logger.info("Restarting Traefik to apply configuration changes");
+      await docker.getContainer("traefik").restart();
+
+      // Wait for Traefik to restart
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+
+      // Check if MongoDB port is now exposed
+      const portNowExposed = await this.checkMongoDBPort();
+      if (portNowExposed) {
+        logger.info("MongoDB port is now properly exposed");
+        return true;
+      } else {
+        logger.error(
+          "Failed to expose MongoDB port after configuration update"
+        );
+        return false;
+      }
     } catch (err) {
-      logger.error(`Failed to ensure MongoDB port: ${err.message}`);
+      logger.error(`Error ensuring MongoDB port: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+      });
       return false;
     }
   }
@@ -974,6 +1024,65 @@ class MongoDBService {
         success: false,
         message: err.message,
       };
+    }
+  }
+
+  /**
+   * Check if MongoDB is properly configured for TLS
+   *
+   * @returns {Promise<boolean>} Whether MongoDB is properly configured for TLS
+   */
+  async checkMongoDBTLS() {
+    try {
+      logger.info("Checking MongoDB TLS configuration");
+
+      // Get MongoDB container
+      const containers = await docker.listContainers({
+        all: true,
+        filters: { name: ["mongodb-agent"] },
+      });
+
+      if (containers.length === 0) {
+        logger.warn("MongoDB container not found");
+        return false;
+      }
+
+      const container = docker.getContainer(containers[0].Id);
+      const info = await container.inspect();
+
+      // Check if container is running
+      if (info.State.Status !== "running") {
+        logger.warn("MongoDB container is not running");
+        return false;
+      }
+
+      // Check if container has the right command
+      const cmd = info.Config.Cmd || [];
+      const hasTLSConfig = cmd.some(
+        (arg) => arg.includes("--config") || arg.includes("tls")
+      );
+
+      if (!hasTLSConfig) {
+        logger.warn("MongoDB container is not configured for TLS");
+        return false;
+      }
+
+      // Try to connect to MongoDB with TLS
+      const result = await this.testTLSConnection("localhost", 27017);
+
+      if (!result.success) {
+        logger.warn("MongoDB TLS connection test failed");
+        return false;
+      }
+
+      logger.info("MongoDB is properly configured for TLS");
+      return true;
+    } catch (err) {
+      logger.error(`Error checking MongoDB TLS configuration: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+      });
+      return false;
     }
   }
 }
