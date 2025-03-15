@@ -65,19 +65,20 @@ exports.getMongoCA = async (req, res) => {
 
 /**
  * Get agent certificates
- * Requires authentication to access agent-specific certificates
+ *
+ * GET /api/certificates/agent/:agentId
  */
 exports.getAgentCertificates = async (req, res) => {
   try {
     const { agentId } = req.params;
 
-    // Authentication check - ensure requesting agent can only access its own certificates
+    // Check if user is authorized to access these certificates
     if (
       req.user &&
       (req.user.role === "admin" ||
         (req.user.role === "agent" && req.user.agentId === agentId))
     ) {
-      // Generate or retrieve certificates for this agent
+      // Initialize certificate service if needed
       if (!coreServices.certificate || !coreServices.certificate.initialized) {
         await coreServices.certificate.initialize();
       }

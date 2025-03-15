@@ -2,9 +2,11 @@
 /**
  * Fix MongoDB TLS Configuration
  *
- * This script updates the MongoDB router configuration to work with non-TLS MongoDB servers
+ * This script ensures that all MongoDB routers in Traefik are properly
+ * configured for TLS passthrough.
  */
 
+require("dotenv").config();
 const fs = require("fs").promises;
 const yaml = require("yaml");
 const { execSync } = require("child_process");
@@ -18,133 +20,116 @@ const CONFIG_PATHS = [
   "/opt/cloudlunacy_front/config/dynamic.yml",
 ];
 
-// Helper functions
-async function findFile(paths) {
-  for (const filePath of paths) {
+// ANSI color codes for output
+const colors = {
+  reset: "\x1b[0m",
+  red: "\x1b[31m",
+  green: "\x1b[32m",
+  yellow: "\x1b[33m",
+  blue: "\x1b[34m",
+  bold: "\x1b[1m",
+};
+
+function log(message, color = colors.reset) {
+  console.log(`${color}${message}${colors.reset}`);
+}
+
+async function findConfigFile() {
+  for (const configPath of CONFIG_PATHS) {
     try {
-      await fs.access(filePath);
-      return filePath;
+      await fs.access(configPath);
+      log(`Found configuration at ${configPath}`, colors.green);
+      return configPath;
     } catch (err) {
-      // Try next path
+      // Continue to next path
     }
   }
+
+  log(
+    "Could not find dynamic.yml in any of the expected locations",
+    colors.red
+  );
   return null;
 }
 
-async function readYamlFile(filePath) {
-  try {
-    const content = await fs.readFile(filePath, "utf8");
-    return yaml.parse(content);
-  } catch (err) {
-    console.error(`Error reading or parsing ${filePath}: ${err.message}`);
-    return null;
-  }
-}
-
-async function writeYamlFile(filePath, data) {
-  try {
-    const content = yaml.stringify(data);
-    await fs.writeFile(filePath, content, "utf8");
-    console.log(`Updated ${filePath}`);
-    return true;
-  } catch (err) {
-    console.error(`Error writing ${filePath}: ${err.message}`);
-    return false;
-  }
-}
-
-function execCommand(command) {
-  try {
-    return execSync(command, { encoding: "utf8" });
-  } catch (err) {
-    console.error(`Error executing command: ${err.message}`);
-    return null;
-  }
-}
-
 async function fixMongoDBRouters() {
-  console.log("Fixing MongoDB router configuration for non-TLS servers...");
-
-  // Find dynamic.yml
-  const configPath = await findFile(CONFIG_PATHS);
+  const configPath = await findConfigFile();
   if (!configPath) {
-    console.error("Could not find dynamic.yml");
     return false;
   }
 
-  console.log(`Found dynamic.yml at ${configPath}`);
+  try {
+    // Read the configuration file
+    const configContent = await fs.readFile(configPath, "utf8");
+    const config = yaml.parse(configContent);
 
-  // Read config
-  const config = await readYamlFile(configPath);
-  if (!config) {
-    return false;
-  }
+    if (!config) {
+      log("Failed to parse configuration file", colors.red);
+      return false;
+    }
 
-  // Ensure tcp section exists
-  if (!config.tcp) {
-    console.error("No TCP section found in config");
-    return false;
-  }
+    // Ensure tcp section exists
+    if (!config.tcp) {
+      config.tcp = { routers: {}, services: {} };
+    }
+    if (!config.tcp.routers) {
+      config.tcp.routers = {};
+    }
 
-  let fixedCount = 0;
-
-  // Fix MongoDB routers
-  for (const [routerName, router] of Object.entries(config.tcp.routers)) {
-    if (routerName.startsWith("mongodb-")) {
-      console.log(`Checking router: ${routerName}`);
-
-      // For non-TLS MongoDB servers, we should NOT use passthrough
-      if (router.tls && router.tls.passthrough === true) {
-        console.log(`Removing TLS passthrough from ${routerName}`);
-        delete router.tls;
-        fixedCount++;
+    // Fix all MongoDB routers
+    let fixedCount = 0;
+    for (const [routerName, router] of Object.entries(config.tcp.routers)) {
+      if (routerName.startsWith("mongodb-")) {
+        if (!router.tls || router.tls.passthrough !== true) {
+          log(`Fixing TLS configuration for router ${routerName}`, colors.blue);
+          router.tls = { passthrough: true };
+          fixedCount++;
+        }
       }
     }
-  }
 
-  if (fixedCount > 0) {
-    console.log(`Fixed ${fixedCount} MongoDB routers`);
+    if (fixedCount > 0) {
+      // Write the updated configuration
+      await fs.writeFile(configPath, yaml.stringify(config), "utf8");
+      log(`Updated configuration at ${configPath}`, colors.green);
 
-    // Save config
-    const saved = await writeYamlFile(configPath, config);
-    if (!saved) {
-      return false;
-    }
+      // Restart Traefik
+      log("Restarting Traefik...", colors.blue);
+      try {
+        execSync("docker restart traefik");
+        log("Traefik restarted successfully", colors.green);
+      } catch (err) {
+        log(`Failed to restart Traefik: ${err.message}`, colors.red);
+        log("You may need to restart Traefik manually", colors.yellow);
+      }
 
-    // Restart Traefik
-    console.log("Restarting Traefik to apply changes...");
-    const result = execCommand("docker restart traefik");
-    if (result) {
-      console.log("Traefik restarted successfully");
       return true;
     } else {
-      console.error("Failed to restart Traefik");
-      return false;
+      log("No MongoDB router configurations needed fixing", colors.yellow);
+      return true;
     }
-  } else {
-    console.log("No MongoDB routers needed fixing");
-    return true;
+  } catch (err) {
+    log(`Error: ${err.message}`, colors.red);
+    return false;
   }
 }
 
 // Main function
 async function main() {
-  console.log("MongoDB TLS Configuration Fixer");
-  console.log("===============================");
+  log("MongoDB TLS Configuration Fixer", colors.bold.white);
+  log("===============================", colors.bold.white);
 
   const fixed = await fixMongoDBRouters();
 
   if (fixed) {
-    console.log("\nMongoDB router configuration fixed successfully");
-    console.log(
-      'Try connecting with: mongosh "mongodb://admin:adminpassword@240922b9-4d3b-4692-8d1c-1884d423092a.mongodb.cloudlunacy.uk:27017/admin"'
-    );
+    log("\nMongoDB router configuration has been updated", colors.green);
+    log("Connection strings will now work with TLS", colors.green);
   } else {
-    console.error("\nFailed to fix MongoDB router configuration");
+    log("\nFailed to fix MongoDB router configuration", colors.red);
   }
 }
 
 main().catch((err) => {
-  console.error(`Fatal error: ${err.message}`);
+  log(`Fatal error: ${err.message}`, colors.red);
   process.exit(1);
 });

@@ -19,6 +19,9 @@ const MONGO_DOMAIN = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
 class CertificateService {
   constructor() {
     this.initialized = false;
+    this.certsDir = process.env.CERTS_DIR || "/app/config/certs";
+    this.caKeyPath = path.join(this.certsDir, "ca.key");
+    this.caCertPath = path.join(this.certsDir, "ca.crt");
   }
 
   /**
@@ -26,11 +29,12 @@ class CertificateService {
    */
   async initialize() {
     try {
-      // Create certificate directory if it doesn't exist
-      await fs.mkdir(CERT_BASE_DIR, { recursive: true });
+      // Create certificates directory if it doesn't exist
+      await fs.mkdir(this.certsDir, { recursive: true });
 
-      // Generate CA certificate if it doesn't exist
-      if (!(await this.caExists())) {
+      // Check if CA certificate exists, if not create it
+      const caExists = await this.checkCAExists();
+      if (!caExists) {
         await this.generateCA();
       }
 
@@ -38,10 +42,7 @@ class CertificateService {
       logger.info("Certificate service initialized successfully");
       return true;
     } catch (err) {
-      logger.error(`Failed to initialize certificate service: ${err.message}`, {
-        error: err.message,
-        stack: err.stack,
-      });
+      logger.error(`Failed to initialize certificate service: ${err.message}`);
       return false;
     }
   }
@@ -49,12 +50,14 @@ class CertificateService {
   /**
    * Check if CA certificate exists
    */
-  async caExists() {
+  async checkCAExists() {
     try {
-      await fs.access(CA_KEY_PATH);
-      await fs.access(CA_CERT_PATH);
+      await fs.access(this.caCertPath);
+      await fs.access(this.caKeyPath);
+      logger.info("CA certificate and key found");
       return true;
     } catch (err) {
+      logger.info("CA certificate or key not found, will generate new ones");
       return false;
     }
   }
@@ -63,28 +66,25 @@ class CertificateService {
    * Generate CA certificate
    */
   async generateCA() {
-    logger.info("Generating new CA certificate");
-
     try {
+      logger.info("Generating new CA certificate and key");
+
       // Generate CA private key
-      execSync(`openssl genrsa -out ${CA_KEY_PATH} 4096`);
+      execSync(`openssl genrsa -out ${this.caKeyPath} 2048`);
 
       // Generate CA certificate
       execSync(
-        `openssl req -x509 -new -nodes -key ${CA_KEY_PATH} -sha256 -days 3650 -out ${CA_CERT_PATH} -subj "/CN=CloudLunacy MongoDB CA/O=CloudLunacy/C=UK"`
+        `openssl req -x509 -new -nodes -key ${this.caKeyPath} -sha256 -days 3650 -out ${this.caCertPath} -subj "/CN=CloudLunacy MongoDB CA/O=CloudLunacy/C=UK"`
       );
 
-      // Set permissions
-      await fs.chmod(CA_KEY_PATH, 0o600);
-      await fs.chmod(CA_CERT_PATH, 0o644);
+      // Set proper permissions
+      await fs.chmod(this.caKeyPath, 0o600);
+      await fs.chmod(this.caCertPath, 0o644);
 
-      logger.info("CA certificate generated successfully");
+      logger.info("CA certificate and key generated successfully");
       return true;
     } catch (err) {
-      logger.error(`Failed to generate CA certificate: ${err.message}`, {
-        error: err.message,
-        stack: err.stack,
-      });
+      logger.error(`Failed to generate CA: ${err.message}`);
       throw err;
     }
   }
@@ -94,85 +94,79 @@ class CertificateService {
    * @param {string} agentId - The agent ID
    */
   async generateAgentCertificate(agentId) {
-    if (!this.initialized) {
-      await this.initialize();
-    }
-
-    const certDir = path.join(CERT_BASE_DIR, "agents", agentId);
-    const keyPath = path.join(certDir, "mongodb.key");
-    const csrPath = path.join(certDir, "mongodb.csr");
-    const certPath = path.join(certDir, "mongodb.crt");
-    const serverFullDomain = `${agentId}.${MONGO_DOMAIN}`;
-
     try {
-      // Create agent cert directory
+      if (!this.initialized) {
+        await this.initialize();
+      }
+
+      logger.info(`Generating certificate for agent ${agentId}`);
+
+      const certDir = path.join(this.certsDir, "agents", agentId);
       await fs.mkdir(certDir, { recursive: true });
 
-      // Generate private key
-      execSync(`openssl genrsa -out ${keyPath} 2048`);
-
-      // Generate CSR with SAN
+      const serverKeyPath = path.join(certDir, "server.key");
+      const serverCsrPath = path.join(certDir, "server.csr");
+      const serverCertPath = path.join(certDir, "server.crt");
       const configPath = path.join(certDir, "openssl.cnf");
+
+      // Create OpenSSL config with proper SAN
+      const domain = `${agentId}.mongodb.cloudlunacy.uk`;
       await fs.writeFile(
         configPath,
         `
 [req]
-req_extensions = v3_req
 distinguished_name = req_distinguished_name
+req_extensions = v3_req
+prompt = no
 
 [req_distinguished_name]
+CN = ${domain}
 
 [v3_req]
 subjectAltName = @alt_names
 
 [alt_names]
-DNS.1 = ${serverFullDomain}
-DNS.2 = ${agentId}
+DNS.1 = ${domain}
+DNS.2 = *.${domain}
 DNS.3 = localhost
+IP.1 = 127.0.0.1
       `
       );
 
+      // Generate server key
+      execSync(`openssl genrsa -out ${serverKeyPath} 2048`);
+
+      // Generate CSR with config
       execSync(
-        `openssl req -new -key ${keyPath} -out ${csrPath} -subj "/CN=${serverFullDomain}" -config ${configPath}`
+        `openssl req -new -key ${serverKeyPath} -out ${serverCsrPath} -config ${configPath}`
       );
 
-      // Sign certificate with CA
+      // Sign the certificate with our CA
       execSync(
-        `openssl x509 -req -in ${csrPath} -CA ${CA_CERT_PATH} -CAkey ${CA_KEY_PATH} -CAcreateserial -out ${certPath} -days 365 -extensions v3_req -extfile ${configPath}`
+        `openssl x509 -req -in ${serverCsrPath} -CA ${this.caCertPath} -CAkey ${this.caKeyPath} -CAcreateserial -out ${serverCertPath} -days 825 -extensions v3_req -extfile ${configPath}`
       );
 
-      // Set permissions
-      await fs.chmod(keyPath, 0o600);
-      await fs.chmod(certPath, 0o644);
+      // Set proper permissions
+      await fs.chmod(serverKeyPath, 0o600);
+      await fs.chmod(serverCertPath, 0o644);
 
-      // Return certificate data
-      const caCert = await fs.readFile(CA_CERT_PATH, "utf8");
-      const serverKey = await fs.readFile(keyPath, "utf8");
-      const serverCert = await fs.readFile(certPath, "utf8");
+      // Read the generated files
+      const caCert = await fs.readFile(this.caCertPath, "utf8");
+      const serverKey = await fs.readFile(serverKeyPath, "utf8");
+      const serverCert = await fs.readFile(serverCertPath, "utf8");
 
-      logger.info(`Certificate generated for agent ${agentId}`);
+      logger.info(`Certificate for agent ${agentId} generated successfully`);
 
       return {
         success: true,
         caCert,
         serverKey,
         serverCert,
-        paths: {
-          caCert: CA_CERT_PATH,
-          serverKey: keyPath,
-          serverCert: certPath,
-        },
       };
     } catch (err) {
       logger.error(
-        `Failed to generate certificate for agent ${agentId}: ${err.message}`,
-        {
-          error: err.message,
-          stack: err.stack,
-          agentId,
-        }
+        `Failed to generate certificate for agent ${agentId}: ${err.message}`
       );
-
       return {
         success: false,
         error: err.message,
@@ -184,22 +178,18 @@ DNS.3 = localhost
    * Get CA certificate
    */
   async getCA() {
-    if (!this.initialized) {
-      await this.initialize();
-    }
-
     try {
-      const caCert = await fs.readFile(CA_CERT_PATH, "utf8");
+      if (!this.initialized) {
+        await this.initialize();
+      }
+
+      const caCert = await fs.readFile(this.caCertPath, "utf8");
       return {
         success: true,
         caCert,
       };
     } catch (err) {
-      logger.error(`Failed to read CA certificate: ${err.message}`, {
-        error: err.message,
-        stack: err.stack,
-      });
-
+      logger.error(`Failed to get CA certificate: ${err.message}`);
       return {
         success: false,
         error: err.message,

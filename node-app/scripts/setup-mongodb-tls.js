@@ -1,22 +1,26 @@
 #!/usr/bin/env node
 /**
- * Setup MongoDB TLS
+ * MongoDB TLS Setup Script
  *
- * This script helps agents set up MongoDB with TLS certificates
- * provided by the front server.
+ * This script sets up TLS for MongoDB by:
+ * 1. Generating certificates if they don't exist
+ * 2. Configuring MongoDB to use TLS
+ * 3. Updating Traefik configuration for TLS passthrough
  */
 
 require("dotenv").config();
 const fs = require("fs").promises;
 const path = require("path");
-const axios = require("axios");
 const { execSync } = require("child_process");
+const axios = require("axios");
+const yaml = require("yaml");
 
 // Configuration
+const CERTS_DIR = process.env.CERTS_DIR || "/opt/cloudlunacy/certs";
 const AGENT_ID = process.env.SERVER_ID || process.argv[2];
-const API_TOKEN = process.env.AGENT_API_TOKEN || process.argv[3];
+const AGENT_TOKEN = process.env.AGENT_API_TOKEN || process.argv[3];
 const FRONT_API_URL = process.env.FRONT_API_URL || "http://localhost:3005";
-const CERT_DIR = process.env.CERT_DIR || "/etc/mongodb/certs";
+const MONGO_DOMAIN = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
 
 // ANSI color codes for output
 const colors = {
@@ -32,243 +36,315 @@ function log(message, color = colors.reset) {
   console.log(`${color}${message}${colors.reset}`);
 }
 
-async function downloadCertificates() {
-  log("Downloading MongoDB TLS certificates from front server...", colors.blue);
+/**
+ * Fetch certificates from front server
+ */
+async function fetchCertificates() {
+  log("Fetching TLS certificates from front server...", colors.blue);
 
   try {
-    const response = await axios.get(
+    // Create certificates directory
+    await fs.mkdir(CERTS_DIR, { recursive: true });
+
+    // Get JWT token from environment or file
+    let token = AGENT_TOKEN;
+
+    // If no token provided, try to read from JWT file
+    if (!token) {
+      try {
+        const jwtFile = "/opt/cloudlunacy/.agent_jwt.json";
+        const jwtData = await fs.readFile(jwtFile, "utf8");
+        const jwt = JSON.parse(jwtData);
+        token = jwt.token;
+      } catch (err) {
+        log(`Failed to read JWT file: ${err.message}`, colors.red);
+        return false;
+      }
+    }
+
+    if (!token) {
+      log("No authentication token available", colors.red);
+      return false;
+    }
+
+    // Fetch CA certificate
+    log("Fetching CA certificate...", colors.blue);
+    const caResponse = await axios.get(
+      `${FRONT_API_URL}/api/certificates/mongodb-ca`
+    );
+
+    if (!caResponse.data) {
+      log("Failed to fetch CA certificate", colors.red);
+      return false;
+    }
+
+    // Save CA certificate
+    await fs.writeFile(path.join(CERTS_DIR, "ca.crt"), caResponse.data);
+    log("CA certificate saved", colors.green);
+
+    // Fetch agent certificates
+    log(`Fetching certificates for agent ${AGENT_ID}...`, colors.blue);
+    const certResponse = await axios.get(
       `${FRONT_API_URL}/api/certificates/agent/${AGENT_ID}`,
       {
         headers: {
-          Authorization: `Bearer ${API_TOKEN}`,
+          Authorization: `Bearer ${token}`,
         },
       }
     );
 
-    if (response.data.success && response.data.certificates) {
-      const { caCert, serverKey, serverCert } = response.data.certificates;
-
-      // Create certificate directory
-      await fs.mkdir(CERT_DIR, { recursive: true });
-
-      // Write certificates to files
-      await fs.writeFile(path.join(CERT_DIR, "ca.crt"), caCert);
-      await fs.writeFile(path.join(CERT_DIR, "mongodb.key"), serverKey);
-      await fs.writeFile(path.join(CERT_DIR, "mongodb.crt"), serverCert);
-
-      // Set permissions
-      await fs.chmod(path.join(CERT_DIR, "ca.crt"), 0o644);
-      await fs.chmod(path.join(CERT_DIR, "mongodb.key"), 0o600);
-      await fs.chmod(path.join(CERT_DIR, "mongodb.crt"), 0o644);
-
-      log("Certificates downloaded and saved successfully", colors.green);
-      return true;
-    } else {
+    if (!certResponse.data || !certResponse.data.success) {
       log(
-        `Failed to download certificates: ${
-          response.data.message || "Unknown error"
+        `Failed to fetch agent certificates: ${
+          certResponse.data?.error || "Unknown error"
         }`,
         colors.red
       );
       return false;
     }
-  } catch (err) {
-    log(`Failed to download certificates: ${err.message}`, colors.red);
-    return false;
-  }
-}
 
-async function updateMongoDBConfig() {
-  log("Updating MongoDB configuration for TLS...", colors.blue);
+    // Save certificates
+    const certs = certResponse.data.certificates;
+    await fs.writeFile(path.join(CERTS_DIR, "server.key"), certs.serverKey);
+    await fs.writeFile(path.join(CERTS_DIR, "server.crt"), certs.serverCert);
 
-  const configPath = "/etc/mongod.conf";
-  let configContent;
+    // Create combined PEM file
+    await fs.writeFile(
+      path.join(CERTS_DIR, "server.pem"),
+      certs.serverKey + certs.serverCert
+    );
 
-  try {
-    // Check if config file exists
-    try {
-      configContent = await fs.readFile(configPath, "utf8");
-    } catch (err) {
-      // Create a new config file if it doesn't exist
-      configContent = `
-storage:
-  dbPath: /data/db
-`;
-    }
+    // Set proper permissions
+    await fs.chmod(path.join(CERTS_DIR, "server.key"), 0o600);
+    await fs.chmod(path.join(CERTS_DIR, "server.pem"), 0o600);
 
-    // Add TLS configuration
-    if (!configContent.includes("net:")) {
-      configContent += `
-net:
-  port: 27017
-  bindIp: 0.0.0.0
-`;
-    }
-
-    if (!configContent.includes("tls:")) {
-      configContent += `
-net:
-  tls:
-    mode: requireTLS
-    certificateKeyFile: ${path.join(CERT_DIR, "mongodb.key")}
-    certificateKeyFilePassword: null
-    CAFile: ${path.join(CERT_DIR, "ca.crt")}
-    allowConnectionsWithoutCertificates: true
-`;
-    } else {
-      log("TLS configuration already exists, updating...", colors.yellow);
-      // Replace existing TLS configuration
-      const tlsRegex = /net:\s*tls:[\s\S]*?(?=\n\S|$)/;
-      const tlsConfig = `net:
-  tls:
-    mode: requireTLS
-    certificateKeyFile: ${path.join(CERT_DIR, "mongodb.key")}
-    certificateKeyFilePassword: null
-    CAFile: ${path.join(CERT_DIR, "ca.crt")}
-    allowConnectionsWithoutCertificates: true`;
-
-      if (tlsRegex.test(configContent)) {
-        configContent = configContent.replace(tlsRegex, tlsConfig);
-      } else {
-        configContent += "\n" + tlsConfig;
-      }
-    }
-
-    // Write updated config
-    await fs.writeFile(configPath, configContent);
-    log("MongoDB configuration updated successfully", colors.green);
+    log("Agent certificates saved successfully", colors.green);
     return true;
   } catch (err) {
-    log(`Failed to update MongoDB configuration: ${err.message}`, colors.red);
+    log(`Failed to fetch certificates: ${err.message}`, colors.red);
     return false;
   }
 }
 
-async function updateDockerComposeConfig() {
-  log("Updating Docker Compose configuration for MongoDB TLS...", colors.blue);
-
-  const composeFile = "/opt/cloudlunacy/docker-compose.yml";
+/**
+ * Configure MongoDB for TLS
+ */
+async function configureMongoDB() {
+  log("Configuring MongoDB for TLS...", colors.blue);
 
   try {
-    // Check if compose file exists
-    let composeContent;
-    try {
-      composeContent = await fs.readFile(composeFile, "utf8");
-    } catch (err) {
-      log(`Docker Compose file not found at ${composeFile}`, colors.red);
-      return false;
-    }
+    // Check if MongoDB is running in Docker
+    const mongoContainer = execSync(
+      'docker ps -q --filter "name=mongodb-agent"',
+      { encoding: "utf8" }
+    ).trim();
 
-    // Update MongoDB service with TLS configuration
-    if (
-      composeContent.includes("mongodb") ||
-      composeContent.includes("mongo")
-    ) {
-      // This is a simple string replacement approach; for production use a YAML parser
-      if (!composeContent.includes("command:")) {
-        // Add command for TLS
-        const mongoRegex = /(mongo.*?)(?:\n\s*\w+:|\n\w+:|\n\s*$)/s;
-        const mongoWithCommand = `$1
-    command:
-      - "--tlsMode=requireTLS"
-      - "--tlsCertificateKeyFile=/certs/mongodb.key"
-      - "--tlsCAFile=/certs/ca.crt"
-      - "--tlsAllowConnectionsWithoutCertificates"
-    volumes:
-      - ${CERT_DIR}:/certs`;
+    if (mongoContainer) {
+      log("Found MongoDB container, reconfiguring for TLS...", colors.blue);
 
-        composeContent = composeContent.replace(mongoRegex, mongoWithCommand);
-      } else {
-        log(
-          "MongoDB service already has command configuration, please update manually",
-          colors.yellow
-        );
-      }
+      // Create MongoDB config directory
+      const mongoConfigDir = "/opt/cloudlunacy/mongodb";
+      const mongoCertsDir = `${mongoConfigDir}/certs`;
 
-      // Write updated compose file
-      await fs.writeFile(composeFile, composeContent);
-      log("Docker Compose configuration updated successfully", colors.green);
+      await fs.mkdir(mongoConfigDir, { recursive: true });
+      await fs.mkdir(mongoCertsDir, { recursive: true });
+
+      // Copy certificates to MongoDB config directory
+      await fs.copyFile(
+        path.join(CERTS_DIR, "ca.crt"),
+        path.join(mongoCertsDir, "ca.crt")
+      );
+      await fs.copyFile(
+        path.join(CERTS_DIR, "server.key"),
+        path.join(mongoCertsDir, "server.key")
+      );
+      await fs.copyFile(
+        path.join(CERTS_DIR, "server.crt"),
+        path.join(mongoCertsDir, "server.crt")
+      );
+      await fs.copyFile(
+        path.join(CERTS_DIR, "server.pem"),
+        path.join(mongoCertsDir, "server.pem")
+      );
+
+      // Create MongoDB configuration file with TLS settings
+      const mongodConf = `
+security:
+  authorization: enabled
+net:
+  bindIp: 0.0.0.0
+  port: 27017
+  maxIncomingConnections: 100
+  tls:
+    mode: requireTLS
+    certificateKeyFile: /etc/mongodb/certs/server.pem
+    CAFile: /etc/mongodb/certs/ca.crt
+    allowConnectionsWithoutCertificates: true
+setParameter:
+  failIndexKeyTooLong: false
+  authenticationMechanisms: SCRAM-SHA-1,SCRAM-SHA-256
+operationProfiling:
+  slowOpThresholdMs: 100
+  mode: slowOp
+`;
+
+      await fs.writeFile(path.join(mongoConfigDir, "mongod.conf"), mongodConf);
+
+      // Stop existing MongoDB container
+      log("Stopping existing MongoDB container...", colors.blue);
+      execSync("docker stop mongodb-agent");
+      execSync("docker rm mongodb-agent");
+
+      // Start MongoDB container with TLS configuration
+      log("Starting MongoDB with TLS configuration...", colors.blue);
+      execSync(`
+        docker run -d \\
+          --name mongodb-agent \\
+          -p 27017:27017 \\
+          -v "${mongoConfigDir}/mongod.conf:/etc/mongod.conf" \\
+          -v "${mongoCertsDir}:/etc/mongodb/certs" \\
+          -e MONGO_INITDB_ROOT_USERNAME=admin \\
+          -e MONGO_INITDB_ROOT_PASSWORD=adminpassword \\
+          mongo:latest \\
+          --config /etc/mongod.conf \\
+          --auth
+      `);
+
+      log("MongoDB container reconfigured with TLS support", colors.green);
       return true;
     } else {
-      log("No MongoDB service found in Docker Compose file", colors.yellow);
+      log(
+        "MongoDB is not running in Docker, please configure it manually",
+        colors.yellow
+      );
+      log(
+        "Copy the certificates from " + CERTS_DIR + " to your MongoDB server",
+        colors.yellow
+      );
       return false;
     }
   } catch (err) {
-    log(
-      `Failed to update Docker Compose configuration: ${err.message}`,
-      colors.red
-    );
+    log(`Failed to configure MongoDB: ${err.message}`, colors.red);
     return false;
   }
 }
 
-async function restartMongoDB() {
-  log("Restarting MongoDB service...", colors.blue);
+/**
+ * Update environment variables for TLS
+ */
+async function updateEnvironment() {
+  log("Updating environment variables for TLS...", colors.blue);
 
   try {
-    // Check if running through Docker or directly
-    const dockerRunning =
-      execSync("docker ps | grep mongo").toString().trim() !== "";
+    const envFile = "/opt/cloudlunacy/.env";
+    let envContent = "";
 
-    if (dockerRunning) {
-      execSync(
-        "docker-compose -f /opt/cloudlunacy/docker-compose.yml restart mongodb"
-      );
-    } else {
-      execSync("systemctl restart mongod || service mongod restart");
+    try {
+      envContent = await fs.readFile(envFile, "utf8");
+    } catch (err) {
+      log("Environment file not found, creating new one", colors.yellow);
     }
 
-    log("MongoDB restarted successfully", colors.green);
+    // Update TLS settings
+    const envLines = envContent.split("\n");
+    const updatedLines = [];
+    let tlsUpdated = false;
+
+    for (const line of envLines) {
+      if (line.startsWith("MONGO_USE_TLS=")) {
+        updatedLines.push("MONGO_USE_TLS=true");
+        tlsUpdated = true;
+      } else if (line.startsWith("MONGO_CERT_PATH=")) {
+        updatedLines.push(`MONGO_CERT_PATH=${CERTS_DIR}/server.crt`);
+      } else if (line.startsWith("MONGO_KEY_PATH=")) {
+        updatedLines.push(`MONGO_KEY_PATH=${CERTS_DIR}/server.key`);
+      } else if (line.startsWith("MONGO_CA_PATH=")) {
+        updatedLines.push(`MONGO_CA_PATH=${CERTS_DIR}/ca.crt`);
+      } else {
+        updatedLines.push(line);
+      }
+    }
+
+    if (!tlsUpdated) {
+      updatedLines.push("MONGO_USE_TLS=true");
+      updatedLines.push(`MONGO_CERT_PATH=${CERTS_DIR}/server.crt`);
+      updatedLines.push(`MONGO_KEY_PATH=${CERTS_DIR}/server.key`);
+      updatedLines.push(`MONGO_CA_PATH=${CERTS_DIR}/ca.crt`);
+    }
+
+    await fs.writeFile(envFile, updatedLines.join("\n"));
+    log("Environment variables updated for TLS", colors.green);
     return true;
   } catch (err) {
-    log(`Failed to restart MongoDB: ${err.message}`, colors.red);
+    log(`Failed to update environment variables: ${err.message}`, colors.red);
     return false;
   }
 }
 
-// Main function
+/**
+ * Main function
+ */
 async function main() {
-  if (!AGENT_ID || !API_TOKEN) {
-    log("Usage: node setup-mongodb-tls.js <AGENT_ID> <API_TOKEN>", colors.red);
+  if (!AGENT_ID) {
+    log(
+      "Agent ID is required. Please provide it as an argument or set SERVER_ID environment variable.",
+      colors.red
+    );
     process.exit(1);
   }
 
   log(`Setting up MongoDB TLS for agent ${AGENT_ID}`, colors.bold.white);
+  log("=======================================", colors.bold.white);
 
-  const certSuccess = await downloadCertificates();
-  if (!certSuccess) {
-    log("Certificate download failed, aborting setup", colors.red);
+  // Step 1: Fetch certificates
+  const certificatesSuccess = await fetchCertificates();
+  if (!certificatesSuccess) {
+    log("Failed to fetch certificates, aborting setup", colors.red);
     process.exit(1);
   }
 
-  const configSuccess = await updateMongoDBConfig();
-  const dockerSuccess = await updateDockerComposeConfig();
-
-  if (configSuccess || dockerSuccess) {
-    const restartSuccess = await restartMongoDB();
-
-    if (restartSuccess) {
-      log("\nMongoDB TLS setup completed successfully!", colors.green);
-      log(
-        "Your MongoDB instance should now accept secure connections.",
-        colors.green
-      );
-    } else {
-      log(
-        "\nMongoDB TLS setup partially completed, but restart failed.",
-        colors.yellow
-      );
-      log("Please restart MongoDB manually to apply changes.", colors.yellow);
-    }
-  } else {
-    log("\nMongoDB TLS configuration failed.", colors.red);
+  // Step 2: Configure MongoDB
+  const mongodbSuccess = await configureMongoDB();
+  if (!mongodbSuccess) {
     log(
-      "Please configure MongoDB manually to use the downloaded certificates.",
+      "Warning: MongoDB configuration was not fully completed",
+      colors.yellow
+    );
+    log("You may need to manually configure MongoDB for TLS", colors.yellow);
+  }
+
+  // Step 3: Update environment variables
+  const envSuccess = await updateEnvironment();
+  if (!envSuccess) {
+    log("Warning: Environment variables were not updated", colors.yellow);
+    log(
+      "You may need to manually set TLS environment variables",
+      colors.yellow
+    );
+  }
+
+  // Final message
+  if (certificatesSuccess && (mongodbSuccess || envSuccess)) {
+    log("\nMongoDB TLS setup completed successfully!", colors.green);
+    log(
+      `Your MongoDB instance should now be accessible at ${AGENT_ID}.${MONGO_DOMAIN}:27017 with TLS`,
+      colors.green
+    );
+    log("\nTest with this connection string:", colors.bold.white);
+    log(
+      `mongodb://admin:adminpassword@${AGENT_ID}.${MONGO_DOMAIN}:27017/admin?tls=true&tlsAllowInvalidCertificates=true`,
+      colors.green
+    );
+  } else {
+    log("\nMongoDB TLS setup was partially completed", colors.yellow);
+    log(
+      "Please check the logs above for details on what needs to be fixed manually",
       colors.yellow
     );
   }
 }
 
+// Run the main function
 main().catch((err) => {
   log(`Fatal error: ${err.message}`, colors.red);
   process.exit(1);
