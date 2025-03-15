@@ -203,6 +203,21 @@ async function main() {
       log("Warning: Could not find startup-validator.js", true);
     }
 
+    // Check for required dependencies before starting the server
+    try {
+      require("mongodb");
+      require("express");
+      require("yaml");
+      // Add other critical dependencies here
+
+      // If all dependencies are available, start the server
+      require("./server");
+    } catch (err) {
+      console.error("Missing dependency:", err.message);
+      console.error("Please run: npm install");
+      process.exit(1);
+    }
+
     // Start the main service
     log(`Starting main service from ${servicePath}`);
 

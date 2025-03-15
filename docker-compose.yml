@@ -46,13 +46,18 @@ services:
     build:
       context: ./node-app
       dockerfile: Dockerfile
-    container_name: node-app
+    container_name: cloudlunacy-front
     restart: always
     networks:
       - traefik-network
       - cloudlunacy-network
     ports:
       - "${NODE_PORT:-3005}:3005"
+    volumes:
+      - ./config:/app/config
+      - ./logs:/app/logs
+      - ./node-app/scripts:/app/scripts
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     env_file:
       - ./.env
     environment:
@@ -62,10 +67,7 @@ services:
       - APP_DOMAIN=${APP_DOMAIN:-apps.cloudlunacy.uk}
       - DYNAMIC_CONFIG_PATH=/app/config/dynamic.yml
       - TRAEFIK_CONTAINER=traefik
-    volumes:
-      - ./config:/app/config
-      - ./node-app/scripts:/app/scripts
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - NODE_ENV=production
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3005/health"]
       interval: 30s
