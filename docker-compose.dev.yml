@@ -1,0 +1,107 @@
+version: "3.8"
+
+services:
+  traefik:
+    image: traefik:v2.10
+    container_name: traefik-dev
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8081:8081"
+      - "27017:27017"
+    networks:
+      - traefik-network
+      - cloudlunacy-network
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./config:/etc/traefik
+      - ./traefik-certs:/traefik-certs
+      - ./logs:/var/log/traefik
+    environment:
+      - TZ=UTC
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.dashboard.rule=Host(`traefik.localhost`)"
+      - "traefik.http.routers.dashboard.service=api@internal"
+      - "traefik.http.routers.dashboard.entrypoints=dashboard"
+
+  node-app:
+    build:
+      context: ./node-app
+      dockerfile: Dockerfile.dev
+    container_name: cloudlunacy-front-dev
+    restart: unless-stopped
+    networks:
+      - traefik-network
+      - cloudlunacy-network
+    ports:
+      - "3005:3005"
+    volumes:
+      - ./config:/app/config
+      - ./logs:/app/logs
+      - ./node-app:/app
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /app/node_modules
+    environment:
+      - NODE_PORT=3005
+      - JWT_SECRET=dev_secret_key_for_testing_only
+      - MONGO_DOMAIN=mongodb.localhost
+      - APP_DOMAIN=apps.localhost
+      - DYNAMIC_CONFIG_PATH=/app/config/dynamic.yml
+      - TRAEFIK_CONTAINER=traefik-dev
+      - NODE_ENV=development
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3005/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      - traefik
+
+  # Test MongoDB instance for development
+  mongodb-test:
+    image: mongo:6.0
+    container_name: mongodb-test
+    restart: unless-stopped
+    networks:
+      - cloudlunacy-network
+    ports:
+      - "27018:27017"
+    volumes:
+      - mongodb-data:/data/db
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=password
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/admin --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.tcp.routers.mongodb-test.rule=HostSNI(`test.mongodb.localhost`)"
+      - "traefik.tcp.routers.mongodb-test.entrypoints=mongodb"
+      - "traefik.tcp.routers.mongodb-test.service=mongodb-test"
+      - "traefik.tcp.services.mongodb-test.loadbalancer.server.port=27017"
+
+networks:
+  traefik-network:
+    name: traefik-network
+    external: true
+  cloudlunacy-network:
+    name: cloudlunacy-network
+    external: true
+
+volumes:
+  mongodb-data:

@@ -1,0 +1,62 @@
+# Global settings
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+# TLS options
+tls:
+  options:
+    default:
+      minVersion: "VersionTLS12"
+      sniStrict: true
+
+# Entry points definition
+entryPoints:
+  web:
+    address: ":80"
+  websecure:
+    address: ":443"
+  dashboard:
+    address: ":8081"
+  mongodb:
+    address: ":27017"
+    transport:
+      respondingTimeouts:
+        idleTimeout: "1h"
+
+# API and dashboard configuration
+api:
+  dashboard: true
+  insecure: true
+  debug: true
+
+# Ping for healthcheck
+ping:
+  entryPoint: "dashboard"
+
+# Log configuration
+log:
+  level: "DEBUG"
+  filePath: "/var/log/traefik/traefik.log"
+  format: "json"
+
+# Access logs
+accessLog:
+  filePath: "/var/log/traefik/access.log"
+  format: "json"
+  bufferingSize: 100
+
+# Configure providers
+providers:
+  # Main dynamic configuration file
+  file:
+    filename: "/etc/traefik/dynamic.yml"
+    watch: true
+
+  # Docker provider for container discovery
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+    watch: true
+    network: "traefik-network"
+    swarmMode: false

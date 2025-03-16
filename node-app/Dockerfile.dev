@@ -1,0 +1,41 @@
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Install necessary tools
+RUN apk add --no-cache \
+    curl \
+    bash \
+    wget \
+    openssl \
+    jq \
+    docker-cli \
+    ca-certificates \
+    tzdata
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies with clean npm cache
+RUN npm cache clean --force && \
+    npm install
+
+# Copy start script
+COPY start.sh /app/start.sh
+COPY start.js /app/start.js
+
+# Create necessary directories
+RUN mkdir -p /app/scripts /app/config/certs /app/config/certs/agents /app/logs
+
+# Make scripts executable
+RUN chmod +x /app/start.sh
+
+# Set environment variables
+ENV NODE_ENV=development
+ENV TZ=UTC
+
+# Expose port
+EXPOSE 3005
+
+# Command to start the application in development mode
+CMD ["npm", "run", "dev"] 

@@ -7,7 +7,10 @@
     "start": "node start.js",
     "dev": "nodemon server.js",
     "lint": "eslint .",
-    "lint:fix": "eslint . --fix"
+    "lint:fix": "eslint . --fix",
+    "dev:docker": "cd .. && bash start-dev.sh",
+    "dev:docker:detached": "cd .. && bash start-dev.sh -d",
+    "dev:docker:down": "cd .. && bash dev-down.sh"
   },
   "dependencies": {
     "axios": "^1.8.3",
@@ -46,6 +49,7 @@
   "devDependencies": {
     "@eslint/js": "^9.22.0",
     "eslint": "^9.22.0",
-    "globals": "^16.0.0"
+    "globals": "^16.0.0",
+    "nodemon": "^3.1.0"
   }
 }
