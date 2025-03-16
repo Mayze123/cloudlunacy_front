@@ -9,8 +9,8 @@
 const fs = require("fs").promises;
 const path = require("path");
 const yaml = require("yaml");
-const pathResolver = require("../utils/pathResolver");
-const logger = require("../utils/logger").getLogger("configManager");
+const pathManager = require("./pathManager");
+const logger = require("./logger").getLogger("configManager");
 
 class ConfigManager {
   constructor() {
@@ -114,7 +114,7 @@ class ConfigManager {
    * Resolve configuration paths based on environment
    */
   async resolvePaths() {
-    const resolver = await pathResolver.initialize();
+    const resolver = await pathManager.initialize();
 
     this.paths.base = resolver.resolveBasePath();
     this.paths.config = resolver.resolveConfigPath();

@@ -8,6 +8,7 @@
 const coreServices = require("../../services/core");
 const logger = require("../../utils/logger").getLogger("appController");
 const { AppError, asyncHandler } = require("../../utils/errorHandler");
+const pathManager = require("../../utils/pathManager");
 
 /**
  * Add a new app

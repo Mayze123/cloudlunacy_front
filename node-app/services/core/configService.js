@@ -9,7 +9,7 @@ const fs = require("fs").promises;
 const path = require("path");
 const yaml = require("yaml");
 const logger = require("../../utils/logger").getLogger("configService");
-const pathResolver = require("../../utils/pathResolver");
+const pathManager = require("../../utils/pathManager");
 
 class ConfigService {
   constructor() {
@@ -56,14 +56,14 @@ class ConfigService {
     try {
       logger.info("Initializing configuration service");
 
-      // Resolve paths based on environment
-      await this.resolvePaths();
+      // Initialize path manager if needed
+      if (!pathManager.initialized) {
+        await pathManager.initialize();
+      }
 
-      // Load templates
-      this.loadTemplates();
-
-      // Ensure directories exist
-      await this.ensureDirectories();
+      // Ensure configuration directories exist
+      await pathManager.ensureDirectory(this.paths.base);
+      await pathManager.ensureDirectory(this.paths.agents);
 
       // Load main configuration
       await this.loadMainConfig();
@@ -103,7 +103,7 @@ class ConfigService {
   async resolvePaths() {
     try {
       // Resolve base config path
-      this.paths.base = await pathResolver.resolvePath("config");
+      this.paths.base = await pathManager.resolvePath("config");
 
       // Resolve other paths based on base path
       this.paths.agents = path.join(this.paths.base, "agents");
@@ -138,10 +138,10 @@ class ConfigService {
   async ensureDirectories() {
     try {
       // Ensure base config directory exists
-      await pathResolver.ensureDirectory(this.paths.base);
+      await pathManager.ensureDirectory(this.paths.base);
 
       // Ensure agents directory exists
-      await pathResolver.ensureDirectory(this.paths.agents);
+      await pathManager.ensureDirectory(this.paths.agents);
 
       return true;
     } catch (err) {

@@ -7,6 +7,7 @@ const fs = require("fs").promises;
 const yaml = require("yaml");
 const path = require("path");
 const logger = require("../../utils/logger").getLogger("configManager");
+const pathManager = require("../../utils/pathManager");
 
 class ConfigManager {
   constructor() {
@@ -14,9 +15,11 @@ class ConfigManager {
     this.configs = {
       main: null,
     };
+    
+    // Use pathManager for paths
     this.paths = {
-      main: process.env.DYNAMIC_CONFIG_PATH || "/etc/traefik/dynamic.yml",
-      static: process.env.STATIC_CONFIG_PATH || "/etc/traefik/traefik.yml",
+      main: null,
+      static: null,
     };
 
     logger.info(`ConfigManager initialized`);
@@ -28,6 +31,15 @@ class ConfigManager {
   async initialize() {
     try {
       logger.info("Initializing configuration manager");
+
+      // Initialize path manager if needed
+      if (!pathManager.initialized) {
+        await pathManager.initialize();
+      }
+
+      // Set paths from path manager
+      this.paths.main = pathManager.getPath('dynamicConfig');
+      this.paths.static = pathManager.getPath('traefikConfig');
 
       // Load the main configuration
       await this.loadConfig("main");
@@ -234,7 +246,7 @@ class ConfigManager {
 
       // Create directory if it doesn't exist
       const dir = path.dirname(configPath);
-      await fs.mkdir(dir, { recursive: true });
+      await pathManager.ensureDirectories([dir]);
 
       // Create a backup
       try {

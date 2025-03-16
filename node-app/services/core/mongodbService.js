@@ -10,6 +10,7 @@ const { exec } = require("child_process");
 const { promisify } = require("util");
 const execAsync = promisify(exec);
 const logger = require("../../utils/logger").getLogger("mongodbService");
+const pathManager = require("../../utils/pathManager");
 
 class MongoDBService {
   constructor(configManager, routingManager) {
@@ -19,6 +20,7 @@ class MongoDBService {
     this.mongoDomain = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
     this.mongoPort = 27017;
     this.traefikContainer = process.env.TRAEFIK_CONTAINER || "traefik";
+    this.traefikConfigPath = null;
   }
 
   /**
@@ -28,6 +30,14 @@ class MongoDBService {
     logger.info("Initializing MongoDB service");
 
     try {
+      // Initialize path manager if needed
+      if (!pathManager.initialized) {
+        await pathManager.initialize();
+      }
+
+      // Set paths from path manager
+      this.traefikConfigPath = pathManager.getPath('traefikConfig');
+
       // Ensure MongoDB port is properly configured
       await this.ensureMongoDBPort();
 
@@ -479,7 +489,7 @@ class MongoDBService {
    */
   async _getStaticConfig() {
     try {
-      const staticConfigPath = "/etc/traefik/traefik.yml";
+      const staticConfigPath = this.traefikConfigPath;
       const content = await fs.readFile(staticConfigPath, "utf8");
       return require("yaml").parse(content) || {};
     } catch (err) {
@@ -497,7 +507,7 @@ class MongoDBService {
    */
   async _saveStaticConfig(config) {
     try {
-      const staticConfigPath = "/etc/traefik/traefik.yml";
+      const staticConfigPath = this.traefikConfigPath;
       const content = require("yaml").stringify(config);
       await fs.writeFile(staticConfigPath, content, "utf8");
       return true;

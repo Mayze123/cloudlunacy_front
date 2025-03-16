@@ -5,6 +5,7 @@ const path = require("path");
 const yaml = require("yaml");
 const logger = require("./logger").getLogger("configValidator");
 const { execSync } = require("child_process");
+const pathManager = require("./pathManager");
 
 class ConfigValidator {
   constructor() {
@@ -768,6 +769,32 @@ class ConfigValidator {
       /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
 
     return subdomainRegex.test(subdomain) && ipRegex.test(targetIp);
+  }
+
+  /**
+   * Load schema from file
+   * @param {string} schemaPath - Path to schema file
+   * @returns {Promise<Object>} - Loaded schema
+   */
+  async loadSchema(schemaPath) {
+    try {
+      // Resolve the path using pathManager
+      const resolvedPath = await pathManager.resolvePathWithFallbacks(
+        schemaPath
+      );
+
+      // Check if file exists
+      if (!(await pathManager.pathExists(resolvedPath))) {
+        logger.warn(`Schema file not found: ${resolvedPath}`);
+        return null;
+      }
+
+      // Read and parse the file
+      return require(resolvedPath);
+    } catch (err) {
+      logger.error(`Failed to load schema: ${err.message}`);
+      return null;
+    }
   }
 }
 

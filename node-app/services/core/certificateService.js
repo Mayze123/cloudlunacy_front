@@ -10,21 +10,16 @@ const { execSync } = require("child_process");
 const logger = require("../../utils/logger").getLogger("certificateService");
 const { promisify } = require("util");
 const execAsync = promisify(execSync);
-
-// Path configurations
-const CERT_BASE_DIR =
-  process.env.CERT_BASE_DIR || "/opt/cloudlunacy_front/certs";
-const CA_KEY_PATH = path.join(CERT_BASE_DIR, "ca.key");
-const CA_CERT_PATH = path.join(CERT_BASE_DIR, "ca.crt");
-const MONGO_DOMAIN = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
+const pathManager = require("../../utils/pathManager");
 
 class CertificateService {
   constructor(configManager) {
     this.configManager = configManager;
     this.initialized = false;
-    this.certsDir = process.env.CERTS_DIR || "/app/config/certs";
-    this.caCertPath = path.join(this.certsDir, "ca.crt");
-    this.caKeyPath = path.join(this.certsDir, "ca.key");
+    this.certsDir = null;
+    this.caCertPath = null;
+    this.caKeyPath = null;
+    this.mongoDomain = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
   }
 
   /**
@@ -34,6 +29,16 @@ class CertificateService {
     logger.info("Initializing certificate service");
 
     try {
+      // Initialize path manager if needed
+      if (!pathManager.initialized) {
+        await pathManager.initialize();
+      }
+
+      // Set paths from path manager
+      this.certsDir = pathManager.getPath('certs');
+      this.caCertPath = pathManager.getPath('caCert');
+      this.caKeyPath = pathManager.getPath('caKey');
+
       // Ensure certificates directory exists
       await this._ensureCertsDir();
 
@@ -212,10 +217,10 @@ IP.1 = 127.0.0.1
       logger.info(`Ensuring certificates directory exists at ${this.certsDir}`);
 
       // Create certificates directory if it doesn't exist
-      await fs.mkdir(this.certsDir, { recursive: true });
-
-      // Create agents directory if it doesn't exist
-      await fs.mkdir(path.join(this.certsDir, "agents"), { recursive: true });
+      await pathManager.ensureDirectories([
+        this.certsDir,
+        pathManager.getPath('certsAgents')
+      ]);
 
       logger.info("Certificates directory structure created");
       return true;

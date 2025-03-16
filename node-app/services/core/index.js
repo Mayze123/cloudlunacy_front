@@ -4,6 +4,7 @@
  * This module initializes and exports all core services.
  */
 
+const pathManager = require("../../utils/pathManager");
 const ConfigManager = require("./configManager");
 const RoutingManager = require("./routingManager");
 const MongoDBService = require("./mongodbService");
@@ -25,6 +26,9 @@ async function initialize() {
   logger.info("Initializing core services");
 
   try {
+    // Initialize path manager first
+    await pathManager.initialize();
+
     // Initialize in order of dependencies
     await configManager.initialize();
     await routingManager.initialize();

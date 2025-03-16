@@ -11,13 +11,14 @@ const express = require("express");
 const morgan = require("morgan");
 const path = require("path");
 
-// Import core services
-const coreServices = require("./services/core");
-
 // Import utilities
 const logger = require("./utils/logger");
+const pathManager = require("./utils/pathManager");
 const { errorMiddleware } = require("./utils/errorHandler");
 const appLogger = logger.getLogger("server");
+
+// Import core services
+const coreServices = require("./services/core");
 
 // Import API routes
 const routes = require("./api/routes");
@@ -69,7 +70,7 @@ function setupGracefulShutdown(server) {
   });
 
   // Handle unhandled promise rejections
-  process.on("unhandledRejection", (reason, promise) => {
+  process.on("unhandledRejection", (reason, _promise) => {
     appLogger.error("Unhandled Promise rejection:", { reason });
     performGracefulShutdown(server);
   });
@@ -95,6 +96,9 @@ function performGracefulShutdown(server) {
 // Start the server
 async function startServer() {
   try {
+    // Initialize path manager first
+    await pathManager.initialize();
+
     // Initialize core services
     const initialized = await coreServices.initialize();
 

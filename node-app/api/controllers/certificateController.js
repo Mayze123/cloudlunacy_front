@@ -5,10 +5,12 @@ const fs = require("fs").promises;
 const logger = require("../../utils/logger").getLogger("certificateController");
 const coreServices = require("../../services/core");
 const { asyncHandler, AppError } = require("../../utils/errorHandler");
+const pathManager = require("../../utils/pathManager");
 
 // Path to MongoDB CA certificate
 const MONGO_CA_PATH =
-  process.env.MONGO_CA_PATH || "/app/config/certs/mongodb-ca.crt";
+  process.env.MONGO_CA_PATH ||
+  pathManager.resolvePath("certs", "mongodb-ca.crt");
 
 /**
  * Get MongoDB CA certificate
@@ -43,7 +45,6 @@ exports.getMongoCA = async (req, res) => {
         success: false,
         message: "MongoDB CA certificate not found",
         error: `Certificate file not found at ${MONGO_CA_PATH}`,
-        details: "The server is not configured with a MongoDB CA certificate",
       });
     }
 
@@ -51,10 +52,7 @@ exports.getMongoCA = async (req, res) => {
     res.set("Content-Disposition", 'attachment; filename="mongodb-ca.crt"');
     res.send(caCert);
   } catch (err) {
-    logger.error(`Failed to get MongoDB CA certificate: ${err.message}`, {
-      error: err.message,
-      stack: err.stack,
-    });
+    logger.error(`Error getting MongoDB CA certificate: ${err.message}`);
     res.status(500).json({
       success: false,
       message: "Failed to get MongoDB CA certificate",

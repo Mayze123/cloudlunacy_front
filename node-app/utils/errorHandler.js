@@ -4,7 +4,8 @@
  * Provides standardized error handling across the application.
  */
 
-const logger = require("./logger");
+const logger = require("./logger").getLogger("errorHandler");
+const pathManager = require("./pathManager");
 
 /**
  * Custom error class with status code
@@ -35,7 +36,7 @@ const asyncHandler = (fn) => {
 const errorMiddleware = (err, req, res, next) => {
   const statusCode = err.statusCode || 500;
   const message = err.message || "Internal Server Error";
-  const appLogger = logger.getLogger("errorHandler");
+  const appLogger = logger;
 
   // Log the error
   if (statusCode >= 500) {
@@ -65,8 +66,34 @@ const errorMiddleware = (err, req, res, next) => {
   });
 };
 
+/**
+ * Log error to file
+ * @param {Error} err - Error to log
+ * @returns {Promise<void>}
+ */
+async function logErrorToFile(err) {
+  try {
+    const fs = require("fs").promises;
+    const errorLogPath = pathManager.resolvePath("logs", "errors.log");
+
+    // Ensure directory exists
+    await pathManager.ensureDirectory(pathManager.getPath("logs"));
+
+    // Format error message
+    const errorMessage = `[${new Date().toISOString()}] ${
+      err.stack || err.message
+    }\n`;
+
+    // Append to log file
+    await fs.appendFile(errorLogPath, errorMessage);
+  } catch (logErr) {
+    logger.error(`Failed to log error to file: ${logErr.message}`);
+  }
+}
+
 module.exports = {
   AppError,
   asyncHandler,
   errorMiddleware,
+  logErrorToFile,
 };
