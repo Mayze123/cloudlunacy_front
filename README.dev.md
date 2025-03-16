@@ -144,3 +144,12 @@ To restart a specific service:
 ```bash
 docker-compose -f docker-compose.dev.yml restart node-app
 ```
+
+# MongoDB Testing
+
+For MongoDB testing, please use the agent project's development environment. The front project only handles routing and management of MongoDB connections, but does not include a MongoDB instance.
+
+If you need to test MongoDB routing functionality:
+
+1. Start the agent project's development environment which includes MongoDB
+2. Configure the front project to route to the agent's MongoDB instance

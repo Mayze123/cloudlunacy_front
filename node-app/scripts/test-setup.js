@@ -47,6 +47,13 @@ async function testTraefikDashboard() {
 // Test MongoDB Connection
 async function testMongoDBConnection() {
   console.log("Testing MongoDB Connection...");
+
+  // In development without MongoDB, skip actual connection
+  if (process.env.SKIP_MONGO_TEST === "true") {
+    console.log("⚠️ MongoDB test skipped (SKIP_MONGO_TEST=true)");
+    return true;
+  }
+
   let client;
   try {
     client = new MongoClient(config.mongodb.url);
