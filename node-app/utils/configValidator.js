@@ -50,7 +50,14 @@ class ConfigValidator {
     // Define expected configuration structure
     this.templateConfig = {
       http: {
-        routers: {},
+        routers: {
+          dashboard: {
+            rule: "Host(`traefik.localhost`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))",
+            service: "api@internal",
+            entryPoints: ["dashboard"],
+            middlewares: ["auth"],
+          },
+        },
         middlewares: {
           auth: {
             basicAuth: {
@@ -214,9 +221,70 @@ class ConfigValidator {
         }
       }
 
+      // Create directory if it doesn't exist
+      const dir = path.dirname(filePath);
+      await fs.mkdir(dir, { recursive: true });
+
       // Write new file
       await fs.writeFile(filePath, yamlStr, "utf8");
       logger.info(`Successfully wrote configuration to ${filePath}`);
+
+      // If dynamic.yml is being written and we're not in Docker, also
+      // create a symlink in /etc/traefik/ to ensure Traefik can find it
+      if (filePath.endsWith("dynamic.yml") && !this.inDocker) {
+        try {
+          const trafikConfigDir = "/etc/traefik";
+          const trafikDynamicPath = path.join(trafikConfigDir, "dynamic.yml");
+
+          // Check if directory exists, create if not
+          try {
+            await fs.access(trafikConfigDir);
+          } catch (accessErr) {
+            if (accessErr.code === "ENOENT") {
+              logger.info(
+                `Creating Traefik config directory at ${trafikConfigDir}`
+              );
+              await fs.mkdir(trafikConfigDir, { recursive: true });
+            }
+          }
+
+          // Check if symlink exists
+          try {
+            await fs.access(trafikDynamicPath);
+            // If it exists but isn't pointing to the right place, remove it
+            const stats = await fs.lstat(trafikDynamicPath);
+            if (stats.isSymbolicLink()) {
+              const target = await fs.readlink(trafikDynamicPath);
+              if (target !== filePath) {
+                logger.info(`Updating symlink from ${target} to ${filePath}`);
+                await fs.unlink(trafikDynamicPath);
+                await fs.symlink(filePath, trafikDynamicPath);
+              }
+            } else {
+              // It exists but isn't a symlink, back it up and replace
+              const backupPath = `${trafikDynamicPath}.backup.${Date.now()}`;
+              await fs.copyFile(trafikDynamicPath, backupPath);
+              await fs.unlink(trafikDynamicPath);
+              await fs.symlink(filePath, trafikDynamicPath);
+            }
+          } catch (linkErr) {
+            // File doesn't exist, create the symlink
+            logger.info(
+              `Creating symlink from ${filePath} to ${trafikDynamicPath}`
+            );
+            await fs.symlink(filePath, trafikDynamicPath);
+          }
+          logger.info(
+            `Ensured Traefik can find dynamic configuration at ${trafikDynamicPath}`
+          );
+        } catch (symlinkErr) {
+          logger.warn(
+            `Failed to create symlink for Traefik: ${symlinkErr.message}`
+          );
+          // Don't fail the entire operation if symlink fails
+        }
+      }
+
       return true;
     } catch (err) {
       logger.error(`Failed to write to ${filePath}:`, { error: err.message });
