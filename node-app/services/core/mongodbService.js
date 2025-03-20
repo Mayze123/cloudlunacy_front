@@ -518,6 +518,102 @@ class MongoDBService {
       return false;
     }
   }
+
+  async ensureMongoDBRouting(agentId, targetHost, targetPort) {
+    logger.info(
+      `Ensuring MongoDB routing for agent ${agentId} to ${targetHost}:${targetPort}`
+    );
+
+    try {
+      // Get the main configuration
+      const config = await this.configManager.getConfig("main");
+
+      // Ensure TCP section exists
+      if (!config.tcp) {
+        config.tcp = { routers: {}, services: {} };
+      }
+
+      // Create specific router for this agent
+      const routerName = `mongodb-${agentId}`;
+      config.tcp.routers[routerName] = {
+        rule: `HostSNI(\`${agentId}.${this.mongoDomain}\`)`,
+        entryPoints: ["mongodb"],
+        service: `${routerName}-service`,
+        tls: {
+          passthrough: true,
+        },
+      };
+
+      // Create service with the target server
+      config.tcp.services[`${routerName}-service`] = {
+        loadBalancer: {
+          servers: [{ address: `${targetHost}:${targetPort}` }],
+        },
+      };
+
+      // Save the updated configuration
+      await this.configManager.saveConfig("main", config);
+
+      // Reload Traefik to apply changes (if needed)
+      await this.reloadTraefik();
+
+      return true;
+    } catch (err) {
+      logger.error(`Failed to ensure MongoDB routing: ${err.message}`);
+      return false;
+    }
+  }
+
+  async registerMongoDBRoute(agentId, targetHost, targetPort = 27017) {
+    logger.info(
+      `Registering MongoDB route for agent ${agentId} to ${targetHost}:${targetPort}`
+    );
+
+    try {
+      // Get the main configuration
+      const config = await this.configManager.getConfig("main");
+
+      // Ensure TCP section exists
+      if (!config.tcp) {
+        config.tcp = { routers: {}, services: {} };
+      }
+
+      // Create specific router for this agent
+      const routerName = `mongodb-${agentId}`;
+      config.tcp.routers[routerName] = {
+        rule: `HostSNI(\`${agentId}.${this.mongoDomain}\`)`,
+        entryPoints: ["mongodb"],
+        service: `${routerName}-service`,
+        tls: {
+          passthrough: true,
+        },
+      };
+
+      // Create service with the target server
+      config.tcp.services[`${routerName}-service`] = {
+        loadBalancer: {
+          servers: [{ address: `${targetHost}:${targetPort}` }],
+        },
+      };
+
+      // Save the updated configuration
+      await this.configManager.saveConfig("main", config);
+
+      // Reload Traefik to apply changes
+      await this.reloadTraefik();
+
+      return {
+        success: true,
+        agentId,
+        domain: `${agentId}.${this.mongoDomain}`,
+        targetHost,
+        targetPort,
+      };
+    } catch (err) {
+      logger.error(`Failed to register MongoDB route: ${err.message}`);
+      throw err;
+    }
+  }
 }
 
 module.exports = MongoDBService;

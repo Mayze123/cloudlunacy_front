@@ -267,6 +267,20 @@ ${altNames}
       throw err;
     }
   }
+
+  // Add a method to verify certificate validity
+  async verifyCertificate(certPath) {
+    try {
+      const { stdout } = await execAsync(
+        `openssl x509 -in ${certPath} -text -noout`
+      );
+      logger.info(`Certificate at ${certPath} is valid`);
+      return true;
+    } catch (err) {
+      logger.error(`Certificate at ${certPath} is invalid: ${err.message}`);
+      return false;
+    }
+  }
 }
 
 module.exports = CertificateService;

@@ -21,10 +21,10 @@ http:
 tcp:
   routers:
     mongodb-catchall:
-      rule: HostSNI(`*.mongodb.cloudlunacy.uk`)
+      rule: "HostSNI(`*.mongodb.cloudlunacy.uk`)"
       entryPoints:
-        - mongodb
-      service: mongodb-catchall-service
+        - "mongodb"
+      service: "mongodb-catchall-service"
       tls:
         passthrough: true
   services:

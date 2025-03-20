@@ -7,15 +7,15 @@ tls:
       minVersion: "VersionTLS12"
 entryPoints:
   web:
-    address: :80
+    address: ":80"
   websecure:
-    address: :443
+    address: ":443"
   dashboard:
-    address: :8081
+    address: ":8081"
   mongodb:
-    address: :27017
-    # Important: Do NOT configure TLS termination here
-    # No tls section should be present at the entryPoint level
+    address: ":27017"
+    # Important: Remove any TLS termination configuration here
+    # MongoDB needs passthrough TLS
 api:
   dashboard: true
   insecure: true
