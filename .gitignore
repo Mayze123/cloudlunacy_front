@@ -6,3 +6,4 @@ config/certs/
 traefik-certs/
 *.srl
 *.log
+acme.json
