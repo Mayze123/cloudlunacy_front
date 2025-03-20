@@ -202,6 +202,20 @@ class RoutingManager {
         throw new Error("Domain and targetAddress are required");
       }
 
+      // Validate and normalize target address format
+      if (!targetAddress.includes(":")) {
+        // If port is not specified, use default MongoDB port
+        targetAddress = `${targetAddress}:27017`;
+      }
+
+      // Check if the address is in a valid format
+      const [host, port] = targetAddress.split(":");
+      if (!host || !port || isNaN(parseInt(port))) {
+        throw new Error(
+          `Invalid target address format: ${targetAddress}. Expected format: host:port`
+        );
+      }
+
       // Generate router and service names
       const routerName = `mongodb-${agentId}`;
       const serviceName = `mongodb-${agentId}-service`;

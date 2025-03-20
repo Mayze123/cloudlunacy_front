@@ -78,11 +78,15 @@ class MongoDBService {
     const useTls = options.useTls !== false; // Default to true
 
     try {
+      // Always use the fixed container name "mongodb-agent" instead of IP
+      const containerName = "mongodb-agent";
+      const targetAddress = `${containerName}:${this.mongoPort}`;
+
       // Create TCP route for this agent
       const routeResult = await this.routingManager.addTcpRoute(
         agentId,
         `${agentId}.${this.mongoDomain}`,
-        `${targetIp}:${this.mongoPort}`,
+        targetAddress,
         { useTls }
       );
 
