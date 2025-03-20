@@ -4,8 +4,7 @@ global:
 tls:
   options:
     default:
-      minVersion: VersionTLS12
-      sniStrict: true
+      minVersion: "VersionTLS12"
 entryPoints:
   web:
     address: :80
@@ -15,9 +14,8 @@ entryPoints:
     address: :8081
   mongodb:
     address: :27017
-    transport:
-      respondingTimeouts:
-        idleTimeout: 1h
+    # Important: Do NOT configure TLS termination here
+    # No tls section should be present at the entryPoint level
 api:
   dashboard: true
   insecure: true
