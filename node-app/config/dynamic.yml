@@ -13,8 +13,8 @@ http:
     auth:
       basicAuth:
         users:
-          - "admin:$apr1$H6uskkkW$IgXLP6ewTrSuBkTrqE8wj/"  # Default admin/admin
-    
+          - "admin:$apr1$H6uskkkW$IgXLP6ewTrSuBkTrqE8wj/" # Default admin/admin
+
     web-to-websecure:
       redirectScheme:
         scheme: https

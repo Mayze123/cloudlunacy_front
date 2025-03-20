@@ -14,7 +14,7 @@ entryPoints:
   dashboard:
     address: :8081
   mongodb:
-    address: :27018
+    address: :27017
     transport:
       respondingTimeouts:
         idleTimeout: 1h

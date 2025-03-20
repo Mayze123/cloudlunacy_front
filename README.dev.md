@@ -151,5 +151,25 @@ For MongoDB testing, please use the agent project's development environment. The
 
 If you need to test MongoDB routing functionality:
 
-1. Start the agent project's development environment which includes MongoDB
+1. Start the agent project's development environment which includes MongoDB on port 27017
 2. Configure the front project to route to the agent's MongoDB instance
+3. Note that the front project's Traefik is configured to listen on port 27018 for MongoDB connections to avoid conflicts
+
+To connect to MongoDB through the front project's routing:
+
+```
+mongodb://username:password@agentid.mongodb.localhost:27018/admin
+```
+
+# Development Environment Setup
+
+## Port Allocations
+
+To avoid conflicts between the front and agent projects, we use the following port allocations:
+
+| Service     | Front Project   | Agent Project |
+| ----------- | --------------- | ------------- |
+| Node.js API | 3005            | 3006          |
+| MongoDB     | 27018 (Traefik) | 27017         |
+
+When testing both projects together, make sure to use the correct ports for each service.
