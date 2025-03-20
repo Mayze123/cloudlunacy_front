@@ -228,6 +228,7 @@ class RoutingManager {
               address: targetAddress,
             },
           ],
+          terminationDelay: 100,
         },
       };
 
