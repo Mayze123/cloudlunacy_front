@@ -16,8 +16,8 @@ const logger = require("../../utils/logger").getLogger("coreServices");
 const configManager = new ConfigManager();
 const routingManager = new RoutingManager(configManager);
 const mongodbService = new MongoDBService(configManager, routingManager);
-const agentService = new AgentService(configManager);
 const certificateService = new CertificateService(configManager);
+const agentService = new AgentService(configManager, mongodbService);
 
 /**
  * Initialize all core services
@@ -75,13 +75,13 @@ async function repair() {
   }
 }
 
-// Export services
+// Export all services
 module.exports = {
+  initialize,
   config: configManager,
   routing: routingManager,
   mongodb: mongodbService,
   agent: agentService,
   certificate: certificateService,
-  initialize,
   repair,
 };

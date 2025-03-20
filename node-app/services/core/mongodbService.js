@@ -27,6 +27,8 @@ class MongoDBService {
    * Initialize the MongoDB service
    */
   async initialize() {
+    if (this.initialized) return;
+
     logger.info("Initializing MongoDB service");
 
     try {
@@ -36,7 +38,7 @@ class MongoDBService {
       }
 
       // Set paths from path manager
-      this.traefikConfigPath = pathManager.getPath('traefikConfig');
+      this.traefikConfigPath = pathManager.getPath("traefikConfig");
 
       // Ensure MongoDB port is properly configured
       await this.ensureMongoDBPort();

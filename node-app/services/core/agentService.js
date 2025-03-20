@@ -7,13 +7,13 @@
 
 const jwt = require("jsonwebtoken");
 const configService = require("./configService");
-const mongodbService = require("./mongodbService");
 const logger = require("../../utils/logger").getLogger("agentService");
 const crypto = require("crypto");
 
 class AgentService {
-  constructor(configManager) {
+  constructor(configManager, mongodbService) {
     this.configManager = configManager;
+    this.mongodbService = mongodbService;
     this.initialized = false;
     this.agents = new Map();
     this.jwtSecret = process.env.JWT_SECRET || "default-secret-change-me";
@@ -101,38 +101,33 @@ class AgentService {
    * @returns {Promise<Object>} Registration result
    */
   async registerAgent(agentId, targetIp, options = {}) {
+    logger.info(`Registering agent ${agentId} with IP ${targetIp}`);
+
     try {
       if (!this.initialized) {
         await this.initialize();
       }
 
-      logger.info(`Registering agent ${agentId} with IP ${targetIp}`);
-
-      // Validate inputs
-      if (!this.validateInputs(agentId, targetIp)) {
-        throw new Error("Invalid agent ID or target IP");
-      }
-
-      // Generate JWT token for agent authentication
+      // Generate a token for this agent
       const token = this.generateAgentToken(agentId);
 
-      // Register MongoDB for this agent
+      // Register MongoDB for this agent if needed
       let mongoResult = null;
-      if (mongodbService) {
+      let certificates = null;
+
+      if (this.mongodbService) {
         try {
-          mongoResult = await mongodbService.registerAgent(
+          mongoResult = await this.mongodbService.registerAgent(
             agentId,
             targetIp,
-            { useTls: options.useTls !== false } // Default to true
+            {
+              useTls: options.useTls !== false,
+            }
           );
 
           if (!mongoResult.success) {
             logger.warn(
               `MongoDB registration warning for agent ${agentId}: ${mongoResult.error}`
-            );
-          } else {
-            logger.info(
-              `MongoDB registered for agent ${agentId} with target IP ${targetIp}`
             );
           }
         } catch (mongoErr) {
@@ -143,12 +138,13 @@ class AgentService {
               stack: mongoErr.stack,
             }
           );
-          // Continue with agent registration even if MongoDB fails
+          // Continue with agent registration even if MongoDB registration fails
         }
+      } else {
+        logger.warn(`MongoDB service not available for agent ${agentId}`);
       }
 
       // Generate certificates if needed
-      let certificates = null;
       if (
         options.generateCertificates !== false &&
         this.configManager.certificate

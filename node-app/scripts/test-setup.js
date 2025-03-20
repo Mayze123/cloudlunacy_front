@@ -11,7 +11,7 @@ const config = {
   nodeApp: "http://localhost:3005",
   traefik: "http://traefik.localhost:8081",
   mongodb: {
-    url: "mongodb://admin:password@test.mongodb.localhost:27017",
+    url: "mongodb://admin:password@test.mongodb.localhost:27018",
     adminDb: "admin",
   },
 };
