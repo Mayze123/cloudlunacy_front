@@ -1,77 +1,50 @@
-# Global settings
 global:
   checkNewVersion: false
   sendAnonymousUsage: false
-
-# TLS options
 tls:
   options:
     default:
-      minVersion: "VersionTLS12"
+      minVersion: VersionTLS12
       sniStrict: true
-
-# Entry points definition
 entryPoints:
   web:
-    address: ":80"
+    address: :80
   websecure:
-    address: ":443"
+    address: :443
   dashboard:
-    address: ":8081"
+    address: :8081
   mongodb:
-    address: ":27017"
+    address: :27018
     transport:
       respondingTimeouts:
-        idleTimeout: "1h"
-
-# API and dashboard configuration
+        idleTimeout: 1h
 api:
   dashboard: true
   insecure: true
   debug: false
-
-# Ping for healthcheck
 ping:
-  entryPoint: "dashboard"
-
-# Log configuration
+  entryPoint: dashboard
 log:
-  level: "DEBUG"
-  filePath: "/var/log/traefik/traefik.log"
-  format: "json"
-
-# Access logs
+  level: DEBUG
+  filePath: /var/log/traefik/traefik.log
+  format: json
 accessLog:
-  filePath: "/var/log/traefik/access.log"
-  format: "json"
+  filePath: /var/log/traefik/access.log
+  format: json
   bufferingSize: 100
-
-# Configure providers
 providers:
-  # Main dynamic configuration file
   file:
-    filename: "/etc/traefik/dynamic.yml"
+    filename: /etc/traefik/dynamic.yml
     watch: true
-
-  # Docker provider for container discovery
   docker:
-    endpoint: "unix:///var/run/docker.sock"
+    endpoint: unix:///var/run/docker.sock
     exposedByDefault: false
     watch: true
-    network: "traefik-network"
+    network: traefik-network
     swarmMode: false
-
-# Certificate resolvers
 certificatesResolvers:
   default:
     acme:
-      email: "m.taibou.i@gmail.com"
+      email: m.taibou.i@gmail.com
       storage: /etc/traefik/acme.json
       tlsChallenge: {}
-# Disable tracing since it's causing errors
-# tracing:
-#   serviceName: "traefik"
-#   jaeger:
-#     samplingServerURL: ""
-#     samplingType: "const"
-#     samplingParam: 1.0

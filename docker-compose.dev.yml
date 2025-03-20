@@ -11,7 +11,7 @@ services:
       - "80:80"
       - "443:443"
       - "8081:8081"
-      - "27017:27017"
+      - "27018:27017"
     networks:
       - traefik-network
       - cloudlunacy-network
@@ -59,6 +59,7 @@ services:
       - APP_DOMAIN=apps.localhost
       - DYNAMIC_CONFIG_PATH=/app/config/dynamic.yml
       - TRAEFIK_CONTAINER=traefik-dev
+      - MONGO_PORT=27018
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3005/health"]
       interval: 30s
