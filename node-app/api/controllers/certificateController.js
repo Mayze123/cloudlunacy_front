@@ -68,7 +68,13 @@ exports.getMongoCA = async (req, res) => {
  */
 exports.getAgentCertificates = asyncHandler(async (req, res) => {
   const { agentId } = req.params;
-  logger.info(`Generating certificates for agent ${agentId}`);
+  const { targetIp } = req.query;
+
+  logger.info(
+    `Generating certificates for agent ${agentId}${
+      targetIp ? ` with IP ${targetIp}` : ""
+    }`
+  );
 
   // Check if user is authorized to access these certificates
   if (
@@ -88,7 +94,8 @@ exports.getAgentCertificates = asyncHandler(async (req, res) => {
 
     logger.info(`Generating certificate for agent ${agentId}`);
     const certResult = await coreServices.certificate.generateAgentCertificate(
-      agentId
+      agentId,
+      targetIp
     );
 
     logger.info(

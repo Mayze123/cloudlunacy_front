@@ -35,9 +35,9 @@ class CertificateService {
       }
 
       // Set paths from path manager
-      this.certsDir = pathManager.getPath('certs');
-      this.caCertPath = pathManager.getPath('caCert');
-      this.caKeyPath = pathManager.getPath('caKey');
+      this.certsDir = pathManager.getPath("certs");
+      this.caCertPath = pathManager.getPath("caCert");
+      this.caKeyPath = pathManager.getPath("caKey");
 
       // Ensure certificates directory exists
       await this._ensureCertsDir();
@@ -102,8 +102,9 @@ class CertificateService {
   /**
    * Generate agent certificate
    * @param {string} agentId - The agent ID
+   * @param {string} targetIp - The target IP address
    */
-  async generateAgentCertificate(agentId) {
+  async generateAgentCertificate(agentId, targetIp = null) {
     try {
       if (!this.initialized) {
         await this.initialize();
@@ -120,7 +121,23 @@ class CertificateService {
       const configPath = path.join(certDir, "openssl.cnf");
 
       // Create OpenSSL config with proper SAN
-      const domain = `${agentId}.mongodb.cloudlunacy.uk`;
+      const domain = `${agentId}.${this.mongoDomain}`;
+
+      // Build the alt_names section with the target IP if provided
+      let altNames = `
+[alt_names]
+DNS.1 = ${domain}
+DNS.2 = *.${domain}
+DNS.3 = localhost
+IP.1 = 127.0.0.1
+`;
+
+      // Add the target IP if provided
+      if (targetIp && targetIp !== "127.0.0.1") {
+        altNames += `IP.2 = ${targetIp}\n`;
+        logger.info(`Including target IP ${targetIp} in certificate SAN`);
+      }
+
       await fs.writeFile(
         configPath,
         `
@@ -134,12 +151,7 @@ CN = ${domain}
 
 [v3_req]
 subjectAltName = @alt_names
-
-[alt_names]
-DNS.1 = ${domain}
-DNS.2 = *.${domain}
-DNS.3 = localhost
-IP.1 = 127.0.0.1
+${altNames}
       `
       );
 
@@ -219,7 +231,7 @@ IP.1 = 127.0.0.1
       // Create certificates directory if it doesn't exist
       await pathManager.ensureDirectories([
         this.certsDir,
-        pathManager.getPath('certsAgents')
+        pathManager.getPath("certsAgents"),
       ]);
 
       logger.info("Certificates directory structure created");

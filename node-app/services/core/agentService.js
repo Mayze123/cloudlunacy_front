@@ -152,7 +152,8 @@ class AgentService {
         try {
           const certResult =
             await this.configManager.certificate.generateAgentCertificate(
-              agentId
+              agentId,
+              targetIp
             );
           if (certResult.success) {
             certificates = {
