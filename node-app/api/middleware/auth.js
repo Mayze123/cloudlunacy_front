@@ -7,6 +7,7 @@
 
 const coreServices = require("../../services/core");
 const logger = require("../../utils/logger").getLogger("auth");
+const { AppError } = require("../../utils/errorHandler");
 
 /**
  * Require authentication for protected routes
@@ -17,25 +18,54 @@ exports.requireAuth = (req, res, next) => {
     const authHeader = req.headers.authorization;
     if (!authHeader) {
       logger.warn("Missing Authorization header", { path: req.path });
-      return res.status(401).json({ error: "Missing Authorization header" });
+      return res.status(401).json({
+        success: false,
+        error: "Missing Authorization header",
+      });
     }
 
     // Extract token
-    const [type, token] = authHeader.split(" ");
+    const parts = authHeader.split(" ");
 
-    if (type !== "Bearer" || !token) {
+    if (parts.length !== 2 || parts[0] !== "Bearer") {
       logger.warn("Invalid Authorization format", { path: req.path });
-      return res.status(401).json({ error: "Invalid Authorization format" });
+      return res.status(401).json({
+        success: false,
+        error: "Invalid Authorization format",
+      });
+    }
+
+    const token = parts[1];
+
+    if (!token) {
+      logger.warn("Empty token provided", { path: req.path });
+      return res.status(401).json({
+        success: false,
+        error: "Invalid token",
+      });
     }
 
     // Verify token
     try {
+      // Ensure core services are initialized
+      if (!coreServices.agent) {
+        throw new AppError("Authentication service not available", 503);
+      }
+
       const decoded = coreServices.agent.verifyAgentToken(token);
+
+      if (!decoded || !decoded.agentId) {
+        throw new Error("Invalid token payload");
+      }
+
       req.user = decoded;
       next();
     } catch (err) {
       logger.warn(`Invalid token: ${err.message}`, { path: req.path });
-      return res.status(401).json({ error: "Invalid token" });
+      return res.status(401).json({
+        success: false,
+        error: "Invalid or expired token",
+      });
     }
   } catch (err) {
     logger.error(`Authentication error: ${err.message}`, {
@@ -43,7 +73,19 @@ exports.requireAuth = (req, res, next) => {
       stack: err.stack,
       path: req.path,
     });
-    return res.status(500).json({ error: "Authentication error" });
+
+    // Handle service unavailable separately
+    if (err instanceof AppError && err.statusCode === 503) {
+      return res.status(503).json({
+        success: false,
+        error: "Authentication service unavailable",
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      error: "Authentication error",
+    });
   }
 };
 
@@ -61,20 +103,49 @@ exports.optional = (req, res, next) => {
     }
 
     // Extract token
-    const [type, token] = authHeader.split(" ");
+    const parts = authHeader.split(" ");
 
-    if (type !== "Bearer" || !token) {
+    if (parts.length !== 2 || parts[0] !== "Bearer") {
       // Continue without authentication
+      logger.debug("Invalid Authorization format in optional auth", {
+        path: req.path,
+      });
+      return next();
+    }
+
+    const token = parts[1];
+
+    if (!token) {
+      // Continue without authentication
+      logger.debug("Empty token provided in optional auth", { path: req.path });
       return next();
     }
 
     // Verify token
     try {
+      // Ensure core services are initialized
+      if (!coreServices.agent) {
+        logger.debug("Authentication service not available in optional auth", {
+          path: req.path,
+        });
+        return next();
+      }
+
       const decoded = coreServices.agent.verifyAgentToken(token);
+
+      if (!decoded || !decoded.agentId) {
+        logger.debug("Invalid token payload in optional auth", {
+          path: req.path,
+        });
+        return next();
+      }
+
       req.user = decoded;
     } catch (err) {
       // Continue without authentication
-      logger.debug(`Optional auth failed: ${err.message}`, { path: req.path });
+      logger.debug(`Optional auth token verification failed: ${err.message}`, {
+        path: req.path,
+      });
     }
 
     next();

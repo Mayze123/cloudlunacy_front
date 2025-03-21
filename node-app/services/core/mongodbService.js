@@ -5,7 +5,6 @@
  */
 
 const fs = require("fs").promises;
-const path = require("path");
 const { exec } = require("child_process");
 const { promisify } = require("util");
 const execAsync = promisify(exec);
@@ -78,9 +77,21 @@ class MongoDBService {
     const useTls = options.useTls !== false; // Default to true
 
     try {
-      // Always use the fixed container name "mongodb-agent" instead of IP
-      const containerName = "mongodb-agent";
-      const targetAddress = `${containerName}:${this.mongoPort}`;
+      // Use the target IP directly instead of a fixed container name
+      // If targetIp is localhost or 127.0.0.1, use the container name with the agent ID
+      let targetAddress;
+      if (targetIp === "127.0.0.1" || targetIp === "localhost") {
+        // For local/internal agents, use a container name pattern that can be resolved in the Docker network
+        const containerName = `mongodb-${agentId}`;
+        targetAddress = `${containerName}:${this.mongoPort}`;
+        logger.info(
+          `Using container name ${containerName} for local agent ${agentId}`
+        );
+      } else {
+        // For external agents, use the IP directly
+        targetAddress = `${targetIp}:${this.mongoPort}`;
+        logger.info(`Using direct IP ${targetIp} for agent ${agentId}`);
+      }
 
       // Create TCP route for this agent
       const routeResult = await this.routingManager.addTcpRoute(
@@ -121,6 +132,7 @@ class MongoDBService {
         success: true,
         agentId,
         targetIp,
+        targetAddress,
         mongodbUrl,
         connectionString,
         certificates,
@@ -254,62 +266,75 @@ class MongoDBService {
   }
 
   /**
-   * Ensure MongoDB port is properly configured
-   *
-   * @returns {Promise<boolean>} Whether the port was fixed
+   * Ensure MongoDB port is correctly exposed in Docker
    */
   async ensureMongoDBPort() {
-    logger.info("Ensuring MongoDB port is properly configured");
+    const maxRetries = 3;
+    let retries = 0;
+    let success = false;
 
-    try {
-      // Check if port is already active
-      const portActive = await this.checkMongoDBPort();
-
-      if (portActive) {
-        logger.info("MongoDB port is already active");
-        return false; // No changes needed
-      }
-
-      logger.warn("MongoDB port is not active, attempting to fix");
-
-      // Check docker-compose.yml
-      const composeFile = "/app/docker-compose.yml";
-
+    while (!success && retries < maxRetries) {
       try {
-        const composeContent = await fs.readFile(composeFile, "utf8");
+        logger.info("Ensuring MongoDB port is correctly exposed");
 
-        if (!composeContent.includes(`"${this.mongoPort}:${this.mongoPort}"`)) {
-          logger.warn("MongoDB port is not configured in docker-compose.yml");
-
-          // We can't modify the docker-compose.yml file here
-          // This would require a more complex solution
-          logger.error("Cannot automatically fix docker-compose.yml");
-          return false;
+        // Check if MongoDB port is already correctly exposed
+        const portCheck = await this.checkMongoDBPort();
+        if (portCheck) {
+          logger.info("MongoDB port already correctly exposed");
+          return true;
         }
-      } catch (readErr) {
-        logger.warn(`Failed to read docker-compose.yml: ${readErr.message}`);
-      }
 
-      // Restart Traefik to apply changes
-      await this.restartTraefik();
+        // Run the Docker command to update the port mapping
+        logger.info("Updating MongoDB port configuration");
 
-      // Check if port is now active
-      const portFixed = await this.checkMongoDBPort();
+        const dockerCommand = `docker exec "${this.traefikContainer}" /fix-mongo-port.sh`;
 
-      if (portFixed) {
-        logger.info("MongoDB port is now active");
+        logger.debug(`Running command: ${dockerCommand}`);
+
+        const { stdout, stderr } = await execAsync(dockerCommand, {
+          timeout: 30000, // 30 seconds timeout
+        });
+
+        if (stderr && !stderr.includes("Forwarding")) {
+          logger.warn(`Command stderr: ${stderr}`);
+        }
+
+        logger.debug(`Command stdout: ${stdout}`);
+
+        // Verify the port was exposed correctly
+        const verifyCheck = await this.checkMongoDBPort();
+        if (!verifyCheck) {
+          throw new Error("Port update verification failed");
+        }
+
+        logger.info("MongoDB port successfully updated");
+        success = true;
         return true;
-      } else {
-        logger.error("Failed to fix MongoDB port");
-        return false;
+      } catch (err) {
+        retries++;
+        const waitTime = 2000 * retries; // Exponential backoff
+
+        logger.error(
+          `Failed to ensure MongoDB port (attempt ${retries}/${maxRetries}): ${err.message}`,
+          {
+            error: err.message,
+            stack: err.stack,
+          }
+        );
+
+        if (retries < maxRetries) {
+          logger.info(`Retrying in ${waitTime / 1000} seconds...`);
+          await new Promise((resolve) => setTimeout(resolve, waitTime));
+        } else {
+          logger.error("Maximum retry attempts reached, giving up");
+          throw new Error(
+            `Failed to ensure MongoDB port after ${maxRetries} attempts: ${err.message}`
+          );
+        }
       }
-    } catch (err) {
-      logger.error(`Failed to ensure MongoDB port: ${err.message}`, {
-        error: err.message,
-        stack: err.stack,
-      });
-      return false;
     }
+
+    return success;
   }
 
   /**
@@ -333,13 +358,47 @@ class MongoDBService {
         staticConfig.entryPoints.mongodb &&
         staticConfig.entryPoints.mongodb.address === `:${this.mongoPort}`
       ) {
-        logger.info("MongoDB entrypoint is already configured");
+        // Entrypoint exists, but let's ensure it has the optimal configuration
+        let needsUpdate = false;
+
+        // Check for transport settings
+        if (!staticConfig.entryPoints.mongodb.transport) {
+          staticConfig.entryPoints.mongodb.transport = {};
+          needsUpdate = true;
+        }
+
+        // Check for timeout settings
+        if (!staticConfig.entryPoints.mongodb.transport.respondingTimeouts) {
+          staticConfig.entryPoints.mongodb.transport.respondingTimeouts = {
+            idleTimeout: "1h", // Long idle timeout for long-lived MongoDB connections
+            readTimeout: "30s",
+            writeTimeout: "2m",
+          };
+          needsUpdate = true;
+        } else if (
+          staticConfig.entryPoints.mongodb.transport.respondingTimeouts
+            .idleTimeout !== "1h"
+        ) {
+          staticConfig.entryPoints.mongodb.transport.respondingTimeouts.idleTimeout =
+            "1h";
+          needsUpdate = true;
+        }
+
+        if (needsUpdate) {
+          logger.info(
+            "Updating MongoDB entrypoint configuration with optimal settings"
+          );
+          await this._saveStaticConfig(staticConfig);
+          return true;
+        }
+
+        logger.info("MongoDB entrypoint is already optimally configured");
         return false; // No changes needed
       }
 
-      logger.warn("MongoDB entrypoint is not configured, attempting to fix");
+      logger.warn("MongoDB entrypoint is not configured, creating it");
 
-      // Add MongoDB entrypoint
+      // Add MongoDB entrypoint with optimal configuration
       if (!staticConfig.entryPoints) {
         staticConfig.entryPoints = {};
       }
@@ -348,8 +407,19 @@ class MongoDBService {
         address: `:${this.mongoPort}`,
         transport: {
           respondingTimeouts: {
-            idleTimeout: "1h",
+            idleTimeout: "1h", // Long idle timeout for long-lived MongoDB connections
+            readTimeout: "30s",
+            writeTimeout: "2m",
           },
+        },
+        // Add ProxyProtocol for proper client IP handling if behind another proxy/load balancer
+        proxyProtocol: {
+          trustedIPs: [
+            "127.0.0.1/32",
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+          ],
         },
       };
 
@@ -359,7 +429,9 @@ class MongoDBService {
       // Restart Traefik to apply changes
       await this.restartTraefik();
 
-      logger.info("MongoDB entrypoint has been configured");
+      logger.info(
+        "MongoDB entrypoint has been configured with optimal settings"
+      );
       return true;
     } catch (err) {
       logger.error(`Failed to ensure MongoDB entrypoint: ${err.message}`, {
@@ -406,37 +478,102 @@ class MongoDBService {
    * @returns {Promise<Object>} Test result
    */
   async _testDirectConnection(targetIp) {
+    logger.info(
+      `Testing direct MongoDB connection to ${targetIp}:${this.mongoPort}`
+    );
+
+    const timeout = 10; // 10 seconds timeout
+    let tlsResult = null;
+    let noTlsResult = null;
+
     try {
       // Try with TLS first
-      const tlsCommand = `timeout 5 mongosh "mongodb://admin:adminpassword@${targetIp}:${this.mongoPort}/admin?ssl=true&tlsAllowInvalidCertificates=true" --eval "db.serverStatus()" 2>&1 || echo "Connection failed"`;
-      const tlsResult = await execAsync(tlsCommand);
+      const tlsCommand = `timeout ${timeout} mongosh "mongodb://admin:adminpassword@${targetIp}:${this.mongoPort}/admin?ssl=true&tlsAllowInvalidCertificates=true" --eval "db.serverStatus()" 2>&1 || echo "Connection failed"`;
 
-      if (!tlsResult.includes("Connection failed")) {
+      logger.debug(`Executing TLS connection test: ${tlsCommand}`);
+      const { stdout: tlsOutput } = await execAsync(tlsCommand);
+      tlsResult = tlsOutput;
+
+      if (
+        !tlsOutput.includes("Connection failed") &&
+        !tlsOutput.includes("MongoServerError")
+      ) {
+        logger.info(
+          `Successfully connected to MongoDB at ${targetIp}:${this.mongoPort} with TLS`
+        );
         return {
           success: true,
           useTls: true,
+          details: "Connected with TLS",
         };
       }
 
-      // Try without TLS
-      const noTlsCommand = `timeout 5 mongosh "mongodb://admin:adminpassword@${targetIp}:${this.mongoPort}/admin" --eval "db.serverStatus()" 2>&1 || echo "Connection failed"`;
-      const noTlsResult = await execAsync(noTlsCommand);
+      logger.debug(`TLS connection failed: ${tlsOutput.substring(0, 200)}...`);
 
-      if (!noTlsResult.includes("Connection failed")) {
+      // Try without TLS
+      const noTlsCommand = `timeout ${timeout} mongosh "mongodb://admin:adminpassword@${targetIp}:${this.mongoPort}/admin" --eval "db.serverStatus()" 2>&1 || echo "Connection failed"`;
+
+      logger.debug(`Executing non-TLS connection test: ${noTlsCommand}`);
+      const { stdout: noTlsOutput } = await execAsync(noTlsCommand);
+      noTlsResult = noTlsOutput;
+
+      if (
+        !noTlsOutput.includes("Connection failed") &&
+        !noTlsOutput.includes("MongoServerError")
+      ) {
+        logger.info(
+          `Successfully connected to MongoDB at ${targetIp}:${this.mongoPort} without TLS`
+        );
         return {
           success: true,
           useTls: false,
+          details: "Connected without TLS",
         };
       }
 
+      logger.debug(
+        `Non-TLS connection failed: ${noTlsOutput.substring(0, 200)}...`
+      );
+
+      // Check if we got authentication errors rather than connection errors
+      if (
+        tlsResult.includes("Authentication failed") ||
+        noTlsResult.includes("Authentication failed")
+      ) {
+        logger.info(
+          `MongoDB connection succeeded but authentication failed at ${targetIp}:${this.mongoPort}`
+        );
+        return {
+          success: true,
+          authError: true,
+          details: "Connection succeeded but authentication failed",
+        };
+      }
+
+      logger.warn(
+        `Failed to connect to MongoDB at ${targetIp}:${this.mongoPort} with or without TLS`
+      );
       return {
         success: false,
         error: "Failed to connect to MongoDB with or without TLS",
+        tlsError: tlsResult.includes("Connection failed") ? tlsResult : null,
+        noTlsError: noTlsResult.includes("Connection failed")
+          ? noTlsResult
+          : null,
       };
     } catch (err) {
+      logger.error(
+        `Error testing MongoDB connection to ${targetIp}:${this.mongoPort}: ${err.message}`,
+        {
+          error: err.message,
+          stack: err.stack,
+        }
+      );
+
       return {
         success: false,
         error: err.message,
+        command_error: true,
       };
     }
   }
@@ -449,40 +586,152 @@ class MongoDBService {
    * @returns {Promise<Object>} Test result
    */
   async _testTraefikConnection(agentId) {
+    const hostname = `${agentId}.${this.mongoDomain}`;
+    logger.info(
+      `Testing MongoDB connection through Traefik to ${hostname}:${this.mongoPort}`
+    );
+
+    const timeout = 15; // 15 seconds timeout (longer for Traefik routing)
+    let tlsResult = null;
+    let noTlsResult = null;
+
     try {
-      const hostname = `${agentId}.${this.mongoDomain}`;
+      // First check if the hostname resolves
+      try {
+        const dnsCheckCommand = `dig +short ${hostname} || host ${hostname} || echo "DNS lookup failed"`;
+        const { stdout: dnsResult } = await execAsync(dnsCheckCommand);
+
+        if (dnsResult.includes("DNS lookup failed") || !dnsResult.trim()) {
+          logger.warn(`DNS lookup failed for ${hostname}`);
+          return {
+            success: false,
+            error: `DNS lookup failed for ${hostname}. Check your DNS configuration.`,
+            dns_error: true,
+          };
+        }
+
+        logger.debug(`DNS lookup for ${hostname}: ${dnsResult.trim()}`);
+      } catch (dnsErr) {
+        logger.warn(`Error checking DNS for ${hostname}: ${dnsErr.message}`);
+        // Continue anyway, as mongosh might resolve it differently
+      }
 
       // Try with TLS first
-      const tlsCommand = `timeout 10 mongosh "mongodb://admin:adminpassword@${hostname}:${this.mongoPort}/admin?ssl=true&tlsAllowInvalidCertificates=true" --eval "db.serverStatus()" 2>&1 || echo "Connection failed"`;
-      const tlsResult = await execAsync(tlsCommand);
+      const tlsCommand = `timeout ${timeout} mongosh "mongodb://admin:adminpassword@${hostname}:${this.mongoPort}/admin?ssl=true&tlsAllowInvalidCertificates=true" --eval "db.serverStatus()" 2>&1 || echo "Connection failed"`;
 
-      if (!tlsResult.includes("Connection failed")) {
+      logger.debug(
+        `Executing TLS connection test through Traefik: ${tlsCommand}`
+      );
+      const { stdout: tlsOutput } = await execAsync(tlsCommand);
+      tlsResult = tlsOutput;
+
+      if (
+        !tlsOutput.includes("Connection failed") &&
+        !tlsOutput.includes("MongoServerError")
+      ) {
+        logger.info(
+          `Successfully connected to MongoDB at ${hostname}:${this.mongoPort} with TLS`
+        );
         return {
           success: true,
           useTls: true,
+          details: "Connected with TLS through Traefik",
         };
       }
 
-      // Try without TLS
-      const noTlsCommand = `timeout 10 mongosh "mongodb://admin:adminpassword@${hostname}:${this.mongoPort}/admin" --eval "db.serverStatus()" 2>&1 || echo "Connection failed"`;
-      const noTlsResult = await execAsync(noTlsCommand);
+      logger.debug(
+        `TLS connection through Traefik failed: ${tlsOutput.substring(
+          0,
+          200
+        )}...`
+      );
 
-      if (!noTlsResult.includes("Connection failed")) {
+      // Try without TLS
+      const noTlsCommand = `timeout ${timeout} mongosh "mongodb://admin:adminpassword@${hostname}:${this.mongoPort}/admin" --eval "db.serverStatus()" 2>&1 || echo "Connection failed"`;
+
+      logger.debug(
+        `Executing non-TLS connection test through Traefik: ${noTlsCommand}`
+      );
+      const { stdout: noTlsOutput } = await execAsync(noTlsCommand);
+      noTlsResult = noTlsOutput;
+
+      if (
+        !noTlsOutput.includes("Connection failed") &&
+        !noTlsOutput.includes("MongoServerError")
+      ) {
+        logger.info(
+          `Successfully connected to MongoDB at ${hostname}:${this.mongoPort} without TLS`
+        );
         return {
           success: true,
           useTls: false,
+          details: "Connected without TLS through Traefik",
         };
       }
 
+      logger.debug(
+        `Non-TLS connection through Traefik failed: ${noTlsOutput.substring(
+          0,
+          200
+        )}...`
+      );
+
+      // Check if we got authentication errors rather than connection errors
+      if (
+        tlsResult.includes("Authentication failed") ||
+        noTlsResult.includes("Authentication failed")
+      ) {
+        logger.info(
+          `MongoDB connection through Traefik succeeded but authentication failed at ${hostname}:${this.mongoPort}`
+        );
+        return {
+          success: true,
+          authError: true,
+          details: "Connection succeeded but authentication failed",
+        };
+      }
+
+      // Check for specific errors in the output
+      if (
+        tlsResult.includes("network timeout") ||
+        noTlsResult.includes("network timeout")
+      ) {
+        logger.warn(
+          `Network timeout connecting to MongoDB at ${hostname}:${this.mongoPort}`
+        );
+        return {
+          success: false,
+          error:
+            "Network timeout, Traefik might not be forwarding traffic correctly",
+          timeout: true,
+        };
+      }
+
+      logger.warn(
+        `Failed to connect to MongoDB at ${hostname}:${this.mongoPort} through Traefik with or without TLS`
+      );
       return {
         success: false,
         error:
           "Failed to connect to MongoDB through Traefik with or without TLS",
+        tlsError: tlsResult.includes("Connection failed") ? tlsResult : null,
+        noTlsError: noTlsResult.includes("Connection failed")
+          ? noTlsResult
+          : null,
       };
     } catch (err) {
+      logger.error(
+        `Error testing MongoDB connection through Traefik to ${hostname}:${this.mongoPort}: ${err.message}`,
+        {
+          error: err.message,
+          stack: err.stack,
+        }
+      );
+
       return {
         success: false,
         error: err.message,
+        command_error: true,
       };
     }
   }

@@ -5,6 +5,7 @@
  */
 
 const logger = require("../../utils/logger").getLogger("routingManager");
+const { execAsync } = require("../../utils/exec");
 
 class RoutingManager {
   constructor(configManager) {
@@ -293,20 +294,96 @@ class RoutingManager {
     }
 
     try {
-      // Generate router and service names
-      const routerName = `mongodb-${agentId}`;
-      const serviceName = `mongodb-${agentId}-service`;
+      // Check if route exists in cache
+      const cacheKey = `tcp:${agentId}`;
+      const routeInfo = this.routeCache.get(cacheKey);
 
-      // Remove from configuration
+      if (!routeInfo) {
+        logger.warn(`No TCP route found for agent ${agentId} in cache`);
+
+        // Do an additional check in the actual config to be sure
+        const config = await this.configManager.getConfig("main");
+        const routerName = `mongodb-${agentId}`;
+
+        if (
+          config.tcp &&
+          config.tcp.routers &&
+          config.tcp.routers[routerName]
+        ) {
+          logger.info(
+            `Found TCP route for agent ${agentId} in config but not in cache, removing it`
+          );
+        } else {
+          return {
+            success: true,
+            message: `No TCP route found for agent ${agentId}`,
+            noActionRequired: true,
+          };
+        }
+      }
+
+      // Get router and service names
+      const routerName = routeInfo ? routeInfo.name : `mongodb-${agentId}`;
+      const serviceName = routeInfo
+        ? routeInfo.service
+        : `mongodb-${agentId}-service`;
+
+      // Remove router and service
       await this._removeConfig("tcp", "routers", routerName);
       await this._removeConfig("tcp", "services", serviceName);
 
-      // Remove from cache
-      this.routeCache.delete(`tcp:${agentId}`);
+      // Verify removal
+      const configAfter = await this.configManager.getConfig("main");
+      const routerRemoved = !(
+        configAfter.tcp &&
+        configAfter.tcp.routers &&
+        configAfter.tcp.routers[routerName]
+      );
+      const serviceRemoved = !(
+        configAfter.tcp &&
+        configAfter.tcp.services &&
+        configAfter.tcp.services[serviceName]
+      );
+
+      if (!routerRemoved || !serviceRemoved) {
+        logger.warn(
+          `Failed to verify removal of TCP route for agent ${agentId}`
+        );
+        throw new Error("Failed to remove TCP route configuration");
+      }
+
+      // Remove from cache if it exists
+      if (this.routeCache.has(cacheKey)) {
+        this.routeCache.delete(cacheKey);
+      }
+
+      // Reload Traefik to apply changes (only needed for TCP routes)
+      try {
+        // We should notify the MongoDB service to reload Traefik
+        // This is a potential design improvement to make this service more modular
+        logger.info(
+          `Reloading Traefik after removing TCP route for agent ${agentId}`
+        );
+
+        // For now, we'll use our own reload method
+        const { stdout, stderr } = await execAsync(
+          'docker restart traefik || echo "Failed to restart Traefik"'
+        );
+        if (stderr && stderr.includes("Failed to restart Traefik")) {
+          logger.warn(`Warning during Traefik restart: ${stderr}`);
+        } else {
+          logger.debug(`Traefik restart output: ${stdout}`);
+        }
+      } catch (reloadErr) {
+        logger.warn(
+          `Failed to reload Traefik: ${reloadErr.message}, but route was removed from config`
+        );
+      }
 
       return {
         success: true,
         agentId,
+        message: `TCP route for agent ${agentId} removed successfully`,
       };
     } catch (err) {
       logger.error(`Failed to remove TCP route: ${err.message}`, {
