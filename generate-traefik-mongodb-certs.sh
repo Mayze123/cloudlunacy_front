@@ -47,9 +47,9 @@ openssl genrsa -out client.key 4096
 openssl req -new -key client.key -out client.csr -subj "/CN=traefik-client/O=CloudLunacy/C=US"
 openssl x509 -req -days 3650 -in client.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out client.crt
 
-# Set proper permissions
-chmod 600 ${TRAEFIK_CERTS_DIR}/*.key
-chmod 644 ${TRAEFIK_CERTS_DIR}/*.crt
+# Set proper permissions - fix the paths to be relative to current directory
+chmod 600 *.key
+chmod 644 *.crt
 
 echo "Certificates generated in ${TRAEFIK_CERTS_DIR}"
 echo "To use these certificates with Traefik, make sure they are mounted to the Traefik container"
