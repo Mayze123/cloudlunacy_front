@@ -14,8 +14,14 @@ entryPoints:
     address: ":8081"
   mongodb:
     address: ":27017"
-    # Important: Remove any TLS termination configuration here
-    # MongoDB needs passthrough TLS
+    # Configure TLS termination for MongoDB
+    http:
+      tls:
+        options: default
+        certResolver: default
+        domains:
+          - main: "mongodb.cloudlunacy.uk"
+            sans: ["*.mongodb.cloudlunacy.uk"]
 api:
   dashboard: true
   insecure: true
