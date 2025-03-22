@@ -230,8 +230,16 @@ class RoutingManager {
 
       // Add TLS configuration if needed
       if (options.useTls !== false) {
+        // Use TLS termination instead of passthrough
         routerConfig.tls = {
-          passthrough: true,
+          // Replace passthrough: true with certResolver config
+          certResolver: "default",
+          domains: [
+            {
+              main: this.mongoDomain,
+              sans: [`*.${this.mongoDomain}`],
+            },
+          ],
         };
       }
 
@@ -244,6 +252,8 @@ class RoutingManager {
             },
           ],
           terminationDelay: 100,
+          // Add serversTransport for re-encryption if needed
+          serversTransport: "mongodb-tls-transport",
         },
       };
 

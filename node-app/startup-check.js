@@ -57,7 +57,13 @@ const CORRECT_CONFIG = {
         entryPoints: ["mongodb"],
         service: "mongodb-catchall-service",
         tls: {
-          passthrough: true,
+          certResolver: "default",
+          domains: [
+            {
+              main: "mongodb.cloudlunacy.uk",
+              sans: ["*.mongodb.cloudlunacy.uk"],
+            },
+          ],
         },
       },
     },
@@ -66,6 +72,19 @@ const CORRECT_CONFIG = {
         loadBalancer: {
           servers: [],
         },
+      },
+    },
+    serversTransports: {
+      "mongodb-tls-transport": {
+        serverName: "mongodb",
+        insecureSkipVerify: false,
+        rootCAs: ["/traefik-certs/ca.crt"],
+        certificates: [
+          {
+            certFile: "/traefik-certs/client.crt",
+            keyFile: "/traefik-certs/client.key",
+          },
+        ],
       },
     },
   },

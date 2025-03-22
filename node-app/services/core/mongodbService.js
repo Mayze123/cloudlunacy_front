@@ -793,7 +793,14 @@ class MongoDBService {
         entryPoints: ["mongodb"],
         service: `${routerName}-service`,
         tls: {
-          passthrough: true,
+          // Use TLS termination instead of passthrough
+          certResolver: "default",
+          domains: [
+            {
+              main: this.mongoDomain,
+              sans: [`*.${this.mongoDomain}`],
+            },
+          ],
         },
       };
 
@@ -801,6 +808,9 @@ class MongoDBService {
       config.tcp.services[`${routerName}-service`] = {
         loadBalancer: {
           servers: [{ address: `${targetHost}:${targetPort}` }],
+          terminationDelay: 100,
+          // Add serversTransport for re-encryption
+          serversTransport: "mongodb-tls-transport",
         },
       };
 
@@ -838,7 +848,14 @@ class MongoDBService {
         entryPoints: ["mongodb"],
         service: `${routerName}-service`,
         tls: {
-          passthrough: true,
+          // Use TLS termination instead of passthrough
+          certResolver: "default",
+          domains: [
+            {
+              main: this.mongoDomain,
+              sans: [`*.${this.mongoDomain}`],
+            },
+          ],
         },
       };
 
@@ -846,6 +863,9 @@ class MongoDBService {
       config.tcp.services[`${routerName}-service`] = {
         loadBalancer: {
           servers: [{ address: `${targetHost}:${targetPort}` }],
+          terminationDelay: 100,
+          // Add serversTransport for re-encryption
+          serversTransport: "mongodb-tls-transport",
         },
       };
 
