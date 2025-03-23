@@ -6,7 +6,8 @@
  */
 
 const logger = require("../../utils/logger").getLogger("coreServices");
-const configService = require("./configManager");
+const ConfigManager = require("./configManager");
+const configService = new ConfigManager(); // Create an instance of the ConfigManager
 const agentService = require("./agentService");
 
 // Import the new services
