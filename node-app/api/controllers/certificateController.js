@@ -96,32 +96,37 @@ exports.getAgentCertificates = asyncHandler(async (req, res) => {
     }
 
     logger.info(`Generating certificate for agent ${agentId}`);
-    const certResult =
+
+    try {
+      // Get the certificates from the service
       await coreServices.certificateService.generateAgentCertificate(
         agentId,
         targetIp
       );
 
-    logger.info(
-      `Certificate generation result: ${JSON.stringify({
-        success: certResult.success,
-        error: certResult.error || null,
-      })}`
-    );
+      // After generation, retrieve the actual certificate files
+      const certFiles =
+        await coreServices.certificateService.getAgentCertificates(agentId);
 
-    if (certResult.success) {
+      logger.info(
+        "Certificate generation result: " +
+          JSON.stringify({ success: true, error: null })
+      );
+
+      // Return the certificate data
       return res.status(200).json({
         success: true,
         agentId,
         certificates: {
-          caCert: certResult.caCert,
-          serverKey: certResult.serverKey,
-          serverCert: certResult.serverCert,
+          serverKey: certFiles.serverKey,
+          serverCert: certFiles.serverCert,
+          caCert: certFiles.caCert,
         },
       });
-    } else {
+    } catch (error) {
+      logger.error(`Certificate generation error: ${error.message}`);
       throw new AppError(
-        `Failed to generate agent certificates: ${certResult.error}`,
+        `Failed to generate agent certificates: ${error.message}`,
         500
       );
     }
