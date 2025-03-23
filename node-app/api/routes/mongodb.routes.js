@@ -1,8 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const mongodbController = require("../controllers/mongodbController");
-const { authenticate } = require("../middleware/authMiddleware");
-const { validateAgentToken } = require("../middleware/agentAuthMiddleware");
+const authMiddleware = require("../middleware/auth");
 
 /**
  * @swagger
@@ -47,7 +46,11 @@ const { validateAgentToken } = require("../middleware/agentAuthMiddleware");
  *       500:
  *         description: Internal server error
  */
-router.post("/register", validateAgentToken, mongodbController.registerMongoDB);
+router.post(
+  "/register",
+  authMiddleware.requireAuth,
+  mongodbController.registerMongoDB
+);
 
 /**
  * @swagger
@@ -75,19 +78,22 @@ router.post("/register", validateAgentToken, mongodbController.registerMongoDB);
  */
 router.get(
   "/:agentId/test",
-  validateAgentToken,
+  authMiddleware.requireAuth,
+  authMiddleware.requireAgentAccess(),
   mongodbController.testConnection
 );
 
 // Other MongoDB-related routes
 router.get(
   "/:agentId/connection-info",
-  authenticate,
+  authMiddleware.requireAuth,
+  authMiddleware.requireAgentAccess(),
   mongodbController.getConnectionInfo
 );
 router.post(
   "/:agentId/credentials",
-  authenticate,
+  authMiddleware.requireAuth,
+  authMiddleware.requireAgentAccess(),
   mongodbController.generateCredentials
 );
 
