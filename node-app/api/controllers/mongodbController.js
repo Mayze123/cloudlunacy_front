@@ -12,6 +12,9 @@ const { AppError, asyncHandler } = require("../../utils/errorHandler");
 /**
  * Add a new MongoDB subdomain
  *
+ * This endpoint supports both the old "frontdoor/add-subdomain" pattern
+ * and the new direct MongoDB registration pattern.
+ *
  * POST /api/frontdoor/add-subdomain
  * {
  *   "subdomain": "mongodb",
@@ -20,7 +23,13 @@ const { AppError, asyncHandler } = require("../../utils/errorHandler");
  * }
  */
 exports.addSubdomain = asyncHandler(async (req, res) => {
-  const { subdomain, targetIp, agentId } = req.body;
+  const {
+    subdomain,
+    targetIp,
+    agentId,
+    targetPort = 27017,
+    useTls = true,
+  } = req.body;
 
   if (!subdomain || !targetIp) {
     throw new AppError(
@@ -42,7 +51,8 @@ exports.addSubdomain = asyncHandler(async (req, res) => {
     effectiveAgentId,
     targetIp,
     {
-      useTls: true,
+      useTls,
+      targetPort,
     }
   );
 
@@ -61,6 +71,74 @@ exports.addSubdomain = asyncHandler(async (req, res) => {
     mongodbUrl: result.mongodbUrl,
     connectionString: result.connectionString,
     certificates: result.certificates,
+  });
+});
+
+/**
+ * Register MongoDB - Alternative endpoint that's more REST-like
+ *
+ * This implements the same functionality as addSubdomain but with
+ * a more semantic REST endpoint name.
+ *
+ * POST /api/mongodb/register
+ */
+exports.registerMongoDB = asyncHandler(async (req, res) => {
+  const { agentId, targetIp, targetPort = 27017, useTls = true } = req.body;
+
+  if (!agentId || !targetIp) {
+    throw new AppError(
+      "Missing required parameters: agentId and targetIp are required",
+      400,
+      { received: { agentId, targetIp } }
+    );
+  }
+
+  logger.info(
+    `Registering MongoDB for agent ${agentId} at ${targetIp}:${targetPort}`,
+    {
+      useTls,
+      requestIP: req.ip,
+    }
+  );
+
+  // Register the MongoDB instance
+  const result = await coreServices.mongodbService.registerAgent(
+    agentId,
+    targetIp,
+    {
+      useTls,
+      targetPort,
+    }
+  );
+
+  if (!result.success) {
+    throw new AppError(`Failed to register MongoDB: ${result.error}`, 500);
+  }
+
+  // Generate the connection string
+  const domain = `${agentId}.${
+    process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk"
+  }`;
+  const connectionString = `mongodb://username:password@${domain}:27017/admin?${
+    useTls ? "tls=true&tlsAllowInvalidCertificates=true" : ""
+  }`;
+
+  // Update HAProxy configuration
+  await coreServices.haproxyManager.updateMongoDBBackend(
+    agentId,
+    targetIp,
+    targetPort
+  );
+
+  // Return success response
+  res.status(200).json({
+    success: true,
+    message: "MongoDB registered successfully",
+    domain,
+    connectionString,
+    targetIp,
+    targetPort,
+    tlsEnabled: useTls,
   });
 });
 
@@ -120,17 +198,102 @@ exports.removeSubdomain = asyncHandler(async (req, res) => {
  *
  * GET /api/mongodb/:agentId/test
  */
-exports.testMongoDB = asyncHandler(async (req, res) => {
+exports.testConnection = asyncHandler(async (req, res) => {
   const { agentId } = req.params;
-  const { targetIp } = req.query;
 
   logger.info(`Testing MongoDB connectivity for agent ${agentId}`);
 
   // Test MongoDB connectivity
-  const result = await coreServices.mongodbService.testConnection(
-    agentId,
-    targetIp
+  const result = await coreServices.mongodbService.testConnection(agentId);
+
+  res.status(200).json({
+    success: true,
+    result,
+  });
+});
+
+/**
+ * Get MongoDB connection information for an agent
+ *
+ * GET /api/mongodb/:agentId/connection-info
+ */
+exports.getConnectionInfo = asyncHandler(async (req, res) => {
+  const { agentId } = req.params;
+
+  logger.info(`Getting MongoDB connection info for agent ${agentId}`);
+
+  // Get MongoDB connection information
+  const connectionInfo = await coreServices.mongodbService.getConnectionInfo(
+    agentId
   );
 
-  res.status(200).json(result);
+  if (!connectionInfo) {
+    throw new AppError(
+      `No MongoDB connection information found for agent ${agentId}`,
+      404
+    );
+  }
+
+  res.status(200).json({
+    success: true,
+    connectionInfo: {
+      domain: connectionInfo.domain,
+      connectionString: connectionInfo.connectionString.replace(
+        /:[^:]*@/,
+        ":***@"
+      ), // Hide password
+      host: connectionInfo.host,
+      port: connectionInfo.port,
+      useTls: connectionInfo.useTls,
+    },
+  });
+});
+
+/**
+ * Generate MongoDB credentials for a database
+ *
+ * POST /api/mongodb/:agentId/credentials
+ * {
+ *   "dbName": "myDatabase",
+ *   "username": "optional-username" // If not provided, will be generated
+ * }
+ */
+exports.generateCredentials = asyncHandler(async (req, res) => {
+  const { agentId } = req.params;
+  const { dbName, username } = req.body;
+
+  if (!dbName) {
+    throw new AppError("Missing required parameter: dbName is required", 400);
+  }
+
+  logger.info(
+    `Generating MongoDB credentials for database ${dbName} on agent ${agentId}`
+  );
+
+  // Generate credentials
+  const credentials = await coreServices.mongodbService.generateCredentials(
+    agentId,
+    dbName,
+    username
+  );
+
+  if (!credentials.success) {
+    throw new AppError(
+      `Failed to generate credentials: ${credentials.error}`,
+      500
+    );
+  }
+
+  res.status(201).json({
+    success: true,
+    credentials: {
+      username: credentials.username,
+      password: credentials.password,
+      connectionString: credentials.connectionString.replace(
+        /:[^:]*@/,
+        ":***@"
+      ), // Hide password in logs
+      dbName,
+    },
+  });
 });

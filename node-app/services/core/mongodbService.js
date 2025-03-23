@@ -1,152 +1,121 @@
 /**
  * MongoDB Service
  *
- * Handles MongoDB subdomain registration and management through HAProxy.
+ * Handles MongoDB server management operations:
+ * - Registration of agent MongoDB instances
+ * - Connection testing
+ * - Credential generation
  */
 
-const { exec } = require("child_process");
-const { promisify } = require("util");
-const execAsync = promisify(exec);
+const crypto = require("crypto");
+const { MongoClient } = require("mongodb");
 const logger = require("../../utils/logger").getLogger("mongodbService");
-const pathManager = require("../../utils/pathManager");
-const HAProxyManager = require("./haproxyManager");
+const haproxyManager = require("./haproxyManager");
 
 class MongoDBService {
-  constructor(configManager, routingManager) {
-    this.configManager = configManager;
-    this.routingManager = routingManager;
-    this.haproxyManager = new HAProxyManager(configManager);
+  constructor() {
     this.initialized = false;
     this.mongoDomain = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
-    this.mongoPort = 27017;
-    this.haproxyContainer = process.env.HAPROXY_CONTAINER || "haproxy";
+    this.connectionCache = new Map();
   }
 
   /**
    * Initialize the MongoDB service
    */
   async initialize() {
-    if (this.initialized) return;
-
-    logger.info("Initializing MongoDB service");
-
-    try {
-      // Initialize path manager if needed
-      if (!pathManager.initialized) {
-        await pathManager.initialize();
-      }
-
-      // Initialize HAProxy manager
-      await this.haproxyManager.initialize();
-
-      // Ensure MongoDB port is properly configured in HAProxy
-      await this.ensureMongoDBPort();
-
-      this.initialized = true;
-      logger.info("MongoDB service initialized successfully");
+    if (this.initialized) {
       return true;
-    } catch (err) {
-      logger.error(`Failed to initialize MongoDB service: ${err.message}`, {
-        error: err.message,
-        stack: err.stack,
-      });
-      return false;
     }
+
+    // Initialize HAProxy manager if not already initialized
+    if (!haproxyManager.initialized) {
+      await haproxyManager.initialize();
+    }
+
+    this.initialized = true;
+    logger.info("MongoDB service initialized");
+    return true;
   }
 
   /**
    * Register a MongoDB agent
    *
-   * @param {string} agentId - The agent ID
-   * @param {string} targetIp - The target IP address
+   * @param {string} agentId - Agent ID
+   * @param {string} targetIp - Target IP address
    * @param {Object} options - Additional options
-   * @returns {Promise<Object>} Registration result
+   * @returns {Promise<Object>} - Registration result
    */
   async registerAgent(agentId, targetIp, options = {}) {
-    logger.info(
-      `Registering MongoDB agent ${agentId} with target IP ${targetIp}`
-    );
-
-    if (!this.initialized) {
-      await this.initialize();
-    }
-
-    const useTls = options.useTls !== false; // Default to true
-
     try {
-      // Use the target IP directly instead of a fixed container name
-      // If targetIp is localhost or 127.0.0.1, use the container name with the agent ID
-      let targetHost;
-      if (targetIp === "127.0.0.1" || targetIp === "localhost") {
-        // For local/internal agents, use a container name pattern that can be resolved in the Docker network
-        targetHost = `mongodb-${agentId}`;
-        logger.info(
-          `Using container name ${targetHost} for local agent ${agentId}`
-        );
-      } else {
-        // For external agents, use the IP directly
-        targetHost = targetIp;
-        logger.info(`Using direct IP ${targetIp} for agent ${agentId}`);
+      if (!this.initialized) {
+        await this.initialize();
       }
 
-      // Update HAProxy configuration with the agent ID
-      const updateResult = await this.haproxyManager.updateMongoDBBackend(
-        agentId,
-        targetHost,
-        this.mongoPort
+      // Default options
+      const {
+        useTls = true,
+        targetPort = 27017,
+        username = "admin",
+        password = "adminpassword",
+      } = options;
+
+      logger.info(
+        `Registering MongoDB agent: ${agentId}, IP: ${targetIp}:${targetPort}`
       );
 
-      if (!updateResult.success) {
-        throw new Error(
-          `Failed to update HAProxy configuration: ${updateResult.error}`
-        );
+      // Update HAProxy configuration
+      const result = await haproxyManager.updateMongoDBBackend(
+        agentId,
+        targetIp,
+        targetPort
+      );
+
+      if (!result.success) {
+        logger.error(`Failed to update HAProxy backend: ${result.error}`);
+        return {
+          success: false,
+          error: `Failed to update HAProxy backend: ${result.error}`,
+        };
       }
 
-      // Generate certificates if needed
-      let certificates = null;
-      if (useTls && this.configManager.certificate) {
-        try {
-          certificates =
-            await this.configManager.certificate.generateAgentCertificate(
-              agentId
-            );
-        } catch (certErr) {
-          logger.warn(
-            `Failed to generate certificates for agent ${agentId}: ${certErr.message}`
-          );
-        }
-      }
+      // Build connection information
+      const domain = `${agentId}.${this.mongoDomain}`;
+      const connectionString = `mongodb://${username}:${password}@${domain}:27017/admin?${
+        useTls ? "tls=true&tlsAllowInvalidCertificates=true" : ""
+      }`;
 
-      // Build MongoDB URL with agentId subdomain
-      const mongodbUrl = `mongodb://${agentId}.${this.mongoDomain}:${this.mongoPort}`;
+      // Cache the connection info
+      this.connectionCache.set(agentId, {
+        agentId,
+        targetIp,
+        targetPort,
+        domain,
+        connectionString,
+        useTls,
+        lastUpdated: new Date().toISOString(),
+      });
 
-      // Build connection string
-      const connectionString = useTls
-        ? `mongodb://username:password@${agentId}.${this.mongoDomain}:${this.mongoPort}/admin?ssl=true&tlsAllowInvalidCertificates=true`
-        : `mongodb://username:password@${agentId}.${this.mongoDomain}:${this.mongoPort}/admin`;
+      logger.info(`MongoDB agent ${agentId} registered successfully`);
 
       return {
         success: true,
+        message: `MongoDB agent ${agentId} registered successfully`,
         agentId,
         targetIp,
-        targetHost,
-        mongodbUrl,
+        targetPort,
+        domain,
+        mongodbUrl: `mongodb://${domain}:27017`,
         connectionString,
-        certificates,
-        useTls,
       };
-    } catch (err) {
-      logger.error(
-        `Failed to register MongoDB agent ${agentId}: ${err.message}`,
-        {
-          error: err.message,
-          stack: err.stack,
-        }
-      );
+    } catch (error) {
+      logger.error(`Error registering MongoDB agent: ${error.message}`, {
+        error: error.message,
+        stack: error.stack,
+      });
 
       return {
         success: false,
-        error: err.message,
+        error: `Error registering MongoDB agent: ${error.message}`,
       };
     }
   }
@@ -154,38 +123,46 @@ class MongoDBService {
   /**
    * Deregister a MongoDB agent
    *
-   * @param {string} agentId - The agent ID
-   * @returns {Promise<Object>} Deregistration result
+   * @param {string} agentId - Agent ID
+   * @returns {Promise<Object>} - Deregistration result
    */
   async deregisterAgent(agentId) {
-    logger.info(`Deregistering MongoDB agent ${agentId}`);
-
-    if (!this.initialized) {
-      await this.initialize();
-    }
-
     try {
-      // With HAProxy, we don't need to remove the configuration
-      // since we're using a dynamic agent ID approach with a single backend
-      // We simply return success
+      if (!this.initialized) {
+        await this.initialize();
+      }
+
+      logger.info(`Deregistering MongoDB agent: ${agentId}`);
+
+      // Remove from HAProxy configuration
+      const result = await haproxyManager.removeMongoDBBackend(agentId);
+
+      if (!result.success) {
+        logger.error(`Failed to remove MongoDB backend: ${result.error}`);
+        return {
+          success: false,
+          error: `Failed to remove MongoDB backend: ${result.error}`,
+        };
+      }
+
+      // Remove from connection cache
+      this.connectionCache.delete(agentId);
+
+      logger.info(`MongoDB agent ${agentId} deregistered successfully`);
 
       return {
         success: true,
-        agentId,
         message: `MongoDB agent ${agentId} deregistered successfully`,
       };
-    } catch (err) {
-      logger.error(
-        `Failed to deregister MongoDB agent ${agentId}: ${err.message}`,
-        {
-          error: err.message,
-          stack: err.stack,
-        }
-      );
+    } catch (error) {
+      logger.error(`Error deregistering MongoDB agent: ${error.message}`, {
+        error: error.message,
+        stack: error.stack,
+      });
 
       return {
         success: false,
-        error: err.message,
+        error: `Error deregistering MongoDB agent: ${error.message}`,
       };
     }
   }
@@ -193,159 +170,159 @@ class MongoDBService {
   /**
    * Test MongoDB connection
    *
-   * @param {string} agentId - The agent ID
-   * @param {string} targetIp - The target IP address (optional)
-   * @returns {Promise<Object>} Test result
+   * @param {string} agentId - Agent ID
+   * @param {string} targetIp - Optional override target IP
+   * @returns {Promise<Object>} - Test result
    */
-  async testConnection(agentId, targetIp) {
-    logger.info(`Testing MongoDB connection for agent ${agentId}`);
-
+  async testConnection(agentId, targetIp = null) {
     try {
-      // Test direct connection if target IP is provided
-      if (targetIp) {
-        const directResult = await this._testDirectConnection(targetIp);
-
-        if (!directResult.success) {
-          return {
-            success: false,
-            message: `Failed to connect directly to MongoDB at ${targetIp}:${this.mongoPort}`,
-            error: directResult.error,
-          };
-        }
+      if (!this.initialized) {
+        await this.initialize();
       }
 
-      // Test connection through HAProxy with agentId subdomain
-      const haproxyResult = await this._testHAProxyConnection(agentId);
+      logger.info(`Testing MongoDB connection for agent ${agentId}`);
+
+      // Get connection info from cache
+      const connectionInfo = this.connectionCache.get(agentId);
+
+      if (!connectionInfo && !targetIp) {
+        return {
+          success: false,
+          message: `No connection information found for agent ${agentId}`,
+        };
+      }
+
+      // Use provided target IP or get from connection cache
+      const host = targetIp || connectionInfo.targetIp;
+      const port = connectionInfo ? connectionInfo.targetPort : 27017;
+      const useTls = connectionInfo ? connectionInfo.useTls : true;
+
+      // Build connection URI
+      let uri = `mongodb://admin:adminpassword@${host}:${port}/admin`;
+      if (useTls) {
+        uri += "?tls=true&tlsAllowInvalidCertificates=true";
+      }
+
+      logger.debug(
+        `Connecting to MongoDB at ${uri.replace(/:[^:]*@/, ":***@")}`
+      );
+
+      // Connect to MongoDB
+      const client = new MongoClient(uri, {
+        serverSelectionTimeoutMS: 5000, // 5 seconds timeout
+        connectTimeoutMS: 5000,
+        socketTimeoutMS: 5000,
+      });
+
+      await client.connect();
+      const adminDb = client.db("admin");
+      const pingResult = await adminDb.command({ ping: 1 });
+      await client.close();
+
+      logger.info(`MongoDB connection test successful for agent ${agentId}`);
 
       return {
-        success: haproxyResult.success,
-        message: haproxyResult.success
-          ? `Successfully connected to MongoDB for agent ${agentId}`
-          : `Failed to connect to MongoDB for agent ${agentId}`,
-        directConnection: targetIp ? true : undefined,
-        haproxyConnection: haproxyResult.success,
-        error: haproxyResult.error,
+        success: true,
+        message: "MongoDB connection test successful",
+        result: pingResult,
       };
-    } catch (err) {
+    } catch (error) {
       logger.error(
-        `Error testing MongoDB connection for agent ${agentId}: ${err.message}`,
+        `MongoDB connection test failed for agent ${agentId}: ${error.message}`,
         {
-          error: err.message,
-          stack: err.stack,
+          error: error.message,
+          stack: error.stack,
         }
       );
 
       return {
         success: false,
-        error: err.message,
+        message: `MongoDB connection test failed: ${error.message}`,
       };
     }
   }
 
   /**
-   * Check if MongoDB port is properly configured in HAProxy
+   * Get connection information for a MongoDB agent
+   *
+   * @param {string} agentId - Agent ID
+   * @returns {Promise<Object|null>} - Connection information or null if not found
    */
-  async checkMongoDBPort() {
-    try {
-      const { stdout } = await execAsync(
-        `docker port ${this.haproxyContainer} | grep ${this.mongoPort}`
-      );
-      return stdout.includes(this.mongoPort.toString());
-    } catch (err) {
-      logger.error(`Error checking MongoDB port: ${err.message}`);
-      return false;
+  async getConnectionInfo(agentId) {
+    if (!this.initialized) {
+      await this.initialize();
     }
+
+    // Get connection info from cache
+    const connectionInfo = this.connectionCache.get(agentId);
+
+    if (!connectionInfo) {
+      return null;
+    }
+
+    return connectionInfo;
   }
 
   /**
-   * Ensure MongoDB port is properly configured in HAProxy
+   * Generate credentials for a MongoDB database
+   *
+   * @param {string} agentId - Agent ID
+   * @param {string} dbName - Database name
+   * @param {string} username - Optional username (will be generated if not provided)
+   * @returns {Promise<Object>} - Generated credentials
    */
-  async ensureMongoDBPort() {
-    const portConfigured = await this.checkMongoDBPort();
+  async generateCredentials(agentId, dbName, username = null) {
+    try {
+      if (!this.initialized) {
+        await this.initialize();
+      }
 
-    if (!portConfigured) {
-      logger.warn(
-        `MongoDB port ${this.mongoPort} is not properly configured in HAProxy`
-      );
-      // We rely on docker-compose to configure the ports correctly
-      // If the port is not configured, we log a warning but don't try to fix it automatically
-    } else {
+      // Get connection info from cache
+      const connectionInfo = this.connectionCache.get(agentId);
+
+      if (!connectionInfo) {
+        return {
+          success: false,
+          error: `No connection information found for agent ${agentId}`,
+        };
+      }
+
+      // Generate username if not provided
+      const dbUsername =
+        username || `user_${dbName}_${Math.floor(Math.random() * 10000)}`;
+
+      // Generate a secure random password
+      const password = crypto.randomBytes(16).toString("hex");
+
+      // Build connection string
+      const { domain, useTls } = connectionInfo;
+      const connectionString = `mongodb://${dbUsername}:${password}@${domain}:27017/${dbName}?${
+        useTls ? "tls=true&tlsAllowInvalidCertificates=true" : ""
+      }`;
+
       logger.info(
-        `MongoDB port ${this.mongoPort} is properly configured in HAProxy`
-      );
-    }
-
-    return portConfigured;
-  }
-
-  /**
-   * Test direct connection to MongoDB
-   * @param {string} targetIp - Target IP address
-   * @returns {Promise<Object>} Test result
-   */
-  async _testDirectConnection(targetIp) {
-    try {
-      // Using nc (netcat) to test TCP connection
-      const { stdout, stderr } = await execAsync(
-        `timeout 5 nc -zv ${targetIp} ${this.mongoPort} 2>&1`
+        `Generated credentials for database ${dbName} on agent ${agentId}`
       );
 
-      const isConnected =
-        stdout.includes("succeeded") || stderr.includes("succeeded");
+      return {
+        success: true,
+        username: dbUsername,
+        password,
+        connectionString,
+        dbName,
+      };
+    } catch (error) {
+      logger.error(`Error generating credentials: ${error.message}`, {
+        error: error.message,
+        stack: error.stack,
+      });
 
-      if (isConnected) {
-        logger.info(
-          `Direct connection to ${targetIp}:${this.mongoPort} successful`
-        );
-        return { success: true };
-      } else {
-        logger.warn(
-          `Direct connection to ${targetIp}:${this.mongoPort} failed`
-        );
-        return {
-          success: false,
-          error: `Could not connect to ${targetIp}:${this.mongoPort}`,
-        };
-      }
-    } catch (err) {
-      logger.error(`Direct connection test failed: ${err.message}`);
-      return { success: false, error: err.message };
-    }
-  }
-
-  /**
-   * Test connection through HAProxy
-   * @param {string} agentId - Agent ID for the subdomain
-   * @returns {Promise<Object>} Test result
-   */
-  async _testHAProxyConnection(agentId) {
-    try {
-      // Create a command to test the connection via HAProxy
-      // We use openssl s_client to test the TLS connection with SNI
-      const domain = `${agentId}.${this.mongoDomain}`;
-      const { stdout, stderr } = await execAsync(
-        `timeout 5 openssl s_client -connect localhost:${this.mongoPort} -servername ${domain} -verify_return_error 2>&1`
-      );
-
-      // Check if the TLS handshake completed successfully
-      const isConnected =
-        stdout.includes("Verification") || stderr.includes("Verification");
-
-      if (isConnected) {
-        logger.info(`Connection through HAProxy to ${domain} successful`);
-        return { success: true };
-      } else {
-        logger.warn(`Connection through HAProxy to ${domain} failed`);
-        return {
-          success: false,
-          error: `Could not connect to ${domain} through HAProxy`,
-        };
-      }
-    } catch (err) {
-      logger.error(`HAProxy connection test failed: ${err.message}`);
-      return { success: false, error: err.message };
+      return {
+        success: false,
+        error: `Error generating credentials: ${error.message}`,
+      };
     }
   }
 }
 
-module.exports = MongoDBService;
+module.exports = new MongoDBService();

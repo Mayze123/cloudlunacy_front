@@ -203,6 +203,55 @@ class HAProxyManager {
   }
 
   /**
+   * Remove MongoDB backend for an agent
+   *
+   * @param {string} agentId - The agent ID
+   * @returns {Promise<Object>} Result object
+   */
+  async removeMongoDBBackend(agentId) {
+    logger.info(`Removing MongoDB backend for agentId: ${agentId}`);
+
+    if (!this.initialized) {
+      await this.initialize();
+    }
+
+    try {
+      // We don't actually remove the server line from HAProxy config
+      // since we use a dynamic backend approach with agent_id variable.
+      // We just remove the route from our cache.
+
+      // Check if route exists
+      if (!this.routeCache.has(`tcp:${agentId}`)) {
+        return {
+          success: false,
+          error: `MongoDB backend for agentId ${agentId} not found`,
+        };
+      }
+
+      // Remove route from cache
+      this.routeCache.delete(`tcp:${agentId}`);
+
+      // No need to reload HAProxy since the config didn't change
+      // The SNI routing will simply not match for this agent ID anymore
+
+      return {
+        success: true,
+        message: `MongoDB backend for agentId ${agentId} removed successfully`,
+      };
+    } catch (err) {
+      logger.error(`Failed to remove MongoDB backend: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+      });
+
+      return {
+        success: false,
+        error: err.message,
+      };
+    }
+  }
+
+  /**
    * Reload HAProxy configuration
    */
   async _reloadHAProxyConfig() {

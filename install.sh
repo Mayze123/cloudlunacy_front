@@ -859,6 +859,32 @@ update_repository() {
   return 0
 }
 
+# Function to update HAProxy config to enable MongoDB frontend
+enable_mongodb_frontend() {
+  log "Enabling MongoDB frontend in HAProxy configuration"
+  
+  HAPROXY_CFG="/etc/haproxy/haproxy.cfg"
+  
+  # Check if the MongoDB frontend section is commented out
+  if grep -q "# frontend mongodb-in" "$HAPROXY_CFG"; then
+    # Uncomment the MongoDB frontend section
+    sed -i 's/# frontend mongodb-in/frontend mongodb-in/' "$HAPROXY_CFG"
+    sed -i 's/#    bind \*:27017/    bind *:27017/' "$HAPROXY_CFG"
+    sed -i 's/#    mode tcp/    mode tcp/' "$HAPROXY_CFG"
+    sed -i 's/#    option tcplog/    option tcplog/' "$HAPROXY_CFG"
+    sed -i 's/#    default_backend/    default_backend/' "$HAPROXY_CFG"
+    
+    log "MongoDB frontend enabled in HAProxy configuration"
+    
+    # Reload HAProxy to apply changes
+    systemctl reload haproxy
+    
+    log "HAProxy reloaded with MongoDB frontend enabled"
+  else
+    log "MongoDB frontend is already enabled in HAProxy configuration"
+  fi
+}
+
 # Main installation flow
 main() {
   # Parse command line arguments
@@ -936,6 +962,9 @@ main() {
   create_config_files || error_exit "Failed to create configuration files"
   
   create_networks || error_exit "Failed to create Docker networks"
+  
+  # Enable MongoDB frontend in HAProxy
+  enable_mongodb_frontend
   
   if ! start_containers; then
     log_warn "Container startup reported issues, but will attempt to continue..."
