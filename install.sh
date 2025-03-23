@@ -230,6 +230,12 @@ clone_repository() {
   # Check if we're already in the cloned repository
   if [ -f "./install.sh" ] && [ -d "./node-app" ]; then
     log "Already in the repository directory, skipping clone step"
+    # Set BASE_DIR to current directory when already in the repository
+    BASE_DIR=$(pwd)
+    CONFIG_DIR="${BASE_DIR}/config"
+    AGENTS_CONFIG_DIR="${CONFIG_DIR}/agents"
+    CERTS_DIR="${BASE_DIR}/config/certs"
+    log "Using current directory as base: ${BASE_DIR}"
     update_install_state "repository_cloned" "true"
     return 0
   fi
