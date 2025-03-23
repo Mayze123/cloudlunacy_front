@@ -20,7 +20,7 @@ const LetsEncryptManager = require("./letsencryptManager");
 
 // Create instances
 const haproxyConfigService = new HAProxyConfigManager();
-const haproxyManager = new HAProxyManager(configService);
+const haproxyManager = new HAProxyManager(null);
 const certificateService = new CertificateManager(configService);
 const routingService = new RoutingService();
 const letsencryptService = new LetsEncryptManager(configService);
@@ -91,10 +91,8 @@ const coreServices = {
       }
 
       // Initialize MongoDB service first before agent service since agent service depends on it
-      // Pass the haproxyService instance to avoid circular dependencies
-      const mongoInitialized = await mongodbService.initialize(
-        haproxyConfigService
-      );
+      // Pass the haproxyManager instance to avoid circular dependencies
+      const mongoInitialized = await mongodbService.initialize(haproxyManager);
       if (!mongoInitialized) {
         logger.error("Failed to initialize MongoDB service");
         return false;
