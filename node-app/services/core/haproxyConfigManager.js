@@ -20,12 +20,19 @@ class HAProxyConfigManager {
     this.haproxyContainer = process.env.HAPROXY_CONTAINER || "haproxy";
     this.configCache = null;
     this.lastBackupPath = null;
+    this._initializing = false;
   }
 
   /**
    * Initialize the HAProxy config manager
    */
   async initialize() {
+    // Prevent re-initialization and circular dependencies
+    if (this.initialized || this._initializing) {
+      return this.initialized;
+    }
+
+    this._initializing = true;
     logger.info("Initializing HAProxy config manager");
 
     try {
@@ -41,13 +48,25 @@ class HAProxyConfigManager {
       // Ensure backup directory exists
       await fs.mkdir(this.backupDir, { recursive: true });
 
-      // Initial load of config
-      await this.loadConfig();
+      // Initial load of config without recursively calling initialize
+      try {
+        logger.debug(`Loading HAProxy config from ${this.configPath}`);
+        const content = await fs.readFile(this.configPath, "utf8");
+        this.configCache = YAML.parse(content);
+      } catch (err) {
+        logger.warn(
+          `Could not load HAProxy config: ${err.message}. Creating default.`
+        );
+        // Create a default config if loading fails
+        this.configCache = this._createDefaultConfig();
+      }
 
       this.initialized = true;
+      this._initializing = false;
       logger.info("HAProxy config manager initialized successfully");
       return true;
     } catch (err) {
+      this._initializing = false;
       logger.error(
         `Failed to initialize HAProxy config manager: ${err.message}`,
         {
@@ -63,7 +82,9 @@ class HAProxyConfigManager {
    * Load HAProxy configuration
    */
   async loadConfig() {
-    if (!this.initialized) {
+    // Skip initialization if already being initialized
+    // This prevents circular dependencies in the initialization process
+    if (!this.initialized && !this._initializing) {
       await this.initialize();
     }
 
@@ -591,6 +612,51 @@ class HAProxyConfigManager {
       logger.error(`Failed to remove backend '${backendName}': ${err.message}`);
       throw err;
     }
+  }
+
+  /**
+   * Create a default HAProxy configuration
+   * @returns {Object} Default configuration object
+   * @private
+   */
+  _createDefaultConfig() {
+    logger.info("Creating default HAProxy configuration");
+    return {
+      global: {
+        maxconn: 4096,
+        user: "haproxy",
+        group: "haproxy",
+        daemon: true,
+        stats: {
+          socket:
+            "/var/run/haproxy.sock mode 660 level admin expose-fd listeners",
+          timeout: "30s",
+        },
+      },
+      defaults: {
+        log: "global",
+        mode: "http",
+        option: ["httplog", "dontlognull"],
+        timeout: {
+          connect: "5000ms",
+          client: "50000ms",
+          server: "50000ms",
+        },
+      },
+      frontends: {
+        "http-in": {
+          bind: "*:80",
+          mode: "http",
+          default_backend: "node-app-backend",
+        },
+      },
+      backends: {
+        "node-app-backend": {
+          mode: "http",
+          server: "node-app node-app:3005 check",
+        },
+      },
+    };
   }
 }
 
