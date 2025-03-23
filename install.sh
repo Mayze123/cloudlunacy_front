@@ -505,26 +505,30 @@ start_containers() {
   if docker ps | grep -q "haproxy" && docker ps | grep -q "node-app"; then
     log "Containers are already running"
     
-    if [ "$UPDATE_MODE" = true ] || [ "$FORCE_RECREATE" = true ]; then
-      log "Update mode: Restarting containers to apply any configuration changes..."
-      docker-compose restart
+    if [ "$UPDATE_MODE" = true ]; then
+      log "Update mode: Rebuilding and recreating containers with new code..."
+      docker-compose up -d --build
+    elif [ "$FORCE_RECREATE" = true ]; then
+      log "Force recreate specified: Removing and recreating containers..."
+      docker-compose down
+      docker-compose up -d --build
     else
-      log "Skipping restart since neither update nor force-recreate was specified"
+      log "Skipping rebuild since neither update nor force-recreate was specified"
     fi
     
     update_install_state "containers_started" "true"
     return 0
   fi
   
-  # If containers exist but are stopped, restart them
+  # If containers exist but are stopped
   if docker ps -a | grep -q "haproxy" && docker ps -a | grep -q "node-app"; then
-    log "Containers exist but are not running, restarting them..."
+    log "Containers exist but are not running..."
     
-    if [ "$FORCE_RECREATE" = true ]; then
-      log "Force recreate specified: Removing and recreating containers..."
-      docker-compose down
+    if [ "$UPDATE_MODE" = true ] || [ "$FORCE_RECREATE" = true ]; then
+      log "Update/force-recreate mode: Rebuilding and recreating containers..."
       docker-compose up -d --build
     else
+      log "Starting existing containers..."
       docker-compose start
     fi
   else
@@ -723,6 +727,35 @@ For more information, visit: https://github.com/Mayze123/cloudlunacy_front
 EOF
 }
 
+# Update repository with latest code
+update_repository() {
+  if [ ! -d "${BASE_DIR}/.git" ]; then
+    log_warn "Not a git repository, skipping code update"
+    return 0
+  fi
+  
+  log "Updating repository with latest code..."
+  cd "${BASE_DIR}" || return 1
+  
+  # Store current branch
+  current_branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "detached")
+  
+  # Stash any local changes
+  if ! git diff-index --quiet HEAD --; then
+    log "Local changes detected, stashing them..."
+    git stash
+  fi
+  
+  # Pull the latest code
+  if ! git pull origin "${current_branch}"; then
+    log_error "Failed to pull latest code"
+    return 1
+  fi
+  
+  log_success "Repository updated successfully to the latest version"
+  return 0
+}
+
 # Main installation flow
 main() {
   # Parse command line arguments
@@ -739,11 +772,12 @@ main() {
       echo ""
       echo "The update will perform the following steps:"
       echo "  1. Check prerequisites"
-      echo "  2. Backup existing configurations"
-      echo "  3. Update configuration files if needed"
-      echo "  4. Maintain Docker networks"
-      echo "  5. Restart containers if necessary"
-      echo "  6. Verify services"
+      echo "  2. Update repository code"
+      echo "  3. Backup existing configurations"
+      echo "  4. Update configuration files if needed"
+      echo "  5. Maintain Docker networks"
+      echo "  6. Rebuild and restart containers"
+      echo "  7. Verify services"
       echo ""
     else
       echo "===================================================================="
@@ -789,6 +823,11 @@ main() {
   else
     log "Repository already exists, skipping clone step"
     update_install_state "repository_cloned" "true"
+    
+    # If in update mode, pull the latest code
+    if [ "$UPDATE_MODE" = true ]; then
+      update_repository || log_warn "Failed to update repository code, continuing with existing code"
+    fi
   fi
   
   create_config_files || error_exit "Failed to create configuration files"
