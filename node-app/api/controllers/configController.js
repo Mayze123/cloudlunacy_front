@@ -27,7 +27,6 @@ exports.getConfig = asyncHandler(async (req, res) => {
   // Get port configuration
   const ports = {
     node: process.env.NODE_PORT || 3005,
-    traefik: 8081,
     mongo: 27017,
   };
 
@@ -40,59 +39,24 @@ exports.getConfig = asyncHandler(async (req, res) => {
 });
 
 /**
- * Get Traefik configuration
- *
- * GET /api/frontdoor/config
- */
-exports.getTraefikConfig = asyncHandler(async (req, res) => {
-  logger.info("Getting Traefik configuration");
-
-  // Make sure config manager is initialized
-  await coreServices.config.initialize();
-
-  // Get main configuration
-  const config = coreServices.config.configs.main;
-
-  res.status(200).json({
-    success: true,
-    config,
-  });
-});
-
-/**
- * Repair configurations
+ * Repair system configuration
  *
  * POST /api/config/repair
  */
 exports.repairConfig = asyncHandler(async (req, res) => {
-  logger.info("Repairing configurations");
+  logger.info("Repairing system configuration");
 
-  // Repair configurations
-  await coreServices.config.repair();
-
-  // Ensure MongoDB port is properly configured
-  const mongodbPortFixed = await coreServices.mongodb.ensureMongoDBPort();
-
-  // Ensure MongoDB entrypoint is properly configured
-  const mongodbEntrypointFixed =
-    await coreServices.mongodb.ensureMongoDBEntrypoint();
-
-  // Restart Traefik to apply changes
-  await coreServices.mongodb.restartTraefik();
+  // Repair routing configuration
+  await coreServices.configService.repair();
 
   res.status(200).json({
     success: true,
-    message: "Configurations repaired successfully",
-    details: {
-      configRepaired: true,
-      mongodbPortFixed,
-      mongodbEntrypointFixed,
-    },
+    message: "System configuration repaired",
   });
 });
 
 /**
- * Get agent configuration
+ * Get agent-specific configuration
  *
  * GET /api/config/:agentId
  */
@@ -101,11 +65,11 @@ exports.getAgentConfig = asyncHandler(async (req, res) => {
 
   logger.info(`Getting configuration for agent ${agentId}`);
 
-  // Make sure config manager is initialized
-  await coreServices.config.initialize();
+  // Make sure config service is initialized
+  await coreServices.configService.initialize();
 
-  // Get agent configuration
-  const config = await coreServices.config.getAgentConfig(agentId);
+  // Get agent-specific configuration
+  const config = await coreServices.configService.getAgentConfig(agentId);
 
   res.status(200).json({
     success: true,

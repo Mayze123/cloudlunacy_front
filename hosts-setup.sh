@@ -9,7 +9,7 @@ fi
 
 # Hostnames to add
 HOSTS=(
-  "traefik.localhost"
+  "haproxy.localhost"
   "test.mongodb.localhost"
   "test2.mongodb.localhost"
   "apps.localhost"

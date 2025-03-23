@@ -36,25 +36,25 @@ This guide explains how to set up and run the CloudLunacy Front project in a loc
 
 3. Access the services:
    - Node.js API: http://localhost:3005
-   - Traefik Dashboard: http://traefik.localhost:8081/dashboard/
+   - HAProxy Stats: http://haproxy.localhost:8081/stats
    - Test MongoDB: mongodb://admin:password@test.mongodb.localhost:27017
 
 ## Development Environment
 
 The development setup includes:
 
-- **Traefik**: Reverse proxy with dashboard
+- **HAProxy**: Reverse proxy with stats dashboard
 - **Node.js App**: The CloudLunacy Front application with hot-reloading
 - **Test MongoDB**: A MongoDB instance for testing
 
 ## Directory Structure
 
-- `config/`: Configuration files for Traefik
-  - `dynamic.yml`: Dynamic routing configuration
-  - `traefik.yml`: Static Traefik configuration
+- `config/`: Configuration files for HAProxy
+  - `haproxy/`: HAProxy configuration directory
+  - `haproxy/haproxy.cfg`: HAProxy configuration file
 - `logs/`: Log files
 - `node-app/`: The Node.js application code
-- `traefik-certs/`: SSL certificates for Traefik
+- `config/haproxy/certs/`: SSL certificates for HAProxy
 
 ## Testing MongoDB Routing
 
@@ -88,7 +88,7 @@ If you see errors about ports already in use, you may have services running on p
 Add the following entries to your `/etc/hosts` file:
 
 ````
-127.0.0.1 traefik.localhost
+127.0.0.1 haproxy.localhost
 127.0.0.1 test.mongodb.localhost
 127.0.0.1 test2.mongodb.localhost
 127.0.0.1 apps.localhost
@@ -97,8 +97,8 @@ Add the following entries to your `/etc/hosts` file:
 If containers can't communicate, try recreating the networks:
 
 ```bash
-docker network rm traefik-network cloudlunacy-network
-docker network create traefik-network
+docker network rm haproxy-network cloudlunacy-network
+docker network create haproxy-network
 docker network create cloudlunacy-network
 ````
 
@@ -122,7 +122,7 @@ npm run dev:docker:down
 To view logs from a specific container:
 
 ```bash
-docker logs traefik-dev
+docker logs haproxy-dev
 docker logs cloudlunacy-front-dev
 docker logs mongodb-test
 ```
@@ -133,7 +133,7 @@ To access a shell in a container:
 
 ```bash
 docker exec -it cloudlunacy-front-dev sh
-docker exec -it traefik-dev sh
+docker exec -it haproxy-dev sh
 docker exec -it mongodb-test bash
 ```
 
@@ -153,7 +153,7 @@ If you need to test MongoDB routing functionality:
 
 1. Start the agent project's development environment which includes MongoDB on port 27017
 2. Configure the front project to route to the agent's MongoDB instance
-3. Note that the front project's Traefik is configured to listen on port 27018 for MongoDB connections to avoid conflicts
+3. Note that the front project's HAProxy is configured to listen on port 27018 for MongoDB connections to avoid conflicts
 
 To connect to MongoDB through the front project's routing:
 
@@ -170,6 +170,6 @@ To avoid conflicts between the front and agent projects, we use the following po
 | Service     | Front Project   | Agent Project |
 | ----------- | --------------- | ------------- |
 | Node.js API | 3005            | 3006          |
-| MongoDB     | 27018 (Traefik) | 27017         |
+| MongoDB     | 27018 (HAProxy) | 27017         |
 
 When testing both projects together, make sure to use the correct ports for each service.

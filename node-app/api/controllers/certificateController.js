@@ -18,8 +18,11 @@ const MONGO_CA_PATH =
 exports.getMongoCA = async (req, res) => {
   try {
     // Check if certificate service is available
-    if (coreServices.certificate && coreServices.certificate.initialized) {
-      const caResult = await coreServices.certificate.getCA();
+    if (
+      coreServices.certificateService &&
+      coreServices.certificateService.initialized
+    ) {
+      const caResult = await coreServices.certificateService.getCA();
 
       if (caResult.success) {
         res.set("Content-Type", "application/x-pem-file");
@@ -83,20 +86,21 @@ exports.getAgentCertificates = asyncHandler(async (req, res) => {
       (req.user.role === "agent" && req.user.agentId === agentId))
   ) {
     // Initialize certificate service if needed
-    if (!coreServices.certificate) {
+    if (!coreServices.certificateService) {
       throw new AppError("Certificate service not available", 500);
     }
 
-    if (!coreServices.certificate.initialized) {
+    if (!coreServices.certificateService.initialized) {
       logger.info("Initializing certificate service");
-      await coreServices.certificate.initialize();
+      await coreServices.certificateService.initialize();
     }
 
     logger.info(`Generating certificate for agent ${agentId}`);
-    const certResult = await coreServices.certificate.generateAgentCertificate(
-      agentId,
-      targetIp
-    );
+    const certResult =
+      await coreServices.certificateService.generateAgentCertificate(
+        agentId,
+        targetIp
+      );
 
     logger.info(
       `Certificate generation result: ${JSON.stringify({
@@ -124,4 +128,52 @@ exports.getAgentCertificates = asyncHandler(async (req, res) => {
   } else {
     throw new AppError("Unauthorized to access these certificates", 403);
   }
+});
+
+/**
+ * Issue or renew Let's Encrypt wildcard certificate
+ *
+ * POST /api/certificates/letsencrypt
+ * Requires admin role
+ */
+exports.issueLetsEncryptCert = asyncHandler(async (req, res) => {
+  // Check if user is authorized (admin only)
+  if (!req.user || req.user.role !== "admin") {
+    throw new AppError("Unauthorized - Admin access required", 403);
+  }
+
+  // Check if Let's Encrypt service is available
+  if (!coreServices.letsencryptService) {
+    throw new AppError("Let's Encrypt service not available", 500);
+  }
+
+  if (!coreServices.letsencryptService.initialized) {
+    logger.info("Initializing Let's Encrypt service");
+    await coreServices.letsencryptService.initialize();
+  }
+
+  logger.info("Issuing/renewing Let's Encrypt certificate");
+
+  // Check if we need to force renewal
+  const forceRenewal = req.query.force === "true";
+
+  let result;
+  if (forceRenewal) {
+    // Force issuance of new certificate
+    result = await coreServices.letsencryptService.issueCertificates();
+  } else {
+    // Only renew if needed
+    result = await coreServices.letsencryptService.renewIfNeeded();
+  }
+
+  return res.status(200).json({
+    success: true,
+    message:
+      result.renewed === false
+        ? "Certificate is still valid, no renewal needed"
+        : "Certificate successfully issued/renewed",
+    domain: result.domain,
+    wildcard: result.wildcard,
+    renewed: result.renewed !== false,
+  });
 });

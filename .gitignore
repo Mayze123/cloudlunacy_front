@@ -3,7 +3,7 @@ node_modules/
 .env.dev
 logs/
 config/certs/
-traefik-certs/
+config/haproxy/certs/
 *.srl
 *.log
 acme.json

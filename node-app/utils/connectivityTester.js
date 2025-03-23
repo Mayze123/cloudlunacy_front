@@ -1,29 +1,33 @@
 // utils/connectivityTester.js
 
 const net = require("net");
+const { exec } = require("child_process");
 const { promisify } = require("util");
-const exec = promisify(require("child_process").exec);
-const logger = require("./logger").getLogger("connectivityTester");
 const fs = require("fs").promises;
 const path = require("path");
+const logger = require("./logger").getLogger("connectivityTester");
+const { getConfigDir, ensureDirectory } = require("./pathManager");
+
+const execAsync = promisify(exec);
 
 class ConnectivityTester {
   constructor() {
-    // Configuration
-    this.mongoDomain = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
-    this.agentsConfigDir =
-      process.env.AGENTS_CONFIG_DIR || "/opt/cloudlunacy_front/config/agents";
-    this.mongoPort = 27017;
-    this.connectTimeout = 5000; // 5 seconds
-    this.testResultsPath =
-      process.env.TEST_RESULTS_PATH ||
-      "/opt/cloudlunacy_front/logs/connectivity-tests.json";
+    // Default MongoDB port
+    this.mongoPort = process.env.MONGODB_PORT || 27017;
+
+    // Results directory
+    this.resultsDir = path.join(getConfigDir(), "test-results");
+
+    // Test timeout in milliseconds (default: 5 seconds)
+    this.testTimeout = process.env.TEST_TIMEOUT
+      ? parseInt(process.env.TEST_TIMEOUT, 10)
+      : 5000;
   }
 
   /**
-   * Test MongoDB port connectivity
-   * @param {string} host - Host to connect to
-   * @param {number} port - Port to connect to (default: 27017)
+   * Test TCP connection to a host and port
+   * @param {string} host - The host to connect to
+   * @param {number} port - The port to connect to (default: MongoDB port)
    * @returns {Promise<boolean>} - True if connection successful
    */
   async testConnection(host, port = this.mongoPort) {
@@ -33,10 +37,8 @@ class ConnectivityTester {
       const socket = net.createConnection({
         host,
         port,
+        timeout: this.testTimeout,
       });
-
-      // Set connection timeout
-      socket.setTimeout(this.connectTimeout);
 
       // Connection successful
       socket.on("connect", () => {
@@ -61,21 +63,21 @@ class ConnectivityTester {
   }
 
   /**
-   * Test local Traefik listener
+   * Test local HAProxy listener
    */
-  async testTraefikListener() {
-    logger.info("Testing Traefik MongoDB listener on localhost");
+  async testHAProxyListener() {
+    logger.info("Testing HAProxy MongoDB listener on localhost");
 
     const result = await this.testConnection("localhost", this.mongoPort);
 
     if (result) {
-      logger.info("Traefik is correctly listening on port 27017");
+      logger.info("HAProxy is correctly listening on port 27017");
     } else {
-      logger.warn("Traefik is not listening on port 27017");
+      logger.warn("HAProxy is not listening on port 27017");
     }
 
     return {
-      service: "traefik_listener",
+      service: "haproxy_listener",
       port: this.mongoPort,
       success: result,
       timestamp: new Date().toISOString(),
@@ -89,7 +91,7 @@ class ConnectivityTester {
     try {
       logger.debug(`Checking DNS resolution for ${domain}...`);
 
-      const { stdout } = await exec(`host ${domain}`);
+      const { stdout } = await execAsync(`host ${domain}`);
       logger.debug(`DNS resolution result: ${stdout.trim()}`);
 
       // Check if it resolved to an IP address
@@ -98,159 +100,141 @@ class ConnectivityTester {
       return {
         domain,
         success: hasIpAddress,
-        result: stdout.trim(),
+        message: stdout.trim(),
         timestamp: new Date().toISOString(),
       };
     } catch (err) {
-      logger.debug(`DNS resolution for ${domain} failed: ${err.message}`);
-
+      logger.error(`DNS resolution check failed: ${err.message}`);
       return {
         domain,
         success: false,
-        error: err.message,
+        message: err.message,
         timestamp: new Date().toISOString(),
       };
     }
   }
 
   /**
-   * Get list of registered agents
+   * Get list of agents to test
    */
   async getAgentList() {
-    try {
-      const files = await fs.readdir(this.agentsConfigDir);
-      return files
-        .filter((file) => file.endsWith(".yml") && file !== "default.yml")
-        .map((file) => file.replace(".yml", ""));
-    } catch (err) {
-      logger.error(`Failed to read agent directory: ${err.message}`);
-      return [];
-    }
+    // For now, we just test a few standard agents
+    // This could be expanded to retrieve the actual list of configured agents
+    return ["test", "test2", "agent1"];
   }
 
   /**
-   * Test all registered agents for MongoDB connectivity
+   * Test connectivity to all agent endpoints
    */
   async testAllAgents() {
-    logger.info("Testing MongoDB connectivity for all registered agents");
-
-    // Get list of agents
     const agents = await this.getAgentList();
-    logger.info(`Found ${agents.length} registered agents`);
-
-    if (agents.length === 0) {
-      return {
-        success: true,
-        message: "No agents registered",
-        agents: [],
-      };
-    }
-
-    // Test each agent
     const results = [];
 
-    for (const agentId of agents) {
-      logger.info(`Testing connectivity for agent ${agentId}`);
+    for (const agent of agents) {
+      logger.info(`Testing connectivity to agent: ${agent}`);
 
-      // Generate MongoDB domain for this agent
-      const mongoUrl = `${agentId}.${this.mongoDomain}`;
+      // Test DNS resolution
+      const domainName = `${agent}.mongodb.cloudlunacy.uk`;
+      const dnsResult = await this.checkDnsResolution(domainName);
+      results.push(dnsResult);
 
-      // Check DNS resolution
-      const dnsResult = await this.checkDnsResolution(mongoUrl);
+      // If DNS resolved, test connection
+      if (dnsResult.success) {
+        const connectionResult = await this.testConnection(domainName);
 
-      // Test connectivity
-      const connectResult = await this.testConnection(mongoUrl);
-
-      results.push({
-        agentId,
-        mongoUrl,
-        dnsResolution: dnsResult,
-        connectivity: {
-          success: connectResult,
+        results.push({
+          service: `agent_${agent}`,
+          host: domainName,
+          port: this.mongoPort,
+          success: connectionResult,
           timestamp: new Date().toISOString(),
-        },
-      });
+        });
+
+        if (connectionResult) {
+          logger.info(
+            `Connection to ${domainName}:${this.mongoPort} successful`
+          );
+        } else {
+          logger.warn(
+            `Connection to ${domainName}:${this.mongoPort} failed, even though DNS resolution was successful`
+          );
+        }
+      } else {
+        logger.warn(
+          `DNS resolution for ${domainName} failed, skipping connection test`
+        );
+        results.push({
+          service: `agent_${agent}`,
+          host: domainName,
+          port: this.mongoPort,
+          success: false,
+          error: "DNS resolution failed",
+          timestamp: new Date().toISOString(),
+        });
+      }
     }
 
-    // Calculate overall success
-    const allSuccess = results.every(
-      (result) => result.dnsResolution.success && result.connectivity.success
-    );
-
-    // Save results
-    await this.saveTestResults(results);
-
     return {
-      success: allSuccess,
-      message: allSuccess
-        ? "All agents are accessible"
-        : "Some agents have connectivity issues",
-      agents: results,
+      title: "Agent connectivity tests",
+      timestamp: new Date().toISOString(),
+      tests: results,
     };
   }
 
   /**
-   * Run a full connectivity test suite
+   * Run a full connectivity test
    */
   async runFullTest() {
-    logger.info("Starting full connectivity test suite");
+    try {
+      logger.info("Starting full connectivity test");
 
-    // Test Traefik listener
-    const traefikTest = await this.testTraefikListener();
+      // Create results directory if it doesn't exist
+      await ensureDirectory(this.resultsDir);
 
-    // Test agent connectivity
-    const agentTests = await this.testAllAgents();
+      // Test local HAProxy instance
+      const haproxyTest = await this.testHAProxyListener();
 
-    // Compile all results
-    const results = {
-      traefik: traefikTest,
-      agents: agentTests,
-      timestamp: new Date().toISOString(),
-    };
+      // Test agent connections
+      const agentTests = await this.testAllAgents();
 
-    return results;
+      // Combine results
+      const results = {
+        timestamp: new Date().toISOString(),
+        haproxy: haproxyTest,
+        agents: agentTests,
+      };
+
+      // Save results
+      await this.saveTestResults(results);
+
+      return results;
+    } catch (err) {
+      logger.error(`Full connectivity test failed: ${err.message}`);
+      throw err;
+    }
   }
 
   /**
-   * Save test results to a JSON file
+   * Save test results to file
    */
   async saveTestResults(results) {
     try {
-      // Create directory if it doesn't exist
-      const dir = path.dirname(this.testResultsPath);
-      await fs.mkdir(dir, { recursive: true });
+      // Format filename with timestamp
+      const timestamp = new Date()
+        .toISOString()
+        .replace(/:/g, "-")
+        .replace(/\..+/, "");
+      const fileName = `connectivity-test-${timestamp}.json`;
+      const filePath = path.join(this.resultsDir, fileName);
 
-      // Read existing results if available
-      let history = [];
-      try {
-        const content = await fs.readFile(this.testResultsPath, "utf8");
-        history = JSON.parse(content);
-      } catch (err) {
-        // File doesn't exist yet, that's fine
-      }
+      // Write results to file
+      await fs.writeFile(filePath, JSON.stringify(results, null, 2));
+      logger.info(`Test results saved to ${filePath}`);
 
-      // Add new results to history (keeping last 100 entries)
-      history.push({
-        results,
-        timestamp: new Date().toISOString(),
-      });
-
-      // Limit history size
-      if (history.length > 100) {
-        history = history.slice(-100);
-      }
-
-      // Save updated history
-      await fs.writeFile(
-        this.testResultsPath,
-        JSON.stringify(history, null, 2)
-      );
-      logger.debug("Test results saved successfully");
-
-      return true;
+      return filePath;
     } catch (err) {
       logger.error(`Failed to save test results: ${err.message}`);
-      return false;
+      throw err;
     }
   }
 }

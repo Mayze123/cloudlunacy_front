@@ -23,8 +23,7 @@ class PathManager {
     // Derived paths
     this.derivedPaths = {
       // Config paths
-      dynamicConfig: path.join(this.basePaths.config, "dynamic.yml"),
-      traefikConfig: path.join(this.basePaths.config, "traefik.yml"),
+      haproxyConfig: path.join(this.basePaths.config, "haproxy/haproxy.cfg"),
       agentsConfig: path.join(this.basePaths.config, "agents"),
 
       // Certificate paths
@@ -40,9 +39,11 @@ class PathManager {
 
     // External paths (outside container)
     this.externalPaths = {
-      traefikConfig: process.env.EXTERNAL_TRAEFIK_CONFIG || "/etc/traefik",
-      traefikCerts: process.env.EXTERNAL_TRAEFIK_CERTS || "/traefik-certs",
-      traefikLogs: process.env.EXTERNAL_TRAEFIK_LOGS || "/var/log/traefik",
+      haproxyConfig:
+        process.env.EXTERNAL_HAPROXY_CONFIG || "/app/config/haproxy",
+      haproxyCerts:
+        process.env.EXTERNAL_HAPROXY_CERTS || "/config/haproxy/certs",
+      haproxyLogs: process.env.EXTERNAL_HAPROXY_LOGS || "/var/log/haproxy",
     };
 
     // Initialize path resolution status
@@ -238,6 +239,47 @@ class PathManager {
       ...this.derivedPaths,
       ...this.externalPaths,
     };
+  }
+
+  /**
+   * Resolve the path for dynamic configuration
+   * @returns {string} Path to dynamic configuration file
+   */
+  resolveDynamicConfigPath() {
+    // Default to HAProxy config path
+    return this.derivedPaths.haproxyConfig;
+  }
+
+  /**
+   * Resolve the base path
+   * @returns {string} Base path
+   */
+  resolveBasePath() {
+    return this.basePaths.config;
+  }
+
+  /**
+   * Resolve the config path
+   * @returns {string} Config path
+   */
+  resolveConfigPath() {
+    return this.basePaths.config;
+  }
+
+  /**
+   * Resolve the agents config path
+   * @returns {string} Agents config path
+   */
+  resolveAgentsPath() {
+    return this.derivedPaths.agentsConfig;
+  }
+
+  /**
+   * Resolve the docker compose path
+   * @returns {string} Docker compose path
+   */
+  resolveDockerComposePath() {
+    return this.derivedPaths.dockerCompose;
   }
 }
 

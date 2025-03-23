@@ -17,8 +17,8 @@ class ConfigService {
     this.paths = {
       base: process.env.CONFIG_BASE_PATH || "/app/config",
       agents: process.env.AGENTS_CONFIG_DIR || "/app/config/agents",
-      dynamic: process.env.DYNAMIC_CONFIG_PATH || "/app/config/dynamic.yml",
-      traefik: process.env.TRAEFIK_CONFIG_PATH || "/app/config/traefik.yml",
+      haproxy:
+        process.env.HAPROXY_CONFIG_PATH || "/app/config/haproxy/haproxy.cfg",
       docker: process.env.DOCKER_COMPOSE_PATH || "/app/docker-compose.yml",
     };
 
@@ -31,15 +31,14 @@ class ConfigService {
     // Configuration templates
     this.templates = {
       agent: null,
-      dynamic: null,
-      traefik: null,
+      haproxy: null,
     };
 
     // Loaded configurations
     this.configs = {
       agents: new Map(),
       main: null,
-      traefik: null,
+      haproxy: null,
     };
 
     this.initialized = false;
@@ -107,8 +106,7 @@ class ConfigService {
 
       // Resolve other paths based on base path
       this.paths.agents = path.join(this.paths.base, "agents");
-      this.paths.dynamic = path.join(this.paths.base, "dynamic.yml");
-      this.paths.traefik = path.join(this.paths.base, "traefik.yml");
+      this.paths.haproxy = path.join(this.paths.base, "haproxy/haproxy.cfg");
 
       logger.debug("Resolved configuration paths", { paths: this.paths });
       return true;
@@ -125,8 +123,7 @@ class ConfigService {
     // Use hardcoded paths as fallback
     this.paths.base = "/app/config";
     this.paths.agents = "/app/config/agents";
-    this.paths.dynamic = "/app/config/dynamic.yml";
-    this.paths.traefik = "/app/config/traefik.yml";
+    this.paths.haproxy = "/app/config/haproxy/haproxy.cfg";
 
     logger.debug("Using fallback configuration paths", { paths: this.paths });
     return true;
@@ -160,12 +157,12 @@ class ConfigService {
       tcp: { routers: {}, services: {} },
     };
 
-    // Dynamic config template
-    this.templates.dynamic = {
+    // HAProxy template
+    this.templates.haproxy = {
       http: {
         routers: {
           dashboard: {
-            rule: "Host(`traefik.localhost`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))",
+            rule: "Host(`haproxy.localhost`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))",
             service: "api@internal",
             entryPoints: ["dashboard"],
             middlewares: ["auth"],
@@ -214,11 +211,11 @@ class ConfigService {
           "mongodb-tls-transport": {
             serverName: "mongodb",
             insecureSkipVerify: false,
-            rootCAs: ["/traefik-certs/ca.crt"],
+            rootCAs: ["/certs/ca.crt"],
             certificates: [
               {
-                certFile: "/traefik-certs/client.crt",
-                keyFile: "/traefik-certs/client.key",
+                certFile: "/certs/client.crt",
+                keyFile: "/certs/client.key",
               },
             ],
           },
@@ -234,19 +231,19 @@ class ConfigService {
    */
   async loadMainConfig() {
     try {
-      // Try to read dynamic.yml
+      // Try to read haproxy.cfg
       try {
-        const content = await fs.readFile(this.paths.dynamic, "utf8");
+        const content = await fs.readFile(this.paths.haproxy, "utf8");
         this.configs.main = yaml.parse(content);
         logger.debug("Loaded main configuration from file");
       } catch (err) {
         // If file doesn't exist or is invalid, use template
         logger.warn(`Failed to load main configuration: ${err.message}`);
         logger.info("Using template for main configuration");
-        this.configs.main = this.templates.dynamic;
+        this.configs.main = this.templates.haproxy;
 
         // Save the template to file
-        await this.saveConfig(this.paths.dynamic, this.configs.main);
+        await this.saveConfig(this.paths.haproxy, this.configs.main);
       }
 
       return true;
@@ -310,7 +307,7 @@ class ConfigService {
     await this.initialize();
 
     // Save main config from template
-    await this.saveConfig(this.paths.dynamic, this.templates.dynamic);
+    await this.saveConfig(this.paths.haproxy, this.templates.haproxy);
 
     logger.info("Configuration repair completed");
     return true;
@@ -400,7 +397,7 @@ class ConfigService {
    * Save the configuration
    */
   async saveConfiguration() {
-    return this.saveConfig(this.paths.dynamic, this.configs.main);
+    return this.saveConfig(this.paths.haproxy, this.configs.main);
   }
 }
 

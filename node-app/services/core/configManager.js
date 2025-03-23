@@ -1,7 +1,7 @@
 /**
  * Configuration Manager
  *
- * Handles loading, validating, and updating Traefik configuration files
+ * Handles loading, validating, and updating HAProxy configuration files
  */
 const fs = require("fs").promises;
 const yaml = require("yaml");
@@ -14,15 +14,17 @@ class ConfigManager {
     this.initialized = false;
     this.configs = {
       main: null,
+      haproxy: null,
     };
-    
+
     // Use pathManager for paths
     this.paths = {
       main: null,
       static: null,
+      haproxy: null,
     };
 
-    logger.info(`ConfigManager initialized`);
+    logger.info("ConfigManager initialized");
   }
 
   /**
@@ -38,11 +40,15 @@ class ConfigManager {
       }
 
       // Set paths from path manager
-      this.paths.main = pathManager.getPath('dynamicConfig');
-      this.paths.static = pathManager.getPath('traefikConfig');
+      this.paths.main = pathManager.getPath("dynamicConfig");
+      this.paths.static = pathManager.getPath("haproxyConfig");
+      this.paths.haproxy = pathManager.getPath("haproxyConfig");
 
       // Load the main configuration
       await this.loadConfig("main");
+
+      // Load HAProxy configuration
+      await this.loadConfig("haproxy");
 
       this.initialized = true;
       logger.info("Configuration manager initialized successfully");
@@ -89,7 +95,11 @@ class ConfigManager {
       this.configs[name] = yaml.parse(content) || {};
 
       // Validate and fix the configuration
-      this.validateConfig(this.configs[name]);
+      if (name === "haproxy") {
+        this.validateHAProxyConfig(this.configs[name]);
+      } else {
+        this.validateConfig(this.configs[name]);
+      }
 
       logger.info(`Successfully loaded ${name} configuration`);
       return this.configs[name];
@@ -115,20 +125,8 @@ class ConfigManager {
     if (name === "main") {
       return {
         http: {
-          routers: {
-            dashboard: {
-              rule: "Host(`traefik.localhost`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))",
-              service: "api@internal",
-              entryPoints: ["dashboard"],
-              middlewares: ["auth"],
-            },
-          },
+          routers: {},
           middlewares: {
-            auth: {
-              basicAuth: {
-                users: ["admin:$apr1$H6uskkkW$IgXLP6ewTrSuBkTrqE8wj/"],
-              },
-            },
             "web-to-websecure": {
               redirectScheme: {
                 scheme: "https",
@@ -139,24 +137,39 @@ class ConfigManager {
           services: {},
         },
         tcp: {
-          routers: {
-            "mongodb-catchall": {
-              rule: `HostSNI(\`*.${
-                process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk"
-              }\`)`,
-              entryPoints: ["mongodb"],
-              service: "mongodb-catchall-service",
-              tls: {
-                passthrough: true,
-              },
-            },
+          routers: {},
+          services: {},
+        },
+      };
+    } else if (name === "haproxy") {
+      // Default HAProxy config structure
+      return {
+        frontends: {
+          "https-in": {
+            acls: [],
+            useBackends: [],
           },
-          services: {
-            "mongodb-catchall-service": {
-              loadBalancer: {
-                servers: [],
+          "mongodb-in": {
+            acls: [],
+            useBackends: [],
+          },
+        },
+        backends: {
+          "mongodb-backend-dyn": {
+            mode: "tcp",
+            options: ["tcp-check"],
+            servers: [],
+          },
+          "node-app-backend": {
+            mode: "http",
+            options: ["httpchk GET /health"],
+            servers: [
+              {
+                name: "node-app",
+                address: "cloudlunacy-front:3005",
+                check: true,
               },
-            },
+            ],
           },
         },
       };
@@ -166,7 +179,7 @@ class ConfigManager {
   }
 
   /**
-   * Validate the Traefik configuration
+   * Validate the configuration
    *
    * @param {object} config - The configuration to validate
    * @returns {boolean} - Whether the configuration is valid
@@ -194,35 +207,70 @@ class ConfigManager {
       config.tcp.services = {};
     }
 
-    // Check MongoDB services to ensure they have servers
-    for (const [serviceName, service] of Object.entries(config.tcp.services)) {
-      if (
-        serviceName.startsWith("mongodb-") &&
-        serviceName.endsWith("-service")
-      ) {
-        if (!service.loadBalancer) {
-          logger.warn(
-            `Service ${serviceName} is missing loadBalancer, adding it`
-          );
-          service.loadBalancer = { servers: [] };
-        }
+    return true;
+  }
 
-        if (
-          !service.loadBalancer.servers ||
-          !Array.isArray(service.loadBalancer.servers)
-        ) {
-          logger.warn(
-            `Service ${serviceName} is missing servers array, adding it`
-          );
-          service.loadBalancer.servers = [];
-        }
+  /**
+   * Validate the HAProxy configuration
+   *
+   * @param {object} config - The configuration to validate
+   * @returns {boolean} - Whether the configuration is valid
+   */
+  validateHAProxyConfig(config) {
+    // Check if the config has the required sections
+    if (!config) {
+      logger.error("HAProxy configuration is null or undefined");
+      return false;
+    }
 
-        // Check if the service has any servers
-        if (service.loadBalancer.servers.length === 0) {
-          logger.warn(`Service ${serviceName} has no servers`);
-          // We don't add servers here as we don't know the IP
-        }
-      }
+    // Ensure frontends section exists
+    if (!config.frontends) {
+      logger.warn(
+        "Frontends section missing from HAProxy configuration, adding it"
+      );
+      config.frontends = {};
+    }
+
+    // Ensure backends section exists
+    if (!config.backends) {
+      logger.warn(
+        "Backends section missing from HAProxy configuration, adding it"
+      );
+      config.backends = {};
+    }
+
+    // Ensure https-in frontend exists
+    if (!config.frontends["https-in"]) {
+      logger.warn(
+        "https-in frontend missing from HAProxy configuration, adding it"
+      );
+      config.frontends["https-in"] = {
+        acls: [],
+        useBackends: [],
+      };
+    }
+
+    // Ensure mongodb-in frontend exists
+    if (!config.frontends["mongodb-in"]) {
+      logger.warn(
+        "mongodb-in frontend missing from HAProxy configuration, adding it"
+      );
+      config.frontends["mongodb-in"] = {
+        acls: [],
+        useBackends: [],
+      };
+    }
+
+    // Ensure mongodb-backend-dyn backend exists
+    if (!config.backends["mongodb-backend-dyn"]) {
+      logger.warn(
+        "mongodb-backend-dyn backend missing from HAProxy configuration, adding it"
+      );
+      config.backends["mongodb-backend-dyn"] = {
+        mode: "tcp",
+        options: ["tcp-check"],
+        servers: [],
+      };
     }
 
     return true;
@@ -305,9 +353,13 @@ class ConfigManager {
    *
    * @returns {Object} The current configuration
    */
-  async getConfig() {
+  async getConfig(configName) {
     if (!this.initialized) {
       await this.initialize();
+    }
+
+    if (configName) {
+      return this.configs[configName] || {};
     }
 
     return {
@@ -319,7 +371,7 @@ class ConfigManager {
       },
       ports: {
         node: process.env.NODE_PORT || 3005,
-        traefik: 8081,
+        haproxy: 8081,
         mongo: 27017,
       },
       env: process.env.NODE_ENV || "development",
@@ -327,36 +379,38 @@ class ConfigManager {
   }
 
   /**
-   * Update Traefik static configuration
+   * Update HAProxy static configuration
    *
    * @param {Object} config - The updated configuration
    * @returns {Promise<boolean>} Success status
    */
-  async updateStaticConfig(config) {
+  async updateHAProxyConfig(config) {
     try {
-      const staticConfigPath =
-        process.env.STATIC_CONFIG_PATH || "/etc/traefik/traefik.yml";
+      const haproxyConfigPath =
+        process.env.HAPROXY_CONFIG_PATH || "/usr/local/etc/haproxy/haproxy.cfg";
 
-      logger.info(`Updating static configuration at ${staticConfigPath}`);
+      logger.info(`Updating HAProxy configuration at ${haproxyConfigPath}`);
 
       // Create a backup
-      const backupPath = `${staticConfigPath}.bak`;
+      const backupPath = `${haproxyConfigPath}.bak`;
       try {
-        const originalContent = await fs.readFile(staticConfigPath, "utf8");
+        const originalContent = await fs.readFile(haproxyConfigPath, "utf8");
         await fs.writeFile(backupPath, originalContent, "utf8");
         logger.info(`Created backup at ${backupPath}`);
       } catch (_err) {
-        logger.warn(`Failed to create backup of static configuration`);
+        logger.warn("Failed to create backup of HAProxy configuration");
       }
 
-      // Convert to YAML and save
-      const yamlContent = yaml.stringify(config);
-      await fs.writeFile(staticConfigPath, yamlContent, "utf8");
-      logger.info(`Static configuration updated at ${staticConfigPath}`);
+      // Convert our structured config to HAProxy format
+      const haproxyContent = this._convertToHAProxyFormat(config);
+
+      // Write the configuration
+      await fs.writeFile(haproxyConfigPath, haproxyContent, "utf8");
+      logger.info(`HAProxy configuration updated at ${haproxyConfigPath}`);
 
       return true;
     } catch (err) {
-      logger.error(`Failed to update static configuration: ${err.message}`, {
+      logger.error(`Failed to update HAProxy configuration: ${err.message}`, {
         error: err.message,
         stack: err.stack,
       });
@@ -365,27 +419,129 @@ class ConfigManager {
   }
 
   /**
-   * Get Traefik static configuration
+   * Convert structured config to HAProxy format
    *
-   * @returns {Promise<Object>} The static configuration
+   * @private
+   * @param {Object} config - Structured configuration
+   * @returns {string} HAProxy formatted configuration
    */
-  async getStaticConfig() {
+  _convertToHAProxyFormat(config) {
+    // This is a simplified version - the actual implementation would be more complex
+    // to handle all HAProxy config options and formatting
+    let result = "";
+
+    // Global and defaults sections would typically be fixed
+
+    // Add frontends
+    if (config.frontends) {
+      for (const [name, frontend] of Object.entries(config.frontends)) {
+        result += `\n# Frontend ${name}\n`;
+        result += `frontend ${name}\n`;
+
+        // Add ACLs
+        if (frontend.acls) {
+          for (const acl of frontend.acls) {
+            result += `    acl ${acl.name} ${acl.condition}\n`;
+          }
+        }
+
+        // Add use_backend rules
+        if (frontend.useBackends) {
+          for (const ub of frontend.useBackends) {
+            result += `    use_backend ${ub.backend} ${ub.condition}\n`;
+          }
+        }
+      }
+    }
+
+    // Add backends
+    if (config.backends) {
+      for (const [name, backend] of Object.entries(config.backends)) {
+        result += `\n# Backend ${name}\n`;
+        result += `backend ${name}\n`;
+
+        // Add mode
+        if (backend.mode) {
+          result += `    mode ${backend.mode}\n`;
+        }
+
+        // Add options
+        if (backend.options) {
+          for (const option of backend.options) {
+            result += `    option ${option}\n`;
+          }
+        }
+
+        // Add servers
+        if (backend.servers) {
+          for (const server of backend.servers) {
+            let serverLine = `    server ${server.name} ${server.address}`;
+
+            if (server.check) {
+              serverLine += " check";
+            }
+
+            if (server.ssl) {
+              serverLine += " ssl";
+            }
+
+            if (server.sni) {
+              serverLine += ` sni str(${server.sni})`;
+            }
+
+            result += `${serverLine}\n`;
+          }
+        }
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Get HAProxy configuration
+   *
+   * @returns {Promise<Object>} The HAProxy configuration
+   */
+  async getHAProxyConfig() {
     try {
-      const staticConfigPath =
-        process.env.STATIC_CONFIG_PATH || "/etc/traefik/traefik.yml";
+      const haproxyConfigPath =
+        process.env.HAPROXY_CONFIG_PATH || "/usr/local/etc/haproxy/haproxy.cfg";
 
-      logger.info(`Loading static configuration from ${staticConfigPath}`);
+      logger.info(`Loading HAProxy configuration from ${haproxyConfigPath}`);
 
-      // Read and parse the configuration
-      const content = await fs.readFile(staticConfigPath, "utf8");
-      return yaml.parse(content) || {};
+      // Read the configuration
+      const content = await fs.readFile(haproxyConfigPath, "utf8");
+
+      // Parse into our structured format (simplified)
+      // In reality, parsing HAProxy config would be more complex
+      return this._parseHAProxyFormat(content);
     } catch (err) {
-      logger.error(`Failed to load static configuration: ${err.message}`, {
+      logger.error(`Failed to load HAProxy configuration: ${err.message}`, {
         error: err.message,
         stack: err.stack,
       });
       return {};
     }
+  }
+
+  /**
+   * Parse HAProxy format to structured config
+   *
+   * @private
+   * @param {string} content - HAProxy configuration content
+   * @returns {Object} Structured configuration
+   */
+  _parseHAProxyFormat(content) {
+    // This is a simplified implementation
+    // A real implementation would need to properly parse the HAProxy config format
+
+    // Parse frontends and backends from content
+    // This is a placeholder for the actual parsing logic
+    return {
+      frontends: {},
+      backends: {},
+    };
   }
 
   /**
@@ -418,7 +574,7 @@ class ConfigManager {
           logger.info(`Created backup at ${backupPath}`);
         } catch (_err) {
           logger.warn(
-            `Failed to create backup of Docker Compose configuration`
+            "Failed to create backup of Docker Compose configuration"
           );
         }
 
@@ -429,7 +585,7 @@ class ConfigManager {
           `Docker Compose configuration updated at ${composeConfigPath}`
         );
       } else {
-        logger.info(`No changes needed for Docker Compose configuration`);
+        logger.info("No changes needed for Docker Compose configuration");
       }
 
       return updated;

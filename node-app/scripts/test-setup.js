@@ -9,7 +9,7 @@ const { execSync } = require("child_process");
 // Configuration
 const config = {
   nodeApp: "http://localhost:3005",
-  traefik: "http://traefik.localhost:8081",
+  haproxy: "http://localhost:8081",
   mongodb: {
     url: "mongodb://admin:password@test.mongodb.cloudlunacy.uk:27018",
     adminDb: "admin",
@@ -30,16 +30,15 @@ async function testNodeApi() {
   }
 }
 
-// Test Traefik Dashboard
-async function testTraefikDashboard() {
-  console.log("Testing Traefik Dashboard...");
+// Test HAProxy Dashboard
+async function testHAProxyDashboard() {
+  console.log("Testing HAProxy Dashboard...");
   try {
-    const response = await axios.get(`${config.traefik}/api/version`);
-    console.log("✅ Traefik Dashboard is running");
-    console.log(`   Version: ${response.data.Version}`);
+    const _response = await axios.get(`${config.haproxy}/stats`);
+    console.log("✅ HAProxy Dashboard is running");
     return true;
   } catch (error) {
-    console.error("❌ Traefik Dashboard test failed:", error.message);
+    console.error("❌ HAProxy Dashboard test failed:", error.message);
     return false;
   }
 }
@@ -76,15 +75,15 @@ function testDockerNetworks() {
   console.log("Testing Docker Networks...");
   try {
     const networks = execSync("docker network ls").toString();
-    const hasTraefikNetwork = networks.includes("traefik-network");
+    const hasHaproxyNetwork = networks.includes("haproxy-network");
     const hasCloudlunacyNetwork = networks.includes("cloudlunacy-network");
 
-    if (hasTraefikNetwork && hasCloudlunacyNetwork) {
+    if (hasHaproxyNetwork && hasCloudlunacyNetwork) {
       console.log("✅ Docker networks are properly configured");
       return true;
     } else {
       console.error("❌ Docker networks test failed:");
-      if (!hasTraefikNetwork) console.error("   traefik-network not found");
+      if (!hasHaproxyNetwork) console.error("   haproxy-network not found");
       if (!hasCloudlunacyNetwork)
         console.error("   cloudlunacy-network not found");
       return false;
@@ -101,7 +100,7 @@ async function runTests() {
 
   const results = {
     nodeApi: await testNodeApi(),
-    traefikDashboard: await testTraefikDashboard(),
+    haproxyDashboard: await testHAProxyDashboard(),
     mongoDBConnection: await testMongoDBConnection(),
     dockerNetworks: testDockerNetworks(),
   };
@@ -121,7 +120,7 @@ async function runTests() {
   if (!allPassed) {
     console.log("\nTroubleshooting tips:");
     console.log("1. Check if all containers are running: docker ps");
-    console.log("2. Check container logs: docker logs traefik-dev");
+    console.log("2. Check container logs: docker logs haproxy-dev");
     console.log("3. Verify host entries in /etc/hosts");
     console.log(
       "4. Try restarting the development environment: ./start-dev.sh"

@@ -1,9 +1,9 @@
 version: "3.8"
 
 services:
-  traefik:
-    image: traefik:v2.10
-    container_name: traefik
+  haproxy:
+    image: haproxy:2.8-alpine
+    container_name: haproxy
     restart: always
     security_opt:
       - no-new-privileges:true
@@ -15,13 +15,13 @@ services:
       - "8081:8081"
       - "27017:27017"
     networks:
-      - traefik-network
+      - haproxy-network
       - cloudlunacy-network
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./config:/etc/traefik
-      - ./traefik-certs:/traefik-certs
-      - /var/log/traefik:/var/log/traefik
+      - ./config/haproxy:/usr/local/etc/haproxy
+      - ./config/certs:/etc/ssl/certs
+      - /var/log/haproxy:/var/log/haproxy
     env_file:
       - ./.env
     environment:
@@ -31,16 +31,25 @@ services:
       - CLOUDFLARE_DNS_API_TOKEN=${CF_DNS_API_TOKEN}
       - CF_ZONE_API_TOKEN=${CF_ZONE_API_TOKEN}
     healthcheck:
-      test: ["CMD", "traefik", "healthcheck"]
+      test: ["CMD", "haproxy", "-c", "-f", "/usr/local/etc/haproxy/haproxy.cfg"]
       interval: 10s
       timeout: 5s
       retries: 3
       start_period: 30s
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.dashboard.rule=Host(`traefik.localhost`)"
-      - "traefik.http.routers.dashboard.service=api@internal"
-      - "traefik.http.routers.dashboard.entrypoints=dashboard"
+
+  certbot:
+    image: certbot/certbot:latest
+    container_name: certbot
+    volumes:
+      - ./config/certs:/etc/letsencrypt
+      - ./config/certbot/www:/var/www/certbot
+      - ./config/certbot/cloudflare.ini:/etc/cloudflare/cloudflare.ini:ro
+    environment:
+      - CF_EMAIL=${CF_EMAIL}
+      - CF_API_KEY=${CF_API_KEY}
+      - CLOUDFLARE_DNS_API_TOKEN=${CF_DNS_API_TOKEN}
+      - CF_ZONE_API_TOKEN=${CF_ZONE_API_TOKEN}
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew --quiet; sleep 12h & wait $${!}; done;'"
 
   node-app:
     build:
@@ -49,7 +58,7 @@ services:
     container_name: cloudlunacy-front
     restart: always
     networks:
-      - traefik-network
+      - haproxy-network
       - cloudlunacy-network
     ports:
       - "${NODE_PORT:-3005}:3005"
@@ -65,8 +74,7 @@ services:
       - JWT_SECRET=${JWT_SECRET}
       - MONGO_DOMAIN=${MONGO_DOMAIN:-mongodb.cloudlunacy.uk}
       - APP_DOMAIN=${APP_DOMAIN:-apps.cloudlunacy.uk}
-      - DYNAMIC_CONFIG_PATH=/app/config/dynamic.yml
-      - TRAEFIK_CONTAINER=traefik
+      - HAPROXY_CONTAINER=haproxy
       - NODE_ENV=production
       - NODE_DEBUG=
     healthcheck:
@@ -77,8 +85,8 @@ services:
       start_period: 10s
 
 networks:
-  traefik-network:
-    name: traefik-network
-    external: true
+  haproxy-network:
+    name: haproxy-network
+    driver: bridge
   cloudlunacy-network:
     external: true

@@ -2,19 +2,17 @@
 const { exec } = require("child_process");
 const { promisify } = require("util");
 const execAsync = promisify(exec);
-const yaml = require("yaml");
 const fs = require("fs").promises;
-const path = require("path");
 
 async function diagnoseMongoDBRouting(agentId) {
   console.log(`Diagnosing MongoDB routing for ${agentId}...`);
 
   try {
-    // 1. Check if Traefik is running
-    const { stdout: traefikStatus } = await execAsync(
-      'docker ps -f name=traefik --format "{{.Status}}"'
+    // 1. Check if HAProxy is running
+    const { stdout: haproxyStatus } = await execAsync(
+      'docker ps -f name=haproxy --format "{{.Status}}"'
     );
-    console.log(`Traefik status: ${traefikStatus || "Not running"}`);
+    console.log(`HAProxy status: ${haproxyStatus || "Not running"}`);
 
     // 2. Check if port 27017 is open
     const { stdout: portStatus } = await execAsync(
@@ -22,33 +20,49 @@ async function diagnoseMongoDBRouting(agentId) {
     );
     console.log(`Port 27017 status: ${portStatus}`);
 
-    // 3. Check dynamic.yml configuration
+    // 3. Check HAProxy configuration
     const configPath =
-      process.env.DYNAMIC_CONFIG_PATH || "/app/config/dynamic.yml";
+      process.env.HAPROXY_CONFIG_PATH || "/app/config/haproxy/haproxy.cfg";
     const configContent = await fs.readFile(configPath, "utf8");
-    const config = yaml.parse(configContent);
 
-    // 4. Check if the router exists
-    const routerName = `mongodb-${agentId}`;
-    const routerExists = config.tcp?.routers?.[routerName] !== undefined;
-    console.log(`Router ${routerName} exists: ${routerExists}`);
+    // 4. Check if the agent backend exists
+    const backendPattern = new RegExp(`backend\\s+mongodb-${agentId}`, "i");
+    const backendExists = backendPattern.test(configContent);
+    console.log(`Backend for ${agentId} exists: ${backendExists}`);
 
-    if (routerExists) {
+    if (backendExists) {
+      // Extract and show the backend configuration
+      const backendRegex = new RegExp(
+        `backend\\s+mongodb-${agentId}[\\s\\S]*?(?=\\n\\s*backend|\\n\\s*frontend|$)`,
+        "i"
+      );
+      const backendMatch = configContent.match(backendRegex);
+      if (backendMatch) {
+        console.log("Backend configuration:");
+        console.log(backendMatch[0]);
+      }
+
+      // 5. Check if the frontend reference exists
+      const frontendRefPattern = new RegExp(
+        `use_backend\\s+mongodb-${agentId}\\s+if`,
+        "i"
+      );
+      const frontendRefExists = frontendRefPattern.test(configContent);
       console.log(
-        `Router configuration:`,
-        JSON.stringify(config.tcp.routers[routerName], null, 2)
+        `Frontend reference for ${agentId} exists: ${frontendRefExists}`
       );
 
-      // 5. Check if the service exists
-      const serviceName = `${routerName}-service`;
-      const serviceExists = config.tcp?.services?.[serviceName] !== undefined;
-      console.log(`Service ${serviceName} exists: ${serviceExists}`);
-
-      if (serviceExists) {
-        console.log(
-          `Service configuration:`,
-          JSON.stringify(config.tcp.services[serviceName], null, 2)
+      if (frontendRefExists) {
+        // Extract and show the frontend rule
+        const frontendRuleRegex = new RegExp(
+          `use_backend\\s+mongodb-${agentId}\\s+if[^\\n]*`,
+          "i"
         );
+        const frontendRuleMatch = configContent.match(frontendRuleRegex);
+        if (frontendRuleMatch) {
+          console.log("Frontend rule configuration:");
+          console.log(frontendRuleMatch[0]);
+        }
       }
     }
 

@@ -15,8 +15,7 @@ const { AppError, asyncHandler } = require("../../utils/errorHandler");
  *
  * POST /api/agent/register
  * {
- *   "agentId": "agent-name",
- *   "serverId": "optional-server-id"
+ *   "agentId": "agent-name"
  * }
  */
 exports.registerAgent = asyncHandler(async (req, res) => {
@@ -24,6 +23,15 @@ exports.registerAgent = asyncHandler(async (req, res) => {
 
   if (!agentId) {
     throw new AppError("Agent ID is required", 400);
+  }
+
+  // Validate agent ID format (alphanumeric and hyphens only)
+  const validAgentIdPattern = /^[a-zA-Z0-9-]+$/;
+  if (!validAgentIdPattern.test(agentId)) {
+    throw new AppError(
+      "Agent ID must contain only alphanumeric characters and hyphens",
+      400
+    );
   }
 
   // Get agent IP from request headers or connection
@@ -55,10 +63,14 @@ exports.registerAgent = asyncHandler(async (req, res) => {
 
   try {
     // Register the agent using core service
-    const result = await coreServices.agent.registerAgent(agentId, targetIp, {
-      useTls: true,
-      generateCertificates: true,
-    });
+    const result = await coreServices.agentService.registerAgent(
+      agentId,
+      targetIp,
+      {
+        useTls: true,
+        generateCertificates: true,
+      }
+    );
 
     res.status(201).json({
       success: true,
@@ -92,9 +104,16 @@ exports.registerAgent = asyncHandler(async (req, res) => {
  * @returns {boolean} - Whether the IP address is valid
  */
 function isValidIP(ip) {
-  // Simple regex for IPv4
-  const ipv4Regex = /^(\d{1,3}\.){3}\d{1,3}$/;
-  // Simple regex for IPv6
+  if (!ip || typeof ip !== "string") {
+    return false;
+  }
+
+  // IPv4 validation
+  // More strict IPv4 regex to properly validate each octet (0-255)
+  const ipv4Regex =
+    /^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
+
+  // IPv6 validation (simplified but covers most cases)
   const ipv6Regex =
     /^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$|^::1$|^::$|^([0-9a-fA-F]{1,4}:){0,6}::([0-9a-fA-F]{1,4}:){0,6}[0-9a-fA-F]{1,4}$/;
 
@@ -119,7 +138,7 @@ exports.authenticateAgent = asyncHandler(async (req, res) => {
   logger.info(`Authenticating agent ${agentId}`);
 
   // Generate a new token for the agent
-  const token = coreServices.agent.generateAgentToken(agentId);
+  const token = coreServices.agentService.generateAgentToken(agentId);
 
   res.status(200).json({
     success: true,
@@ -139,7 +158,7 @@ exports.getAgentStatus = asyncHandler(async (req, res) => {
   logger.info(`Getting status for agent ${agentId}`);
 
   // Get agent status
-  const agent = coreServices.agent.registeredAgents.get(agentId);
+  const agent = coreServices.agentService.agents.get(agentId);
 
   if (!agent) {
     throw new AppError(`Agent ${agentId} not found`, 404);
@@ -170,7 +189,7 @@ exports.deregisterAgent = asyncHandler(async (req, res) => {
 
   try {
     // Check if agent exists
-    const agent = coreServices.agent.registeredAgents.get(agentId);
+    const agent = coreServices.agentService.agents.get(agentId);
 
     if (!agent) {
       throw new AppError(`Agent ${agentId} not found`, 404);
@@ -179,8 +198,8 @@ exports.deregisterAgent = asyncHandler(async (req, res) => {
     // Attempt to clean up any resources before removing the agent
     try {
       // Remove MongoDB routing if it exists
-      if (coreServices.mongodb) {
-        await coreServices.mongodb.deregisterAgent(agentId);
+      if (coreServices.mongodbService) {
+        await coreServices.mongodbService.deregisterAgent(agentId);
         logger.info(`Removed MongoDB routing for agent ${agentId}`);
       }
     } catch (cleanupErr) {
@@ -195,7 +214,7 @@ exports.deregisterAgent = asyncHandler(async (req, res) => {
     }
 
     // Remove agent from registry
-    coreServices.agent.registeredAgents.delete(agentId);
+    coreServices.agentService.agents.delete(agentId);
 
     logger.info(`Agent ${agentId} deregistered successfully`);
 

@@ -1,322 +1,149 @@
-#!/usr/bin/env node
 /**
- * Startup Configuration Check
+ * This script checks the configuration and status of the CloudLunacy Front system.
+ * It validates HAProxy configuration, MongoDB connectivity, and other critical components.
  *
- * This script performs configuration validation and fixes at startup.
- * It should be run before starting the front server to ensure all
- * configurations are valid.
+ * Run with: node startup-check.js
  */
 
-const fs = require("fs").promises;
+const fs = require("fs");
 const path = require("path");
-const yaml = require("yaml");
-const { promisify } = require("util");
-const exec = promisify(require("child_process").exec);
+const { exec } = require("child_process");
+const YAML = require("yaml");
 
-console.log("===================================================");
-console.log("CloudLunacy Front Server - Startup Configuration Check");
-console.log("===================================================");
-
-// Configuration paths
-const CONFIG_PATHS = [
-  "/etc/traefik/dynamic.yml", // Container path
-  "/opt/cloudlunacy_front/config/dynamic.yml", // Host path
-  "config/dynamic.yml", // Relative path
-];
-
-// Corrected configuration template
-const CORRECT_CONFIG = {
-  http: {
-    routers: {
-      dashboard: {
-        rule: "Host(`traefik.localhost`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))",
-        service: "api@internal",
-        entryPoints: ["dashboard"],
-        middlewares: ["auth"],
-      },
-    },
-    middlewares: {
-      auth: {
-        basicAuth: {
-          users: ["admin:$apr1$H6uskkkW$IgXLP6ewTrSuBkTrqE8wj/"],
-        },
-      },
-      "web-to-websecure": {
-        redirectScheme: {
-          scheme: "https",
-          permanent: true,
-        },
-      },
-    },
-    services: {},
-  },
-  tcp: {
-    routers: {
-      "mongodb-catchall": {
-        rule: "HostSNI(`*.mongodb.cloudlunacy.uk`)",
-        entryPoints: ["mongodb"],
-        service: "mongodb-catchall-service",
-        tls: {
-          certResolver: "default",
-          domains: [
-            {
-              main: "mongodb.cloudlunacy.uk",
-              sans: ["*.mongodb.cloudlunacy.uk"],
-            },
-          ],
-        },
-      },
-    },
-    services: {
-      "mongodb-catchall-service": {
-        loadBalancer: {
-          servers: [],
-        },
-      },
-    },
-    serversTransports: {
-      "mongodb-tls-transport": {
-        serverName: "mongodb",
-        insecureSkipVerify: false,
-        rootCAs: ["/traefik-certs/ca.crt"],
-        certificates: [
-          {
-            certFile: "/traefik-certs/client.crt",
-            keyFile: "/traefik-certs/client.key",
-          },
-        ],
-      },
-    },
-  },
-};
+// Constants
+const ROOT_DIR = path.join(__dirname, "..");
+const ABSOLUTE_ROOT_DIR = "/opt/cloudlunacy_front";
+const HAPROXY_CONFIG_DIR = path.join(ROOT_DIR, "config", "haproxy");
+const ABSOLUTE_HAPROXY_CONFIG_DIR = path.join(
+  ABSOLUTE_ROOT_DIR,
+  "config",
+  "haproxy"
+);
+const SYSTEM_HAPROXY_CONFIG_PATH = "/usr/local/etc/haproxy/haproxy.cfg";
+const LOCAL_HAPROXY_CONFIG_PATH = path.join(HAPROXY_CONFIG_DIR, "haproxy.cfg");
+const ABSOLUTE_HAPROXY_CONFIG_PATH = path.join(
+  ABSOLUTE_HAPROXY_CONFIG_DIR,
+  "haproxy.cfg"
+);
+const DOCKER_COMPOSE_PATH = path.join(ROOT_DIR, "docker-compose.yml");
+const ABSOLUTE_DOCKER_COMPOSE_PATH = path.join(
+  ABSOLUTE_ROOT_DIR,
+  "docker-compose.yml"
+);
+const AGENTS_DIR = path.join(ROOT_DIR, "config", "agents");
+const ABSOLUTE_AGENTS_DIR = path.join(ABSOLUTE_ROOT_DIR, "config", "agents");
 
 /**
- * Attempt to read and parse YAML file
+ * Check if HAProxy is running
  */
-async function readYamlFile(filePath) {
-  try {
-    const content = await fs.readFile(filePath, "utf8");
-    try {
-      return { success: true, data: yaml.parse(content), original: content };
-    } catch (parseErr) {
-      console.error(`Error parsing YAML file ${filePath}:`, parseErr.message);
-      return { success: false, error: parseErr.message, original: content };
-    }
-  } catch (readErr) {
-    console.error(`Error reading file ${filePath}:`, readErr.message);
-    return { success: false, error: readErr.message };
-  }
-}
-
-/**
- * Backup file before modifying
- */
-async function backupFile(filePath) {
-  try {
-    const backupPath = `${filePath}.backup.${Date.now()}`;
-    await fs.copyFile(filePath, backupPath);
-    console.log(`Created backup at ${backupPath}`);
-    return true;
-  } catch (err) {
-    console.error(`Failed to create backup of ${filePath}:`, err.message);
-    return false;
-  }
-}
-
-/**
- * Write corrected YAML file
- */
-async function writeYamlFile(filePath, data) {
-  try {
-    // Format with proper indentation
-    const yamlStr = yaml.stringify(data, {
-      indent: 2,
-      aliasDuplicateObjects: false,
+function checkHAProxyRunning() {
+  return new Promise((_resolve, _reject) => {
+    exec("docker ps | grep haproxy", (error, stdout, _stderr) => {
+      if (error) {
+        console.error("Error checking if HAProxy is running:", error);
+        _resolve(false);
+      } else {
+        _resolve(stdout.includes("haproxy"));
+      }
     });
-    await fs.writeFile(filePath, yamlStr, "utf8");
-    console.log(`Successfully wrote corrected configuration to ${filePath}`);
-    return true;
-  } catch (err) {
-    console.error(`Failed to write configuration to ${filePath}:`, err.message);
-    return false;
-  }
-}
-
-/**
- * Compare original config with corrected config
- */
-function compareConfigs(original, corrected) {
-  const differences = [];
-
-  // Check for missing top-level sections
-  for (const section of ["http", "tcp"]) {
-    if (!original[section]) {
-      differences.push(`Missing ${section} section`);
-    } else {
-      // Check for missing subsections
-      for (const subsection of ["routers", "services", "middlewares"]) {
-        if (section === "http" && !original[section][subsection]) {
-          differences.push(`Missing ${section}.${subsection} section`);
-        } else if (
-          section === "tcp" &&
-          subsection !== "middlewares" &&
-          !original[section][subsection]
-        ) {
-          differences.push(`Missing ${section}.${subsection} section`);
-        }
-      }
-    }
-  }
-
-  // Check for MongoDB catchall router
-  if (!original.tcp?.routers?.["mongodb-catchall"]) {
-    differences.push("Missing mongodb-catchall router");
-  }
-
-  return differences;
-}
-
-/**
- * Merge existing configuration with corrected template
- */
-function mergeConfigurations(existing, template) {
-  // Create a deep copy of the template
-  const result = JSON.parse(JSON.stringify(template));
-
-  try {
-    // If existing config is valid, try to preserve custom routers and services
-    if (existing.http && existing.http.routers) {
-      // Preserve existing HTTP routers (except overwrite dashboard)
-      for (const [key, value] of Object.entries(existing.http.routers)) {
-        if (key !== "dashboard") {
-          result.http.routers[key] = value;
-        }
-      }
-
-      // Preserve existing HTTP services
-      if (existing.http.services) {
-        for (const [key, value] of Object.entries(existing.http.services)) {
-          result.http.services[key] = value;
-        }
-      }
-
-      // Preserve existing HTTP middlewares (except overwrite auth and web-to-websecure)
-      if (existing.http.middlewares) {
-        for (const [key, value] of Object.entries(existing.http.middlewares)) {
-          if (key !== "auth" && key !== "web-to-websecure") {
-            result.http.middlewares[key] = value;
-          }
-        }
-      }
-    }
-
-    // Preserve existing TCP routers (except overwrite mongodb-catchall)
-    if (existing.tcp && existing.tcp.routers) {
-      for (const [key, value] of Object.entries(existing.tcp.routers)) {
-        if (key !== "mongodb-catchall") {
-          result.tcp.routers[key] = value;
-        }
-      }
-
-      // Preserve existing TCP services (except the catchall)
-      if (existing.tcp.services) {
-        for (const [key, value] of Object.entries(existing.tcp.services)) {
-          if (key !== "mongodb-catchall-service") {
-            result.tcp.services[key] = value;
-          }
-        }
-      }
-    }
-
-    return result;
-  } catch (err) {
-    console.error("Error merging configurations:", err.message);
-    return template; // Return template as fallback
-  }
-}
-
-/**
- * Check if Traefik is running
- */
-async function checkTraefikRunning() {
-  try {
-    const { stdout } = await exec("docker ps | grep traefik");
-    if (stdout) {
-      console.log("✅ Traefik container is running");
-      return true;
-    } else {
-      console.error("❌ Traefik container is not running");
-      return false;
-    }
-  } catch (err) {
-    console.error("❌ Error checking Traefik container:", err.message);
-    return false;
-  }
+  });
 }
 
 /**
  * Check if MongoDB port is exposed
  */
-async function checkMongoDBPort() {
-  try {
-    const { stdout } = await exec('docker ps | grep -E "traefik.*27017"');
-    if (stdout) {
-      console.log("✅ MongoDB port 27017 is exposed in Traefik");
-      return true;
-    } else {
-      console.error("❌ MongoDB port 27017 is not exposed in Traefik");
-      return false;
-    }
-  } catch (err) {
-    console.error("❌ Error checking MongoDB port:", err.message);
-    return false;
-  }
+function checkMongoDBPort() {
+  return new Promise((_resolve, _reject) => {
+    exec("docker port haproxy | grep 27017", (error, stdout, _stderr) => {
+      if (error) {
+        console.error("Error checking MongoDB port:", error);
+        _resolve(false);
+      } else {
+        const mongoDBPortExposed = stdout.includes("27017");
+        console.log(`MongoDB port exposed: ${mongoDBPortExposed}`);
+        _resolve(mongoDBPortExposed);
+      }
+    });
+  });
 }
 
 /**
- * Check docker-compose.yml for MongoDB port
+ * Check if HAProxy configuration is valid
  */
-async function checkDockerCompose() {
-  try {
-    // Find docker-compose.yml
-    const dockerComposeLocations = [
-      "/opt/cloudlunacy_front/docker-compose.yml",
-      "./docker-compose.yml",
-    ];
+function validateHAProxyConfig(configPath) {
+  return new Promise((_resolve, _reject) => {
+    const command = `docker run --rm -v ${path.dirname(
+      configPath
+    )}:/usr/local/etc/haproxy haproxy:2.8-alpine haproxy -c -f /usr/local/etc/haproxy/${path.basename(
+      configPath
+    )}`;
+    console.log(`Executing command: ${command}`);
 
-    let dockerComposePath;
-    for (const location of dockerComposeLocations) {
-      try {
-        await fs.access(location);
-        dockerComposePath = location;
-        break;
-      } catch (err) {
-        // Continue to next location
+    exec(command, (error, stdout, _stderr) => {
+      if (error) {
+        console.error(
+          `Error validating HAProxy config at ${configPath}:`,
+          error
+        );
+        _resolve(false);
+      } else {
+        console.log(
+          `HAProxy config validation result for ${configPath}:`,
+          stdout
+        );
+        _resolve(true);
       }
-    }
+    });
+  });
+}
 
-    if (!dockerComposePath) {
-      console.error("❌ Could not find docker-compose.yml file");
+/**
+ * Check docker-compose.yml
+ */
+function checkDockerCompose() {
+  // Check if docker-compose.yml exists
+  const dockerComposeExists =
+    fs.existsSync(DOCKER_COMPOSE_PATH) ||
+    fs.existsSync(ABSOLUTE_DOCKER_COMPOSE_PATH);
+  console.log(`Docker Compose file exists: ${dockerComposeExists}`);
+
+  if (!dockerComposeExists) {
+    console.error("Docker Compose file not found!");
+    return false;
+  }
+
+  // Check if docker-compose.yml contains HAProxy service
+  try {
+    const dockerComposeFilePath = fs.existsSync(DOCKER_COMPOSE_PATH)
+      ? DOCKER_COMPOSE_PATH
+      : ABSOLUTE_DOCKER_COMPOSE_PATH;
+    const dockerComposeFile = fs.readFileSync(dockerComposeFilePath, "utf8");
+    const dockerComposeYaml = YAML.parse(dockerComposeFile);
+
+    const hasHAProxy =
+      dockerComposeYaml.services && dockerComposeYaml.services.haproxy;
+    console.log(`Docker Compose file has HAProxy service: ${hasHAProxy}`);
+
+    if (!hasHAProxy) {
+      console.error("Docker Compose file does not have HAProxy service!");
       return false;
     }
 
-    console.log(`Found docker-compose.yml at ${dockerComposePath}`);
+    // Check if HAProxy service exposes MongoDB port
+    const haproxyPorts = dockerComposeYaml.services.haproxy.ports || [];
+    const mongoDBPortExposed = haproxyPorts.some((port) =>
+      port.includes("27017")
+    );
+    console.log(`HAProxy service exposes MongoDB port: ${mongoDBPortExposed}`);
 
-    // Read docker-compose.yml
-    const content = await fs.readFile(dockerComposePath, "utf8");
-
-    // Check if MongoDB port is defined
-    if (content.includes('"27017:27017"')) {
-      console.log("✅ MongoDB port 27017 is defined in docker-compose.yml");
-      return true;
-    } else {
-      console.error(
-        "❌ MongoDB port 27017 is not defined in docker-compose.yml"
-      );
+    if (!mongoDBPortExposed) {
+      console.warn("HAProxy service does not expose MongoDB port!");
       return false;
     }
-  } catch (err) {
-    console.error("❌ Error checking docker-compose.yml:", err.message);
+
+    return true;
+  } catch {
+    console.error("Error parsing Docker Compose file!");
     return false;
   }
 }
@@ -324,208 +151,238 @@ async function checkDockerCompose() {
 /**
  * Fix docker-compose.yml
  */
-async function fixDockerCompose() {
+function fixDockerCompose() {
   try {
-    // Find docker-compose.yml
-    const dockerComposeLocations = [
-      "/opt/cloudlunacy_front/docker-compose.yml",
-      "./docker-compose.yml",
-    ];
+    const dockerComposeFilePath = fs.existsSync(DOCKER_COMPOSE_PATH)
+      ? DOCKER_COMPOSE_PATH
+      : ABSOLUTE_DOCKER_COMPOSE_PATH;
+    const dockerComposeFile = fs.readFileSync(dockerComposeFilePath, "utf8");
+    const dockerComposeYaml = YAML.parse(dockerComposeFile);
 
-    let dockerComposePath;
-    for (const location of dockerComposeLocations) {
-      try {
-        await fs.access(location);
-        dockerComposePath = location;
-        break;
-      } catch (err) {
-        // Continue to next location
+    let modified = false;
+
+    // Add HAProxy service if it doesn't exist
+    if (!dockerComposeYaml.services || !dockerComposeYaml.services.haproxy) {
+      dockerComposeYaml.services = dockerComposeYaml.services || {};
+      dockerComposeYaml.services.haproxy = {
+        image: "haproxy:2.8-alpine",
+        container_name: "haproxy",
+        ports: ["443:443", "80:80", "27017:27017"],
+        volumes: [
+          "./config/haproxy:/usr/local/etc/haproxy:ro",
+          "./config/certs:/etc/ssl/certs:ro",
+        ],
+        restart: "unless-stopped",
+        networks: ["proxy"],
+      };
+      modified = true;
+    }
+
+    // Add MongoDB port if it's not exposed
+    if (
+      dockerComposeYaml.services.haproxy &&
+      dockerComposeYaml.services.haproxy.ports
+    ) {
+      const haproxyPorts = dockerComposeYaml.services.haproxy.ports;
+      const mongoDBPortExposed = haproxyPorts.some((port) =>
+        port.includes("27017")
+      );
+
+      if (!mongoDBPortExposed) {
+        haproxyPorts.push("27017:27017");
+        modified = true;
       }
     }
 
-    if (!dockerComposePath) {
-      console.error("❌ Could not find docker-compose.yml file");
-      return false;
+    // Create 'proxy' network if it doesn't exist
+    if (!dockerComposeYaml.networks || !dockerComposeYaml.networks.proxy) {
+      dockerComposeYaml.networks = dockerComposeYaml.networks || {};
+      dockerComposeYaml.networks.proxy = { external: true };
+      modified = true;
     }
 
-    // Read docker-compose.yml
-    const content = await fs.readFile(dockerComposePath, "utf8");
-
-    // Check if MongoDB port is defined
-    if (content.includes('"27017:27017"')) {
-      console.log(
-        "✅ MongoDB port 27017 is already defined in docker-compose.yml"
+    if (modified) {
+      fs.writeFileSync(
+        dockerComposeFilePath,
+        YAML.stringify(dockerComposeYaml)
       );
-      return true;
+      console.log("Docker Compose file has been fixed!");
     }
-
-    // Create backup
-    await backupFile(dockerComposePath);
-
-    // Add MongoDB port
-    let updatedContent = content;
-
-    // Try different patterns for insertion
-    const patterns = [
-      {
-        regex: /ports:([^\]]*?)(\s+-)(\s+)"8081:8081"/s,
-        replacement: 'ports:$1$2$3"8081:8081"$2$3"27017:27017"',
-      },
-      {
-        regex: /(ports:\s*(?:-\s+[^\s]+\s+)+)/s,
-        replacement: '$1- "27017:27017"\n      ',
-      },
-      {
-        regex: /(ports:.*?)\n/s,
-        replacement: '$1\n      - "27017:27017"\n',
-      },
-    ];
-
-    for (const pattern of patterns) {
-      const testContent = updatedContent.replace(
-        pattern.regex,
-        pattern.replacement
-      );
-      if (testContent !== updatedContent) {
-        updatedContent = testContent;
-        break;
-      }
-    }
-
-    // Check if any pattern matched
-    if (updatedContent === content) {
-      console.error(
-        "❌ Could not modify docker-compose.yml - no matching patterns"
-      );
-      return false;
-    }
-
-    // Write updated content
-    await fs.writeFile(dockerComposePath, updatedContent, "utf8");
-    console.log("✅ Added MongoDB port 27017 to docker-compose.yml");
 
     return true;
-  } catch (err) {
-    console.error("❌ Error fixing docker-compose.yml:", err.message);
+  } catch {
+    console.error("Error fixing Docker Compose file!");
     return false;
   }
 }
 
 /**
- * Fix dynamic configuration
+ * Check if HAProxy config is valid
  */
-async function fixTraefikConfig() {
-  console.log("Checking Traefik dynamic configuration...");
+function checkHAProxyConfig() {
+  // Check if HAProxy config exists
+  const haproxyConfigExists =
+    fs.existsSync(SYSTEM_HAPROXY_CONFIG_PATH) ||
+    fs.existsSync(LOCAL_HAPROXY_CONFIG_PATH) ||
+    fs.existsSync(ABSOLUTE_HAPROXY_CONFIG_PATH);
 
-  let fixedAny = false;
+  console.log(`HAProxy config exists: ${haproxyConfigExists}`);
 
-  for (const configPath of CONFIG_PATHS) {
-    console.log(`Checking configuration at ${configPath}...`);
-
-    // Try to read the file
-    const result = await readYamlFile(configPath);
-
-    if (!result.success) {
-      console.log(`Skipping ${configPath} due to read error...`);
-      continue;
-    }
-
-    // Compare with the correct structure
-    const differences = compareConfigs(result.data, CORRECT_CONFIG);
-
-    if (differences.length > 0) {
-      console.log(`Found ${differences.length} issues with ${configPath}:`);
-      differences.forEach((diff) => console.log(`- ${diff}`));
-
-      // Create backup
-      await backupFile(configPath);
-
-      // Merge configurations to preserve custom settings
-      const mergedConfig = mergeConfigurations(result.data, CORRECT_CONFIG);
-
-      // Write the corrected configuration
-      const writeResult = await writeYamlFile(configPath, mergedConfig);
-
-      if (writeResult) {
-        fixedAny = true;
-        console.log(`✅ Successfully repaired ${configPath}`);
-      }
-    } else {
-      console.log(`✅ No issues found with ${configPath}`);
-    }
-  }
-
-  return fixedAny;
-}
-
-/**
- * Restart Traefik container
- */
-async function restartTraefik() {
-  try {
-    console.log("Restarting Traefik container...");
-    await exec("docker restart traefik");
-    console.log("✅ Traefik container restarted successfully");
-
-    // Wait for container to start
-    console.log("Waiting for Traefik to start...");
-    await new Promise((resolve) => setTimeout(resolve, 5000));
-
-    return true;
-  } catch (err) {
-    console.error("❌ Error restarting Traefik container:", err.message);
+  if (!haproxyConfigExists) {
+    console.error("HAProxy config not found!");
     return false;
   }
+
+  // Validate HAProxy config
+  return validateHAProxyConfig(
+    fs.existsSync(LOCAL_HAPROXY_CONFIG_PATH)
+      ? LOCAL_HAPROXY_CONFIG_PATH
+      : fs.existsSync(ABSOLUTE_HAPROXY_CONFIG_PATH)
+      ? ABSOLUTE_HAPROXY_CONFIG_PATH
+      : SYSTEM_HAPROXY_CONFIG_PATH
+  );
 }
 
 /**
- * Check all agents directories
+ * Check agents directories
  */
-async function checkAgentsDirectories() {
-  const agentDirs = [
-    "/etc/traefik/agents",
-    "/opt/cloudlunacy_front/config/agents",
-  ];
+function checkAgentsDirectories() {
+  // Check if agents directory exists
+  const agentsDirExists =
+    fs.existsSync(AGENTS_DIR) || fs.existsSync(ABSOLUTE_AGENTS_DIR);
+  console.log(`Agents directory exists: ${agentsDirExists}`);
 
-  for (const dir of agentDirs) {
+  if (!agentsDirExists) {
+    console.log("Creating agents directory...");
     try {
-      await fs.access(dir);
-      console.log(`✅ Agents directory exists at ${dir}`);
-
-      // Check if directory is empty
-      const files = await fs.readdir(dir);
-      if (files.length === 0) {
-        console.log(`Directory ${dir} is empty, creating test agent...`);
-
-        // Create a default agent config
-        const testAgent = {
-          http: { routers: {}, services: {}, middlewares: {} },
-          tcp: { routers: {}, services: {} },
-        };
-
-        await writeYamlFile(path.join(dir, "default.yml"), testAgent);
-      }
-    } catch (err) {
-      console.log(`Creating agents directory at ${dir}...`);
-
-      try {
-        await fs.mkdir(dir, { recursive: true });
-        console.log(`✅ Created agents directory at ${dir}`);
-
-        // Create a default agent config
-        const testAgent = {
-          http: { routers: {}, services: {}, middlewares: {} },
-          tcp: { routers: {}, services: {} },
-        };
-
-        await writeYamlFile(path.join(dir, "default.yml"), testAgent);
-      } catch (mkdirErr) {
-        console.error(
-          `❌ Error creating agents directory at ${dir}:`,
-          mkdirErr.message
-        );
-      }
+      fs.mkdirSync(fs.existsSync(ROOT_DIR) ? AGENTS_DIR : ABSOLUTE_AGENTS_DIR, {
+        recursive: true,
+      });
+    } catch (error) {
+      console.error("Error creating agents directory:", error);
+      return false;
     }
+  }
+
+  return true;
+}
+
+/**
+ * Restart HAProxy container
+ */
+function restartHAProxy() {
+  return new Promise((_resolve, _reject) => {
+    exec("docker restart haproxy", (error, _stdout, _stderr) => {
+      if (error) {
+        console.error("Error restarting HAProxy:", error);
+        _resolve(false);
+      } else {
+        console.log("HAProxy restarted successfully!");
+        _resolve(true);
+      }
+    });
+  });
+}
+
+/**
+ * Create default HAProxy configuration if needed
+ */
+function createDefaultHAProxyConfig() {
+  const configDir = fs.existsSync(HAPROXY_CONFIG_DIR)
+    ? HAPROXY_CONFIG_DIR
+    : fs.existsSync(ABSOLUTE_HAPROXY_CONFIG_DIR)
+    ? ABSOLUTE_HAPROXY_CONFIG_DIR
+    : null;
+
+  if (!configDir) {
+    console.log("Creating HAProxy config directory...");
+    try {
+      fs.mkdirSync(
+        fs.existsSync(ROOT_DIR)
+          ? HAPROXY_CONFIG_DIR
+          : ABSOLUTE_HAPROXY_CONFIG_DIR,
+        { recursive: true }
+      );
+    } catch (error) {
+      console.error("Error creating HAProxy config directory:", error);
+      return false;
+    }
+  }
+
+  const configPath = fs.existsSync(HAPROXY_CONFIG_DIR)
+    ? LOCAL_HAPROXY_CONFIG_PATH
+    : ABSOLUTE_HAPROXY_CONFIG_PATH;
+
+  const defaultConfig = `global
+    log /dev/log local0
+    log /dev/log local1 notice
+    chroot /var/lib/haproxy
+    stats socket /var/lib/haproxy/stats mode 666 level admin
+    stats timeout 30s
+    user haproxy
+    group haproxy
+    daemon
+    
+    # Default SSL settings
+    ssl-default-bind-options no-sslv3 no-tlsv10 no-tlsv11
+    ssl-default-bind-ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384
+    
+defaults
+    log global
+    mode tcp
+    option tcplog
+    option dontlognull
+    timeout connect 5000
+    timeout client 50000
+    timeout server 50000
+    
+frontend stats
+    bind *:8404
+    mode http
+    stats enable
+    stats uri /stats
+    stats refresh 10s
+    stats auth admin:admin_password
+    
+frontend mongo_frontend
+    bind *:27017 ssl crt /etc/ssl/certs/mongodb.pem
+    mode tcp
+    option tcplog
+    
+    # Use TCP/SNI to determine the backend
+    acl is_mongodb_domain req.ssl_sni -m end .mongodb.cloudlunacy.uk
+    
+    # Extract the agent ID from the SNI hostname (everything before first dot)
+    http-request set-var(txn.agent_id) req.ssl_sni,field(1,'.')
+    
+    # Use the agent ID to route to the appropriate backend
+    use_backend mongodb-backend if is_mongodb_domain
+    
+    # Default backend (reject connections)
+    default_backend empty-backend
+    
+backend mongodb-backend
+    mode tcp
+    balance roundrobin
+    option tcp-check
+    # Use the extracted agent ID in the backend server configuration
+    server mongodb ${process.env.MONGODB_HOST || "mongodb"}:${
+    process.env.MONGODB_PORT || "27017"
+  } check ssl verify none sni str(%[var(txn.agent_id)].mongodb.cloudlunacy.uk)
+    
+backend empty-backend
+    mode tcp
+    timeout server 1s
+    server empty-server 127.0.0.1:1 check
+`;
+
+  try {
+    fs.writeFileSync(configPath, defaultConfig);
+    console.log(`Default HAProxy config created at ${configPath}`);
+    return true;
+  } catch (error) {
+    console.error("Error creating default HAProxy config:", error);
+    return false;
   }
 }
 
@@ -533,60 +390,74 @@ async function checkAgentsDirectories() {
  * Main function
  */
 async function main() {
-  console.log("Starting configuration check...");
+  console.log("==== Starting HAProxy checks ====");
 
-  // Check if Traefik is running
-  const traefikRunning = await checkTraefikRunning();
-
-  // Check if MongoDB port is exposed
-  const mongoDBPortExposed = await checkMongoDBPort();
-
-  // Check docker-compose.yml
-  const dockerComposeOk = await checkDockerCompose();
-
-  // Fix configurations if needed
-  let needsRestart = false;
-
-  // Fix docker-compose.yml if needed
-  if (!dockerComposeOk) {
-    const fixed = await fixDockerCompose();
-    if (fixed) {
-      needsRestart = true;
-    }
+  // Check HAProxy config
+  const haproxyConfigValid = await checkHAProxyConfig();
+  if (!haproxyConfigValid) {
+    console.log("Creating default HAProxy config...");
+    createDefaultHAProxyConfig();
   }
 
-  // Fix Traefik configuration
-  const configFixed = await fixTraefikConfig();
-  if (configFixed) {
-    needsRestart = true;
+  // Check Docker Compose file
+  const dockerComposeValid = checkDockerCompose();
+  if (!dockerComposeValid) {
+    console.log("Fixing Docker Compose file...");
+    fixDockerCompose();
   }
 
   // Check agents directories
-  await checkAgentsDirectories();
+  const agentsDirsValid = checkAgentsDirectories();
+  if (!agentsDirsValid) {
+    console.error("Error with agents directories!");
+  }
 
-  // Restart Traefik if needed
-  if (needsRestart && traefikRunning) {
-    await restartTraefik();
+  // Check if HAProxy is running
+  const haproxyRunning = await checkHAProxyRunning();
+  if (!haproxyRunning) {
+    console.log("HAProxy is not running. Starting HAProxy...");
+    exec("docker-compose up -d haproxy", async (error, _stdout, _stderr) => {
+      if (error) {
+        console.error("Error starting HAProxy:", error);
+      } else {
+        console.log("HAProxy started successfully!");
+        await checkMongoDBPort();
+      }
+    });
+  } else {
+    console.log("HAProxy is already running.");
+    const _mongoDBPortExposed = await checkMongoDBPort();
 
-    // Check if MongoDB port is now exposed
-    const mongoDBPortExposedAfterRestart = await checkMongoDBPort();
-    if (!mongoDBPortExposedAfterRestart) {
-      console.warn(
-        "⚠️ MongoDB port 27017 is still not exposed in Traefik after restart"
-      );
-      console.warn(
-        "⚠️ You may need to recreate the Traefik container with the correct port mapping"
-      );
+    // Check if HAProxy config needs to be reloaded
+    // This could be triggered by various conditions, like config changes
+    // For this example, we'll restart HAProxy if MongoDB port isn't exposed
+    if (!_mongoDBPortExposed) {
+      console.log("MongoDB port not exposed. Restarting HAProxy...");
+      await restartHAProxy();
+      await checkMongoDBPort();
     }
   }
 
-  console.log("===================================================");
-  console.log("Configuration check completed.");
-  console.log("===================================================");
+  console.log("==== HAProxy checks completed ====");
 }
 
-// Run the main function
-main().catch((err) => {
-  console.error("Error during startup check:", err);
-  process.exit(1);
-});
+// Run the main function if this script is executed directly
+if (require.main === module) {
+  main().catch((err) => {
+    console.error("Error in main execution:", err);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  checkHAProxyRunning,
+  checkMongoDBPort,
+  validateHAProxyConfig,
+  checkDockerCompose,
+  fixDockerCompose,
+  checkHAProxyConfig,
+  createDefaultHAProxyConfig,
+  checkAgentsDirectories,
+  restartHAProxy,
+  main,
+};

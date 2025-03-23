@@ -1,11 +1,13 @@
 #!/bin/bash
 # ------------------------------------------------------------------------------
-# CloudLunacy Front Server Installation Script
-# Version: 2.0.0
-# Date: 2025-03-10
+# Installation Script for CloudLunacy Deployment Agent
+# Version: 2.7.0 (Configured for HAProxy)
+# Author: Mahamadou Taibou
+# Date: 2024-12-01
 #
-# This script installs the CloudLunacy Front Server with robust error handling,
-# state validation at each step, and automatic recovery options.
+# Description:
+# This script installs and configures the CloudLunacy Deployment Agent on a VPS
+# with HAProxy support for MongoDB TLS termination
 # ------------------------------------------------------------------------------
 
 set -euo pipefail
@@ -19,11 +21,19 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration variables - defaults that can be overridden by environment variables
+USERNAME="cloudlunacy"
+BASE_DIR="/opt/cloudlunacy"
+CERTS_DIR="${BASE_DIR}/certs"
+# Use the front server's IP as the default API URL.
+: "${FRONT_API_URL:=http://138.199.165.36:3005}"
+: "${NODE_PORT:=3005}"
+: "${MONGO_PORT:=27017}"
+: "${MONGO_USE_TLS:=true}"
+: "${USE_HAPROXY:=true}"
 : "${FRONT_REPO_URL:=https://github.com/Mayze123/cloudlunacy_front}" 
 : "${DOMAIN:=cloudlunacy.local}" 
 : "${MONGO_DOMAIN:=mongodb.cloudlunacy.uk}"
 : "${APP_DOMAIN:=apps.cloudlunacy.uk}"
-: "${NODE_PORT:=3005}"
 : "${JWT_SECRET:=}"
 : "${SHARED_NETWORK:=cloudlunacy-network}"
 
@@ -33,47 +43,46 @@ if [ -z "$JWT_SECRET" ]; then
 fi
 
 # Base directories
-BASE_DIR="/opt/cloudlunacy_front"
 CONFIG_DIR="${BASE_DIR}/config"
 AGENTS_CONFIG_DIR="${CONFIG_DIR}/agents"
-CERTS_DIR="${BASE_DIR}/traefik-certs"
-LOGS_DIR="/var/log/traefik"
-TRAEFIK_NETWORK="traefik-network"
-
-# Installation state tracking
-INSTALL_LOG="/tmp/cloudlunacy_install.log"
-INSTALL_STATE="/tmp/cloudlunacy_install_state.json"
+CERTS_DIR="${BASE_DIR}/config/certs"
+LOGS_DIR="/var/log/haproxy"
+HAPROXY_NETWORK="haproxy-network"
 
 # Function definitions
 
 # Logging functions
-log() { 
-  echo -e "${GREEN}[INFO]${NC} $1" | tee -a "$INSTALL_LOG"
+log() {
+  echo -e "\e[34m[INFO]\e[0m $1"
 }
 
-warn() {
-  echo -e "${YELLOW}[WARN]${NC} $1" | tee -a "$INSTALL_LOG"
+log_error() {
+  echo -e "\e[31m[ERROR]\e[0m $1" >&2
 }
 
-error() {
-  echo -e "${RED}[ERROR]${NC} $1" | tee -a "$INSTALL_LOG"
+log_warn() {
+  echo -e "\e[33m[WARNING]\e[0m $1"
 }
 
-success() {
-  echo -e "${BLUE}[SUCCESS]${NC} $1" | tee -a "$INSTALL_LOG"
+log_success() {
+  echo -e "\e[32m[SUCCESS]\e[0m $1"
 }
 
 # Error exit with cleanup option
 error_exit() {
-  error "$1"
+  log_error "$1"
   
   # Ask if user wants to attempt cleanup
-  if [ "${2:-}" != "no_prompt" ]; then
+  if [ "${SKIP_CONFIRMATION:-false}" = false ] && [ "${2:-}" != "no_prompt" ]; then
     read -p "Do you want to attempt cleanup of incomplete installation? (y/N): " choice
     case "$choice" in
       y|Y) cleanup_installation ;;
       *) echo "Exiting without cleanup." ;;
     esac
+  else
+    # In non-interactive mode, perform cleanup automatically
+    log "Performing automatic cleanup in non-interactive mode"
+    cleanup_installation
   fi
   
   exit 1
@@ -81,106 +90,138 @@ error_exit() {
 
 # Installation state management
 init_install_state() {
-  cat > "$INSTALL_STATE" <<EOF
-{
-  "prerequisites_checked": false,
-  "directory_created": false,
-  "repository_cloned": false,
-  "config_files_created": false,
-  "networks_created": false,
-  "containers_started": false,
-  "installation_completed": false
-}
+  local state_file="${BASE_DIR}/.install_state"
+  
+  # Create initial state if it doesn't exist
+  if [ ! -f "$state_file" ]; then
+    cat > "$state_file" <<EOF
+prerequisites_checked=false
+directories_created=false
+repository_cloned=false
+config_files_created=false
+networks_created=false
+containers_started=false
+services_verified=false
+installation_completed=false
 EOF
+  fi
+  
   log "Installation state initialized"
 }
 
 update_install_state() {
   local key="$1"
   local value="$2"
+  local state_file="${BASE_DIR}/.install_state"
   
-  # Use temporary file for atomic update
-  local temp_file="${INSTALL_STATE}.tmp"
+  # Create state file if it doesn't exist
+  if [ ! -f "$state_file" ]; then
+    touch "$state_file"
+  fi
   
-  # Update the value
-  jq ".$key = $value" "$INSTALL_STATE" > "$temp_file"
-  mv "$temp_file" "$INSTALL_STATE"
+  # Update or add the key-value pair
+  if grep -q "^${key}=" "$state_file"; then
+    sed -i.bak "s/^${key}=.*/${key}=${value}/" "$state_file" && rm "${state_file}.bak"
+  else
+    echo "${key}=${value}" >> "$state_file"
+  fi
   
-  log "Installation state updated: $key = $value"
+  log "Installation state updated: ${key}=${value}"
 }
 
 get_install_state() {
   local key="$1"
-  jq -r ".$key" "$INSTALL_STATE"
+  local state_file="${BASE_DIR}/.install_state"
+  
+  if [ ! -f "$state_file" ]; then
+    echo "false"
+    return
+  fi
+  
+  local value
+  value=$(grep "^${key}=" "$state_file" | cut -d= -f2)
+  
+  if [ -z "$value" ]; then
+    echo "false"
+  else
+    echo "$value"
+  fi
 }
 
-# Check for required tools
+# Check prerequisites
 check_prerequisites() {
   log "Checking prerequisites..."
   
-  # Check for required commands
-  for cmd in docker docker-compose curl jq openssl git; do
-    if ! command -v "$cmd" &> /dev/null; then
-      error "Required command not found: $cmd"
-      error "Please install $cmd and try again"
+  # Check if docker is installed
+  if ! command -v docker >/dev/null 2>&1; then
+    log_error "Docker is not installed. Please install Docker first."
+    return 1
+  fi
+  
+  # Check if docker-compose is installed
+  if ! command -v docker-compose >/dev/null 2>&1; then
+    log_error "Docker Compose is not installed. Please install Docker Compose first."
+    return 1
+  fi
+  
+  # Check if docker daemon is running
+  if ! docker info >/dev/null 2>&1; then
+    log_error "Docker daemon is not running. Please start Docker first."
+    return 1
+  fi
+  
+  # Check if netcat is installed (for port checks)
+  if ! command -v nc >/dev/null 2>&1; then
+    log_error "Netcat is not installed. Please install netcat for port verification."
+    return 1
+  fi
+  
+  # Check if OpenSSL is installed (for certificate generation)
+  if ! command -v openssl >/dev/null 2>&1; then
+    log_error "OpenSSL is not installed. Please install OpenSSL for certificate operations."
+    return 1
+  fi
+  
+  # Check if curl is installed
+  if ! command -v curl >/dev/null 2>&1; then
+    log_error "curl is not installed. Please install curl for health checks."
+    return 1
+  fi
+  
+  # Check if ports 80, 443, 8081, and 27017 are available
+  for port in 80 443 8081 27017; do
+    if nc -z localhost "$port" 2>/dev/null; then
+      log_error "Port $port is already in use. Please free up this port before continuing."
       return 1
     fi
   done
-  
-  # Check Docker daemon is running
-  if ! docker info &> /dev/null; then
-    error "Docker daemon is not running"
-    error "Please start Docker service with: sudo systemctl start docker"
-    return 1
-  fi
-  
-  # Check user has permissions to use Docker
-  if ! docker ps &> /dev/null; then
-    error "Current user doesn't have permission to use Docker"
-    error "Please add user to docker group with: sudo usermod -aG docker $USER"
-    error "Then log out and back in for changes to take effect"
-    return 1
-  }
-  
-  # Check disk space
-  local available_space=$(df -m / | awk 'NR==2 {print $4}')
-  if [ "$available_space" -lt 1000 ]; then
-    warn "Low disk space: ${available_space}MB available, recommended at least 1GB"
-    warn "Installation may fail or perform poorly due to limited disk space"
-    return 1
-  fi
   
   log "All prerequisites satisfied"
   update_install_state "prerequisites_checked" "true"
   return 0
 }
 
-# Create directories
+# Create necessary directories
 create_directories() {
-  log "Creating directories..."
+  log "Creating necessary directories..."
   
-  # Check if BASE_DIR already exists
-  if [ -d "$BASE_DIR" ]; then
-    warn "Directory $BASE_DIR already exists"
-    read -p "Do you want to remove it and continue? (y/N): " choice
-    case "$choice" in
-      y|Y) 
-        log "Removing existing directory: $BASE_DIR"
-        rm -rf "$BASE_DIR" || error_exit "Failed to remove directory $BASE_DIR"
-        ;;
-      *) 
-        error_exit "Installation aborted by user"
-        ;;
-    esac
-  fi
+  # Create base directory if it doesn't exist
+  mkdir -p "${BASE_DIR}"
   
-  # Create directories with proper permissions
-  mkdir -p "$BASE_DIR" "$CONFIG_DIR" "$AGENTS_CONFIG_DIR" "$CERTS_DIR" "$LOGS_DIR" || error_exit "Failed to create directories"
-  chmod 755 "$BASE_DIR" "$CONFIG_DIR" "$AGENTS_CONFIG_DIR" "$LOGS_DIR"
-  chmod 700 "$CERTS_DIR"  # More restrictive for certs
+  # Create config directory
+  mkdir -p "${CONFIG_DIR}"
+  
+  # Create certificates directory
+  mkdir -p "${CERTS_DIR}"
+  
+  # Create logs directory
+  mkdir -p "${LOGS_DIR}"
+  
+  # Set permissions for logs directory
+  chmod 755 "${LOGS_DIR}"
   
   log "Directories created successfully"
-  update_install_state "directory_created" "true"
+  update_install_state "directories_created" "true"
   return 0
 }
 
@@ -188,7 +229,17 @@ create_directories() {
 clone_repository() {
   log "Cloning front server repository from $FRONT_REPO_URL..."
   
-  git clone "$FRONT_REPO_URL" "$BASE_DIR" || error_exit "Failed to clone repository"
+  # Check if git is installed
+  if ! command -v git >/dev/null 2>&1; then
+    log_error "Git is not installed. Please install Git first."
+    return 1
+  fi
+  
+  # Clone the repository
+  if ! git clone "$FRONT_REPO_URL" "$BASE_DIR"; then
+    log_error "Failed to clone repository from $FRONT_REPO_URL"
+    return 1
+  fi
   
   log "Repository cloned successfully"
   update_install_state "repository_cloned" "true"
@@ -213,147 +264,115 @@ CONFIG_BASE_PATH=${CONFIG_DIR}
 LOG_LEVEL=info
 EOF
 
-  # Create Traefik configuration
-  cat > "${CONFIG_DIR}/traefik.yml" <<'EOF'
-# Global settings
-global:
-  checkNewVersion: false
-  sendAnonymousUsage: false
+  # Create directory structure
+  mkdir -p "${CONFIG_DIR}/haproxy"
+  mkdir -p "${CONFIG_DIR}/certs"
+  mkdir -p "${CONFIG_DIR}/agents"
+  mkdir -p "${LOGS_DIR}"
 
-# Entry points definition
-entryPoints:
-  web:
-    address: ":80"
-    http:
-      redirections:
-        entryPoint:
-          to: websecure
-          scheme: https
-  websecure:
-    address: ":443"
-  dashboard:
-    address: ":8081"
-  mongodb:
-    address: ":27017"  # MongoDB entrypoint explicitly defined
+  # Create HAProxy configuration
+  cat > "${CONFIG_DIR}/haproxy/haproxy.cfg" <<'EOF'
+# HAProxy Configuration for CloudLunacy Front Server
+global
+    log /dev/log local0
+    log /dev/log local1 notice
+    daemon
+    maxconn 4096
+    tune.ssl.default-dh-param 2048
+    ssl-default-bind-ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384
+    ssl-default-bind-options no-sslv3 no-tlsv10 no-tlsv11
 
-# API and dashboard configuration
-api:
-  dashboard: true
-  insecure: true
+defaults
+    log global
+    mode http
+    option httplog
+    option dontlognull
+    timeout connect 5000ms
+    timeout client 50000ms
+    timeout server 50000ms
+    errorfile 400 /etc/haproxy/errors/400.http
+    errorfile 403 /etc/haproxy/errors/403.http
+    errorfile 408 /etc/haproxy/errors/408.http
+    errorfile 500 /etc/haproxy/errors/500.http
+    errorfile 502 /etc/haproxy/errors/502.http
+    errorfile 503 /etc/haproxy/errors/503.http
+    errorfile 504 /etc/haproxy/errors/504.http
 
-# Enable ping for health checks
-ping:
-  entryPoint: "dashboard"
+# Stats page
+frontend stats
+    bind *:8081
+    stats enable
+    stats uri /stats
+    stats refresh 10s
+    stats auth admin:admin_password
+    stats admin if TRUE
 
-# Log configuration
-log:
-  level: "INFO"
-  filePath: "/var/log/traefik/traefik.log"
-  format: "json"
+# HTTP Frontend
+frontend http
+    bind *:80
+    mode http
+    option forwardfor
+    http-request redirect scheme https unless { ssl_fc }
 
-# Access logs
-accessLog:
-  filePath: "/var/log/traefik/access.log"
-  format: "json"
-
-# Configure providers
-providers:
-  # Main dynamic configuration file
-  file:
-    filename: "/etc/traefik/dynamic.yml"
-    watch: true
-  
-  # Per-agent configuration directory
-  directory:
-    directory: "/etc/traefik/agents"
-    watch: true
-  
-  # Docker provider for container discovery
-  docker:
-    endpoint: "unix:///var/run/docker.sock"
-    exposedByDefault: false
-    watch: true
-    network: "${SHARED_NETWORK}"
-
-# Certificate resolver for HTTPS
-certificatesResolvers:
-  letsencrypt:
-    acme:
-      email: "admin@example.com"  # Replace with your email
-      storage: "/traefik-certs/acme.json"
-      httpChallenge:
-        entryPoint: "web"
-EOF
-
-  # Create dynamic configuration
-  cat > "${CONFIG_DIR}/dynamic.yml" <<'EOF'
-# Dynamic configuration for Traefik
-http:
-  routers:
-    # Dashboard router with basic auth
-    dashboard:
-      rule: "Host(`traefik.localhost`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))"
-      service: "api@internal"
-      entryPoints:
-        - "dashboard"
-      middlewares:
-        - "auth"
-
-  middlewares:
-    # Dashboard authentication middleware
-    auth:
-      basicAuth:
-        users:
-          - "admin:$apr1$H6uskkkW$IgXLP6ewTrSuBkTrqE8wj/"  # Default admin/admin - CHANGE THIS IN PRODUCTION
+# HTTPS Frontend
+frontend https
+    bind *:443 ssl crt /etc/ssl/certs/default.pem
+    mode http
+    option forwardfor
     
-    # Global redirection middleware - web to websecure
-    web-to-websecure:
-      redirectScheme:
-        scheme: https
-        permanent: true
+    # ACL for node-app
+    acl host_node_app hdr(host) -i front.cloudlunacy.local
+    
+    # Route to backend based on host
+    use_backend node_app if host_node_app
+    
+    # Default backend
+    default_backend node_app
 
-  services: {}
+# Node.js App Backend
+backend node_app
+    mode http
+    option forwardfor
+    server node1 node-app:3005 check
 
-# TCP configuration for MongoDB routing
-tcp:
-  routers:
-    mongodb-catchall:
-      rule: "HostSNI(`*.mongodb.cloudlunacy.uk`)"
-      entryPoints:
-        - "mongodb"
-      service: "mongodb-catchall-service"
-      tls:
-        passthrough: true
-  services:
-    mongodb-catchall-service:
-      loadBalancer:
-        servers: []
+# MongoDB Frontend
+frontend mongodb
+    bind *:27017 ssl crt /etc/ssl/certs/default.pem
+    mode tcp
+    option tcplog
+    
+    # Default MongoDB service
+    default_backend mongodb_default
+
+# Default MongoDB Backend
+backend mongodb_default
+    mode tcp
+    server mongodb1 127.0.0.1:27018 check
 EOF
 
-  # Create a sample agent configuration file
-  cat > "${AGENTS_CONFIG_DIR}/default.yml" <<'EOF'
-# Default agent configuration
-http:
-  routers: {}
-  services: {}
-  middlewares: {}
-tcp:
-  routers: {}
-  services: {}
-EOF
+  # Create a self-signed default certificate for initial setup
+  log "Creating self-signed certificate for initial setup..."
+  openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+    -keyout "${CONFIG_DIR}/certs/default.key" \
+    -out "${CONFIG_DIR}/certs/default.crt" \
+    -subj "/CN=*.${DOMAIN}/O=CloudLunacy/C=US" 
+  
+  # Combine key and certificate for HAProxy
+  cat "${CONFIG_DIR}/certs/default.crt" "${CONFIG_DIR}/certs/default.key" > "${CONFIG_DIR}/certs/default.pem"
+  chmod 600 "${CONFIG_DIR}/certs/default.pem"
 
-  # Create empty acme.json file with proper permissions
-  touch "${CERTS_DIR}/acme.json"
-  chmod 600 "${CERTS_DIR}/acme.json"
+  # Create sample agent configuration directory
+  mkdir -p "${CONFIG_DIR}/agents"
+  touch "${CONFIG_DIR}/agents/default.json"
 
   # Create docker-compose.yml with network configuration
   cat > "${BASE_DIR}/docker-compose.yml" <<EOF
 version: '3.8'
 
 services:
-  traefik:
-    image: traefik:v2.10
-    container_name: traefik
+  haproxy:
+    image: haproxy:2.8-alpine
+    container_name: haproxy
     restart: unless-stopped
     ports:
       - "80:80"
@@ -361,19 +380,17 @@ services:
       - "8081:8081"
       - "27017:27017"  # MongoDB port explicitly exposed
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./config:/etc/traefik
-      - ./config/agents:/etc/traefik/agents
-      - ./traefik-certs:/traefik-certs
-      - /var/log/traefik:/var/log/traefik
+      - ./config/haproxy:/usr/local/etc/haproxy:ro
+      - ./config/certs:/etc/ssl/certs:ro
+      - ${LOGS_DIR}:/var/log/haproxy
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/ping"]
+      test: ["CMD", "haproxy", "-c", "-f", "/usr/local/etc/haproxy/haproxy.cfg"]
       interval: 10s
       timeout: 5s
       retries: 3
       start_period: 10s
     networks:
-      - traefik-network
+      - haproxy-network
       - ${SHARED_NETWORK}
 
   node-app:
@@ -389,26 +406,20 @@ services:
     volumes:
       - ./config:/app/config
     networks:
-      - traefik-network
+      - haproxy-network
       - ${SHARED_NETWORK}
     depends_on:
-      - traefik
+      - haproxy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3005/health"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 15s
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.node-app.rule=Host(\`front.${DOMAIN}\`)"
-      - "traefik.http.routers.node-app.entrypoints=web,websecure"
-      - "traefik.http.routers.node-app.tls.certresolver=letsencrypt"
-      - "traefik.http.services.node-app.loadbalancer.server.port=3005"
 
 networks:
-  traefik-network:
-    name: traefik-network
+  haproxy-network:
+    name: haproxy-network
   ${SHARED_NETWORK}:
     external: true
 EOF
@@ -420,17 +431,17 @@ EOF
 
 # Create Docker networks
 create_networks() {
-  log "Creating Docker networks..."
+  log "Setting up Docker networks..."
   
-  # Create Traefik network if it doesn't exist
-  if ! docker network ls | grep -q "${TRAEFIK_NETWORK}"; then
-    log "Creating ${TRAEFIK_NETWORK} network..."
-    docker network create "${TRAEFIK_NETWORK}" || error_exit "Failed to create ${TRAEFIK_NETWORK} network"
+  # Create HAProxy network if it doesn't exist
+  if ! docker network ls | grep -q "${HAPROXY_NETWORK}"; then
+    log "Creating ${HAPROXY_NETWORK} network..."
+    docker network create "${HAPROXY_NETWORK}" || error_exit "Failed to create ${HAPROXY_NETWORK} network"
   else
-    log "${TRAEFIK_NETWORK} network already exists"
+    log "${HAPROXY_NETWORK} network already exists"
   fi
-
-  # Create or verify shared network
+  
+  # Check if shared network exists
   if ! docker network ls | grep -q "${SHARED_NETWORK}"; then
     log "Creating ${SHARED_NETWORK} network..."
     docker network create "${SHARED_NETWORK}" || error_exit "Failed to create ${SHARED_NETWORK} network"
@@ -438,35 +449,33 @@ create_networks() {
     log "${SHARED_NETWORK} network already exists"
   fi
   
-  log "Docker networks created/verified successfully"
+  log "Docker networks created successfully"
   update_install_state "networks_created" "true"
   return 0
 }
 
-# Start containers
+# Start Docker containers
 start_containers() {
-  log "Starting Docker containers..."
+  log "Building and starting containers..."
+  cd "${BASE_DIR}" || return 1
+  docker-compose up -d --build
   
-  cd "${BASE_DIR}" || error_exit "Failed to change directory to ${BASE_DIR}"
+  if [ $? -ne 0 ]; then
+    log_error "Failed to start containers. Check docker-compose configuration."
+    return 1
+  fi
   
-  # Build and start the containers
-  docker-compose up -d --build || error_exit "Failed to start Docker containers"
-  
-  # Wait for services to start
-  log "Waiting for services to start..."
-  sleep 10
-  
-  # Check container status
-  if ! docker ps | grep -q "traefik"; then
-    error "Traefik container is not running"
-    docker logs traefik
-    error_exit "Failed to start Traefik container"
+  # Check if containers are running
+  if ! docker ps | grep -q "haproxy"; then
+    log_error "HAProxy container failed to start. Checking logs..."
+    docker-compose logs haproxy
+    return 1
   fi
   
   if ! docker ps | grep -q "node-app"; then
-    error "Node.js app container is not running"
-    docker logs node-app
-    error_exit "Failed to start Node.js app container"
+    log_error "Node.js app container failed to start. Checking logs..."
+    docker-compose logs node-app
+    return 1
   fi
   
   log "Containers started successfully"
@@ -474,130 +483,210 @@ start_containers() {
   return 0
 }
 
-# Verify services
+# Verify services are operational
 verify_services() {
   log "Verifying services..."
+  local retries=5
+  local delay=10
+  local count=0
   
-  # Check Traefik health
-  local traefik_health
-  traefik_health=$(docker inspect --format='{{.State.Health.Status}}' traefik 2>/dev/null || echo "unknown")
-  
-  if [ "$traefik_health" = "healthy" ]; then
-    success "Traefik is healthy"
-  else
-    log "Checking Traefik status..." 
-    if curl -s http://localhost:8080/ping > /dev/null; then
-      success "Traefik is responding to ping"
-    else
-      warn "Traefik health check failed, service may not be fully operational yet"
-      docker logs traefik | tail -n 20
+  # Verify HAProxy is healthy
+  log "Checking HAProxy health..."
+  while ! docker exec haproxy haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg &>/dev/null; do
+    count=$((count+1))
+    if [ $count -ge $retries ]; then
+      log_error "HAProxy health check failed after $retries attempts"
+      return 1
     fi
-  fi
+    log "Waiting for HAProxy to be ready... ($count/$retries)"
+    sleep $delay
+  done
+  log "HAProxy is healthy"
   
-  # Check node-app health
-  local node_health
-  node_health=$(docker inspect --format='{{.State.Health.Status}}' node-app 2>/dev/null || echo "unknown")
-  
-  if [ "$node_health" = "healthy" ]; then
-    success "Node.js app is healthy"
-  else
-    log "Checking Node.js app status..."
-    if curl -s http://localhost:${NODE_PORT}/health > /dev/null; then
-      success "Node.js app is responding to health check"
-    else
-      warn "Node.js app health check failed, service may not be fully operational yet"
-      docker logs node-app | tail -n 20
+  # Verify Node.js app is healthy
+  log "Checking Node.js app health..."
+  count=0
+  while ! curl -s http://localhost:${NODE_PORT}/health | grep -q "ok"; do
+    count=$((count+1))
+    if [ $count -ge $retries ]; then
+      log_error "Node.js app health check failed after $retries attempts"
+      return 1
     fi
-  fi
+    log "Waiting for Node.js app to be ready... ($count/$retries)"
+    sleep $delay
+  done
+  log "Node.js app is healthy"
   
-  # Verify MongoDB port exposure
-  if docker port traefik | grep -q 27017; then
-    success "MongoDB port 27017 is properly exposed in Traefik"
-  else
-    warn "MongoDB port 27017 is not properly exposed in Traefik"
-    warn "MongoDB forwarding may not work correctly"
+  # Verify MongoDB port is being exposed
+  log "Checking MongoDB port forwarding..."
+  if ! nc -z localhost 27017; then
+    log_error "MongoDB port forwarding check failed"
+    return 1
   fi
+  log "MongoDB port forwarding is working"
   
-  log "Service verification completed"
-  update_install_state "installation_completed" "true"
+  log "All services verified successfully"
+  update_install_state "services_verified" "true"
   return 0
 }
 
-# Cleanup installation if something fails
+# Function to cleanup installation if it fails
 cleanup_installation() {
   log "Cleaning up installation..."
   
-  # Stop containers if they were started
+  # Stop and remove containers if they were started
   if [ "$(get_install_state "containers_started")" = "true" ]; then
-    log "Stopping containers..."
-    cd "${BASE_DIR}" && docker-compose down || warn "Failed to stop containers"
+    log "Stopping and removing containers..."
+    cd "${BASE_DIR}" || return
+    docker-compose down -v
   fi
   
-  # Remove networks if they were created by this script
+  # Remove Docker networks
   if [ "$(get_install_state "networks_created")" = "true" ]; then
     log "Removing Docker networks..."
-    docker network rm "${TRAEFIK_NETWORK}" 2>/dev/null || true
+    docker network rm "${HAPROXY_NETWORK}" 2>/dev/null || true
     # Don't remove shared network as it might be used by other services
   fi
   
-  # Remove directories if they were created
-  if [ "$(get_install_state "directory_created")" = "true" ]; then
-    log "Removing directories..."
-    rm -rf "${BASE_DIR}" || warn "Failed to remove ${BASE_DIR}"
+  # Remove directories
+  if [ "$(get_install_state "directories_created")" = "true" ] || [ "$(get_install_state "repository_cloned")" = "true" ]; then
+    log "Removing created directories..."
+    rm -rf "${BASE_DIR}"
   fi
   
   log "Cleanup completed"
-  return 0
 }
 
-# Installation completed message
-display_completion_message() {
-  success "==========================================="
-  success "CloudLunacy Front Server Installation Complete!"
-  success "==========================================="
-  success ""
-  success "Front server is now running at:"
-  success "- Traefik dashboard: http://localhost:8081/dashboard/"
-  success "- Node.js API: http://localhost:${NODE_PORT}"
-  success ""
-  success "MongoDB routing is configured for subdomain pattern:"
-  success "- <agent-id>.${MONGO_DOMAIN}"
-  success ""
-  success "App routing is configured for subdomain pattern:"
-  success "- <subdomain>.${APP_DOMAIN}"
-  success ""
-  success "To check logs:"
-  success "- Traefik: docker logs traefik"
-  success "- Node.js app: docker logs node-app"
-  success ""
-  success "JWT Secret for agent authentication:"
-  success "${JWT_SECRET}"
-  success ""
-  success "IMPORTANT: Save this JWT secret securely!"
-  success "==========================================="
+# Function to display installation summary
+display_summary() {
+  log_success "==== CloudLunacy Front Server Installation Summary ===="
+  log_success "Installation completed successfully!"
+  log_success ""
+  log_success "Services:"
+  log_success "  - HAProxy: Running on ports 80, 443, 8081, 27017"
+  log_success "  - Node.js App: Running on port ${NODE_PORT}"
+  log_success ""
+  log_success "Access Points:"
+  log_success "  - Frontend: https://front.${DOMAIN}"
+  log_success "  - HAProxy Stats: http://localhost:8081/stats"
+  log_success ""
+  log_success "Configuration:"
+  log_success "  - Config Directory: ${CONFIG_DIR}"
+  log_success "  - Certificate Directory: ${CERTS_DIR}"
+  log_success "  - Log Directory: ${LOGS_DIR}"
+  log_success ""
+  log_success "Next Steps:"
+  log_success "  1. Set up proper SSL certificates"
+  log_success "  2. Configure MongoDB access as needed"
+  log_success "  3. Review HAProxy configuration for security"
+  log_success "  4. Set up DNS for your domains"
+  log_success ""
+  log_success "For more information, visit: https://github.com/Mayze123/cloudlunacy_front"
+  log_success ""
+  log_success "Thank you for installing CloudLunacy Front Server!"
+  log_success "==================================================="
 }
 
-# Main installation function
-install_front_server() {
+# Parse command line arguments
+parse_arguments() {
+  # Default values
+  INTERACTIVE=true
+  SKIP_CONFIRMATION=false
+  
+  # Parse arguments
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --no-interactive)
+        INTERACTIVE=false
+        SKIP_CONFIRMATION=true
+        shift
+        ;;
+      --help)
+        show_help
+        exit 0
+        ;;
+      *)
+        log_error "Unknown option: $1"
+        show_help
+        exit 1
+        ;;
+    esac
+  done
+}
+
+# Show help message
+show_help() {
+  cat << EOF
+CloudLunacy Front Server Installation Script (Version 3.0.0)
+
+Usage: ./install.sh [options]
+
+Options:
+  --no-interactive    Run without interactive prompts
+  --help              Show this help message
+
+For more information, visit: https://github.com/Mayze123/cloudlunacy_front
+EOF
+}
+
+# Main installation flow
+main() {
+  # Parse command line arguments
+  parse_arguments "$@"
+
+  # Display welcome message (skip in non-interactive mode)
+  if [ "$INTERACTIVE" = true ]; then
+    echo "===================================================================="
+    echo "   CloudLunacy Front Server Installation Script (Version 3.0.0)     "
+    echo "===================================================================="
+    echo "This script will install CloudLunacy Front Server with HAProxy for:"
+    echo "  - HTTPS reverse proxy"
+    echo "  - Certificate management"
+    echo "  - MongoDB routing"
+    echo "  - Load balancing"
+    echo ""
+    echo "The installation will perform the following steps:"
+    echo "  1. Check prerequisites"
+    echo "  2. Create necessary directories"
+    echo "  3. Clone the repository"
+    echo "  4. Configure services"
+    echo "  5. Set up Docker networks"
+    echo "  6. Start containers"
+    echo "  7. Verify services"
+    echo ""
+    echo "Press Ctrl+C to cancel or Enter to continue..."
+    read -r
+    echo "===================================================================="
+  fi
+  
   log "Starting CloudLunacy Front Server installation..."
   
   # Initialize installation state
   init_install_state
   
-  # Run installation steps
-  check_prerequisites || error_exit "Prerequisites check failed"
-  create_directories || error_exit "Directory creation failed"
-  clone_repository || error_exit "Repository cloning failed"
-  create_config_files || error_exit "Configuration file creation failed"
-  create_networks || error_exit "Network creation failed"
-  start_containers || error_exit "Container startup failed"
-  verify_services || warn "Service verification produced warnings"
+  check_prerequisites || error_exit "Failed to meet prerequisites"
   
-  # Display completion message
-  display_completion_message
+  create_directories || error_exit "Failed to create directories"
   
+  clone_repository || error_exit "Failed to clone repository"
+  
+  create_config_files || error_exit "Failed to create configuration files"
+  
+  create_networks || error_exit "Failed to create Docker networks"
+  
+  start_containers || error_exit "Failed to start containers"
+  
+  verify_services || error_exit "Failed to verify services"
+  
+  # Update install state to completed
+  update_install_state "installation_completed" "true"
+  
+  # Display installation summary
+  display_summary
+  
+  log "Installation completed successfully"
   return 0
 }
 
-# Run the installation
-install_front_server
+# Execute main function
+main "$@"

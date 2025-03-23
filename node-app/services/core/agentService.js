@@ -6,9 +6,8 @@
  */
 
 const jwt = require("jsonwebtoken");
-const configService = require("./configService");
-const logger = require("../../utils/logger").getLogger("agentService");
 const crypto = require("crypto");
+const logger = require("../../utils/logger").getLogger("agentService");
 
 class AgentService {
   constructor(configManager, mongodbService) {
@@ -16,8 +15,9 @@ class AgentService {
     this.mongodbService = mongodbService;
     this.initialized = false;
     this.agents = new Map();
-    this.jwtSecret = process.env.JWT_SECRET || "default-secret-change-me";
-    this.tokenExpiration = "7d"; // Default token expiration
+    this.jwtSecret =
+      process.env.JWT_SECRET || crypto.randomBytes(32).toString("hex");
+    this.tokenExpiration = process.env.TOKEN_EXPIRATION || "30d";
   }
 
   /**
@@ -249,59 +249,12 @@ class AgentService {
         iat: Math.floor(Date.now() / 1000),
       };
 
-      return jwt.sign(payload, this.jwtSecret, { expiresIn: "30d" });
+      return jwt.sign(payload, this.jwtSecret, {
+        expiresIn: this.tokenExpiration,
+      });
     } catch (err) {
       logger.error(`Failed to generate agent token: ${err.message}`);
       throw err;
-    }
-  }
-
-  /**
-   * Validate agent registration inputs
-   */
-  validateInputs(agentId, targetIp) {
-    // Validate agent ID (alphanumeric and hyphens)
-    const validAgentId = /^[a-zA-Z0-9-]+$/.test(agentId);
-
-    // Validate IP address
-    const validIp =
-      /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/.test(
-        targetIp
-      );
-
-    if (!validAgentId) {
-      logger.warn(`Invalid agent ID format: ${agentId}`);
-    }
-
-    if (!validIp) {
-      logger.warn(`Invalid IP address format: ${targetIp}`);
-    }
-
-    return validAgentId && validIp;
-  }
-
-  /**
-   * Repair agent service
-   */
-  async repair() {
-    try {
-      logger.info("Repairing agent service");
-
-      // Reset state
-      this.initialized = false;
-      this.agents.clear();
-
-      // Re-initialize
-      await this.initialize();
-
-      logger.info("Agent service repair completed");
-      return true;
-    } catch (err) {
-      logger.error(`Failed to repair agent service: ${err.message}`, {
-        error: err.message,
-        stack: err.stack,
-      });
-      return false;
     }
   }
 }

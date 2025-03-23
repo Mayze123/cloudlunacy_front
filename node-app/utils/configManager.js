@@ -133,10 +133,10 @@ class ConfigManager {
     logger.info("Resolving fallback paths");
 
     // Try container paths
-    this.paths.base = "/etc/traefik";
-    this.paths.config = "/etc/traefik";
-    this.paths.agents = "/etc/traefik/agents";
-    this.paths.dynamic = "/etc/traefik/dynamic.yml";
+    this.paths.base = "/etc/haproxy";
+    this.paths.config = "/etc/haproxy";
+    this.paths.agents = "/etc/haproxy/agents";
+    this.paths.dynamic = "/etc/haproxy/haproxy.cfg";
 
     logger.info("Using fallback paths", { paths: this.paths });
     return this.paths;
@@ -162,7 +162,7 @@ class ConfigManager {
         http: {
           routers: {
             dashboard: {
-              rule: "Host(`traefik.localhost`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))",
+              rule: "Host(`haproxy.localhost`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))",
               service: "api@internal",
               entryPoints: ["dashboard"],
               middlewares: ["auth"],
@@ -254,8 +254,9 @@ class ConfigManager {
             logger.info(
               `Created backup of corrupted configuration at ${backupPath}`
             );
-          } catch (backupErr) {
+          } catch (_) {
             // Ignore if we can't create a backup
+            logger.debug("Could not create backup of corrupted configuration");
           }
           config = this.templates.dynamic;
         }
@@ -319,9 +320,9 @@ class ConfigManager {
           this.configs.agents.set(agentId, config);
 
           logger.debug(`Agent configuration validated: ${agentId}`);
-        } catch (err) {
+        } catch (_err) {
           logger.error(
-            `Error with agent configuration ${agentId}: ${err.message}`
+            `Error with agent configuration ${agentId}: ${_err.message}`
           );
 
           // Create a backup and reset
@@ -337,9 +338,9 @@ class ConfigManager {
             this.configs.agents.set(agentId, this.templates.agent);
 
             logger.info(`Reset agent configuration: ${agentId}`);
-          } catch (backupErr) {
+          } catch (_backupErr) {
             logger.error(
-              `Failed to backup/reset agent configuration: ${backupErr.message}`
+              `Failed to backup/reset agent configuration: ${_backupErr.message}`
             );
           }
         }
@@ -459,7 +460,7 @@ class ConfigManager {
           await fs.copyFile(filePath, backupPath);
           logger.debug(`Created backup at ${backupPath}`);
         }
-      } catch (err) {
+      } catch (_) {
         // Ignore if file doesn't exist
       }
 
@@ -505,8 +506,8 @@ class ConfigManager {
       this.configs.agents.set(agentId, config);
 
       return config;
-    } catch (err) {
-      if (err.code === "ENOENT") {
+    } catch (_err) {
+      if (_err.code === "ENOENT") {
         // File doesn't exist, create a new one
         const config = this.templates.agent;
 
@@ -516,12 +517,12 @@ class ConfigManager {
         return config;
       }
 
-      logger.error(`Failed to get agent configuration: ${err.message}`, {
+      logger.error(`Failed to get agent configuration: ${_err.message}`, {
         agentId,
-        error: err.message,
-        stack: err.stack,
+        error: _err.message,
+        stack: _err.stack,
       });
-      throw err;
+      throw _err;
     }
   }
 

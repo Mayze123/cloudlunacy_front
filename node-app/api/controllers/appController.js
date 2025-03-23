@@ -35,7 +35,7 @@ exports.addApp = asyncHandler(async (req, res) => {
   logger.info(`Adding app ${subdomain} with target ${targetUrl}`);
 
   // Add the app route
-  const result = await coreServices.routing.addHttpRoute(
+  const result = await coreServices.routingService.addHttpRoute(
     agentId || "default",
     subdomain,
     targetUrl,
@@ -54,7 +54,7 @@ exports.listApps = asyncHandler(async (req, res) => {
   logger.info("Listing all apps");
 
   // Get all HTTP routes from cache
-  const routes = Array.from(coreServices.routing.routeCache.entries())
+  const routes = Array.from(coreServices.routingService.routeCache.entries())
     .filter(([key]) => key.startsWith("http:"))
     .map(([, route]) => ({
       name: route.name,
@@ -80,8 +80,10 @@ exports.removeApp = asyncHandler(async (req, res) => {
 
   logger.info(`Removing app ${subdomain} for agent ${agentId}`);
 
-  // Remove the app route
-  const result = await coreServices.routing.removeHttpRoute(agentId, subdomain);
+  const result = await coreServices.routingService.removeHttpRoute(
+    agentId,
+    subdomain
+  );
 
   if (!result.success) {
     throw new AppError(`Failed to remove app ${subdomain}`, 404);
@@ -103,7 +105,7 @@ function extractServiceFromConfig(serviceName) {
   if (!serviceName) return null;
 
   const service =
-    coreServices.config.configs.main?.http?.services?.[serviceName];
+    coreServices.configService.configs.main?.http?.services?.[serviceName];
   if (!service?.loadBalancer?.servers?.length) return null;
 
   return service.loadBalancer.servers[0].url;

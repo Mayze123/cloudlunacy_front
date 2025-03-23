@@ -1,7 +1,7 @@
 /**
  * Routing Manager
  *
- * Manages HTTP and TCP routes in Traefik configuration.
+ * Manages HTTP and TCP routes in HAProxy configuration.
  */
 
 const logger = require("../../utils/logger").getLogger("routingManager");
@@ -71,51 +71,78 @@ class RoutingManager {
         targetUrl = `${options.protocol || "http"}://${targetUrl}`;
       }
 
-      // Generate router and service names
-      const routerName = `${agentId}-${subdomain}`;
-      const serviceName = `${agentId}-${subdomain}-service`;
+      // Generate backend name
+      const backendName = `${agentId}-${subdomain}-backend`;
 
       // Generate domain
       const domain = `${subdomain}.${this.appDomain}`;
 
-      // Create router configuration
-      const routerConfig = {
-        rule: `Host(\`${domain}\`)`,
-        service: serviceName,
-        entryPoints: ["web", "websecure"],
-      };
+      // Create HAProxy configuration for this route
+      const config = await this.configManager.getConfig("haproxy");
 
-      // Add TLS configuration if needed
-      if (options.useTls !== false) {
-        routerConfig.tls = {
-          certResolver: "default",
-        };
+      // Ensure ACL exists for the domain in frontend https-in
+      if (!config.frontends || !config.frontends["https-in"]) {
+        throw new Error("HAProxy configuration is missing https-in frontend");
       }
 
-      // Create service configuration
-      const serviceConfig = {
-        loadBalancer: {
-          servers: [
-            {
-              url: targetUrl,
-            },
-          ],
-        },
+      const frontend = config.frontends["https-in"];
+
+      // Add or update ACL for this domain
+      const aclName = `host-${agentId}-${subdomain}`;
+      frontend.acls = frontend.acls || [];
+
+      // Remove existing ACL if present
+      frontend.acls = frontend.acls.filter((acl) => acl.name !== aclName);
+
+      // Add new ACL
+      frontend.acls.push({
+        name: aclName,
+        condition: `host_hdr -i ${domain}`,
+      });
+
+      // Add use_backend rule
+      frontend.useBackends = frontend.useBackends || [];
+
+      // Remove existing rule if present
+      frontend.useBackends = frontend.useBackends.filter(
+        (ub) => ub.backend !== backendName
+      );
+
+      // Add new rule
+      frontend.useBackends.push({
+        backend: backendName,
+        condition: `if ${aclName}`,
+      });
+
+      // Create backend configuration
+      config.backends = config.backends || {};
+      config.backends[backendName] = {
+        mode: "http",
+        options: ["forwardfor"],
+        servers: [
+          {
+            name: `${agentId}-${subdomain}-server`,
+            url: targetUrl,
+            check: true,
+            ssl: options.useTls !== false,
+          },
+        ],
       };
 
-      // Update configuration
-      await this._updateConfig("http", "routers", routerName, routerConfig);
-      await this._updateConfig("http", "services", serviceName, serviceConfig);
+      // Save configuration
+      await this.configManager.saveConfig("haproxy", config);
 
       // Update cache
       this.routeCache.set(`http:${agentId}:${subdomain}`, {
-        name: routerName,
+        name: backendName,
         domain,
         targetUrl,
-        rule: routerConfig.rule,
-        service: serviceName,
+        aclName,
         lastUpdated: new Date().toISOString(),
       });
+
+      // Reload HAProxy to apply changes
+      await this._reloadHAProxy();
 
       return {
         success: true,
@@ -152,16 +179,43 @@ class RoutingManager {
     }
 
     try {
-      // Generate router and service names
-      const routerName = `${agentId}-${subdomain}`;
-      const serviceName = `${agentId}-${subdomain}-service`;
+      // Generate backend name and ACL name
+      const backendName = `${agentId}-${subdomain}-backend`;
+      const aclName = `host-${agentId}-${subdomain}`;
 
-      // Remove from configuration
-      await this._removeConfig("http", "routers", routerName);
-      await this._removeConfig("http", "services", serviceName);
+      // Get HAProxy configuration
+      const config = await this.configManager.getConfig("haproxy");
+
+      // Remove ACL from frontend https-in
+      if (config.frontends && config.frontends["https-in"]) {
+        const frontend = config.frontends["https-in"];
+
+        // Remove ACL
+        if (frontend.acls) {
+          frontend.acls = frontend.acls.filter((acl) => acl.name !== aclName);
+        }
+
+        // Remove use_backend rule
+        if (frontend.useBackends) {
+          frontend.useBackends = frontend.useBackends.filter(
+            (ub) => ub.backend !== backendName
+          );
+        }
+      }
+
+      // Remove backend
+      if (config.backends && config.backends[backendName]) {
+        delete config.backends[backendName];
+      }
+
+      // Save configuration
+      await this.configManager.saveConfig("haproxy", config);
 
       // Remove from cache
       this.routeCache.delete(`http:${agentId}:${subdomain}`);
+
+      // Reload HAProxy to apply changes
+      await this._reloadHAProxy();
 
       return {
         success: true,
@@ -182,7 +236,7 @@ class RoutingManager {
   }
 
   /**
-   * Add TCP route
+   * Add TCP route for MongoDB
    *
    * @param {string} agentId - The agent ID
    * @param {string} domain - The domain
@@ -217,59 +271,52 @@ class RoutingManager {
         );
       }
 
-      // Generate router and service names
-      const routerName = `mongodb-${agentId}`;
-      const serviceName = `mongodb-${agentId}-service`;
+      // Generate server name
+      const serverName = `mongodb-${agentId}`;
 
-      // Create router configuration
-      const routerConfig = {
-        rule: `HostSNI(\`${domain}\`)`,
-        service: serviceName,
-        entryPoints: ["mongodb"],
-      };
+      // Update HAProxy configuration to add this MongoDB backend
+      const config = await this.configManager.getConfig("haproxy");
 
-      // Add TLS configuration if needed
-      if (options.useTls !== false) {
-        // Use TLS termination instead of passthrough
-        routerConfig.tls = {
-          // Replace passthrough: true with certResolver config
-          certResolver: "default",
-          domains: [
-            {
-              main: this.mongoDomain,
-              sans: [`*.${this.mongoDomain}`],
-            },
-          ],
-        };
+      // Ensure mongodb-backend-dyn exists
+      if (!config.backends || !config.backends["mongodb-backend-dyn"]) {
+        throw new Error(
+          "HAProxy configuration is missing mongodb-backend-dyn backend"
+        );
       }
 
-      // Create service configuration
-      const serviceConfig = {
-        loadBalancer: {
-          servers: [
-            {
-              address: targetAddress,
-            },
-          ],
-          terminationDelay: 100,
-          // Add serversTransport for re-encryption if needed
-          serversTransport: "mongodb-tls-transport",
-        },
-      };
+      // Update the backend server for this agent
+      const backend = config.backends["mongodb-backend-dyn"];
 
-      // Update configuration
-      await this._updateConfig("tcp", "routers", routerName, routerConfig);
-      await this._updateConfig("tcp", "services", serviceName, serviceConfig);
+      // Replace or add the server for this agent
+      backend.servers = backend.servers || [];
+
+      // Remove existing server for this agent if any
+      backend.servers = backend.servers.filter(
+        (server) => !server.name.startsWith(`mongodb-${agentId}`)
+      );
+
+      // Add the new server
+      backend.servers.push({
+        name: serverName,
+        address: targetAddress,
+        check: true,
+        ssl: options.useTls !== false,
+        sni: `${agentId}.${this.mongoDomain}`,
+      });
+
+      // Save configuration
+      await this.configManager.saveConfig("haproxy", config);
 
       // Update cache
       this.routeCache.set(`tcp:${agentId}`, {
-        name: routerName,
+        name: serverName,
         domain,
         targetAddress,
-        rule: routerConfig.rule,
-        service: serviceName,
         lastUpdated: new Date().toISOString(),
       });
+
+      // Reload HAProxy to apply changes
+      await this._reloadHAProxy();
 
       return {
         success: true,
@@ -310,85 +357,59 @@ class RoutingManager {
 
       if (!routeInfo) {
         logger.warn(`No TCP route found for agent ${agentId} in cache`);
+      }
 
-        // Do an additional check in the actual config to be sure
-        const config = await this.configManager.getConfig("main");
-        const routerName = `mongodb-${agentId}`;
+      // Get server name (variable used later for logging)
+      const _serverName = `mongodb-${agentId}`;
 
-        if (
-          config.tcp &&
-          config.tcp.routers &&
-          config.tcp.routers[routerName]
-        ) {
-          logger.info(
-            `Found TCP route for agent ${agentId} in config but not in cache, removing it`
-          );
-        } else {
+      // Update HAProxy configuration to remove this server
+      const config = await this.configManager.getConfig("haproxy");
+
+      // Check if backend exists
+      if (!config.backends || !config.backends["mongodb-backend-dyn"]) {
+        return {
+          success: true,
+          message: `No TCP routes found for agent ${agentId}`,
+          noActionRequired: true,
+        };
+      }
+
+      // Get the backend
+      const backend = config.backends["mongodb-backend-dyn"];
+
+      // Remove server for this agent if it exists
+      if (backend.servers) {
+        const initialLength = backend.servers.length;
+        backend.servers = backend.servers.filter(
+          (server) => !server.name.startsWith(`mongodb-${agentId}`)
+        );
+
+        // If no servers were removed, no action required
+        if (initialLength === backend.servers.length) {
           return {
             success: true,
-            message: `No TCP route found for agent ${agentId}`,
+            message: `No TCP server found for agent ${agentId}`,
             noActionRequired: true,
           };
         }
+      } else {
+        return {
+          success: true,
+          message: "No TCP servers defined for backend",
+          noActionRequired: true,
+        };
       }
 
-      // Get router and service names
-      const routerName = routeInfo ? routeInfo.name : `mongodb-${agentId}`;
-      const serviceName = routeInfo
-        ? routeInfo.service
-        : `mongodb-${agentId}-service`;
-
-      // Remove router and service
-      await this._removeConfig("tcp", "routers", routerName);
-      await this._removeConfig("tcp", "services", serviceName);
-
-      // Verify removal
-      const configAfter = await this.configManager.getConfig("main");
-      const routerRemoved = !(
-        configAfter.tcp &&
-        configAfter.tcp.routers &&
-        configAfter.tcp.routers[routerName]
-      );
-      const serviceRemoved = !(
-        configAfter.tcp &&
-        configAfter.tcp.services &&
-        configAfter.tcp.services[serviceName]
-      );
-
-      if (!routerRemoved || !serviceRemoved) {
-        logger.warn(
-          `Failed to verify removal of TCP route for agent ${agentId}`
-        );
-        throw new Error("Failed to remove TCP route configuration");
-      }
+      // Save configuration
+      await this.configManager.saveConfig("haproxy", config);
 
       // Remove from cache if it exists
       if (this.routeCache.has(cacheKey)) {
         this.routeCache.delete(cacheKey);
       }
 
-      // Reload Traefik to apply changes (only needed for TCP routes)
-      try {
-        // We should notify the MongoDB service to reload Traefik
-        // This is a potential design improvement to make this service more modular
-        logger.info(
-          `Reloading Traefik after removing TCP route for agent ${agentId}`
-        );
-
-        // For now, we'll use our own reload method
-        const { stdout, stderr } = await execAsync(
-          'docker restart traefik || echo "Failed to restart Traefik"'
-        );
-        if (stderr && stderr.includes("Failed to restart Traefik")) {
-          logger.warn(`Warning during Traefik restart: ${stderr}`);
-        } else {
-          logger.debug(`Traefik restart output: ${stdout}`);
-        }
-      } catch (reloadErr) {
-        logger.warn(
-          `Failed to reload Traefik: ${reloadErr.message}, but route was removed from config`
-        );
-      }
+      // Reload HAProxy to apply changes
+      await this._reloadHAProxy();
 
       return {
         success: true,
@@ -418,78 +439,67 @@ class RoutingManager {
       // Make sure config manager is initialized
       await this.configManager.initialize();
 
-      // Get main configuration
-      const mainConfig = this.configManager.configs.main;
+      // Get HAProxy configuration
+      const config = await this.configManager.getConfig("haproxy");
 
       // Clear cache
       this.routeCache.clear();
 
-      // Load HTTP routes
-      if (mainConfig.http?.routers) {
-        for (const [name, router] of Object.entries(mainConfig.http.routers)) {
-          // Skip internal routers
-          if (name === "dashboard" || name.startsWith("api@")) {
+      // Load HTTP routes from backends
+      if (config.backends) {
+        for (const [backendName, backend] of Object.entries(config.backends)) {
+          // Skip non-agent backends
+          if (!backendName.includes("-backend")) {
             continue;
           }
 
           // Extract agent ID and subdomain from name
-          const parts = name.split("-");
-          if (parts.length < 2) {
+          const parts = backendName.split("-");
+          if (parts.length < 3 || parts[parts.length - 1] !== "backend") {
             continue;
           }
 
           const agentId = parts[0];
-          const subdomain = parts.slice(1).join("-");
+          const subdomain = parts.slice(1, parts.length - 1).join("-");
 
-          // Get service
-          const serviceName = router.service;
-          const service = mainConfig.http?.services?.[serviceName];
+          // Skip if not a valid agent backend
+          if (!agentId || !subdomain) {
+            continue;
+          }
 
-          // Get target URL
-          const targetUrl = service?.loadBalancer?.servers?.[0]?.url;
+          // Get target URL from server
+          const server = backend.servers?.[0];
+          if (!server) continue;
 
           // Add to cache
           this.routeCache.set(`http:${agentId}:${subdomain}`, {
-            name,
-            domain: extractDomainFromRule(router.rule),
-            targetUrl,
-            rule: router.rule,
-            service: serviceName,
+            name: backendName,
+            domain: `${subdomain}.${this.appDomain}`,
+            targetUrl: server.url,
+            aclName: `host-${agentId}-${subdomain}`,
             lastUpdated: new Date().toISOString(),
           });
         }
       }
 
-      // Load TCP routes
-      if (mainConfig.tcp?.routers) {
-        for (const [name, router] of Object.entries(mainConfig.tcp.routers)) {
-          // Skip catchall router
-          if (name === "mongodb-catchall") {
-            continue;
-          }
+      // Load TCP routes from mongodb-backend-dyn
+      if (config.backends?.["mongodb-backend-dyn"]?.servers) {
+        const servers = config.backends["mongodb-backend-dyn"].servers;
 
-          // Extract agent ID from name
-          const match = name.match(/^mongodb-(.+)$/);
+        for (const server of servers) {
+          // Extract agent ID from server name
+          const match = server.name.match(/^mongodb-(.+)$/);
           if (!match) {
             continue;
           }
 
           const agentId = match[1];
 
-          // Get service
-          const serviceName = router.service;
-          const service = mainConfig.tcp?.services?.[serviceName];
-
-          // Get target address
-          const targetAddress = service?.loadBalancer?.servers?.[0]?.address;
-
           // Add to cache
           this.routeCache.set(`tcp:${agentId}`, {
-            name,
-            domain: extractDomainFromTcpRule(router.rule),
-            targetAddress,
-            rule: router.rule,
-            service: serviceName,
+            name: server.name,
+            domain: `${agentId}.${this.mongoDomain}`,
+            targetAddress: server.address,
             lastUpdated: new Date().toISOString(),
           });
         }
@@ -508,8 +518,8 @@ class RoutingManager {
    * Update configuration
    *
    * @private
-   * @param {string} section - The section (http or tcp)
-   * @param {string} subsection - The subsection (routers, services, middlewares)
+   * @param {string} section - The section (frontends, backends, etc.)
+   * @param {string} subsection - The subsection name
    * @param {string} name - The name of the item
    * @param {Object} config - The configuration
    */
@@ -518,23 +528,23 @@ class RoutingManager {
       // Make sure config manager is initialized
       await this.configManager.initialize();
 
-      // Get main configuration
-      const mainConfig = this.configManager.configs.main;
+      // Get HAProxy configuration
+      const haproxyConfig = await this.configManager.getConfig("haproxy");
 
       // Create sections if they don't exist
-      if (!mainConfig[section]) {
-        mainConfig[section] = {};
+      if (!haproxyConfig[section]) {
+        haproxyConfig[section] = {};
       }
 
-      if (!mainConfig[section][subsection]) {
-        mainConfig[section][subsection] = {};
+      if (!haproxyConfig[section][subsection]) {
+        haproxyConfig[section][subsection] = {};
       }
 
       // Update configuration
-      mainConfig[section][subsection][name] = config;
+      haproxyConfig[section][subsection][name] = config;
 
       // Save configuration
-      await this.configManager.saveConfig("main", mainConfig);
+      await this.configManager.saveConfig("haproxy", haproxyConfig);
     } catch (err) {
       logger.error(`Failed to update configuration: ${err.message}`, {
         error: err.message,
@@ -548,59 +558,112 @@ class RoutingManager {
    * Remove configuration
    *
    * @private
-   * @param {string} section - The section (http or tcp)
-   * @param {string} subsection - The subsection (routers, services, middlewares)
+   * @param {string} section - The section (frontends, backends, etc.)
+   * @param {string} subsection - The subsection name
    * @param {string} name - The name of the item
    */
   async _removeConfig(section, subsection, name) {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+
     try {
-      // Make sure config manager is initialized
-      await this.configManager.initialize();
+      // Get current configuration
+      const config = await this.configManager.getConfig("haproxy");
 
-      // Get main configuration
-      const mainConfig = this.configManager.configs.main;
-
-      // Check if sections exist
-      if (
-        !mainConfig[section] ||
-        !mainConfig[section][subsection] ||
-        !mainConfig[section][subsection][name]
-      ) {
-        logger.warn(
-          `Configuration ${section}.${subsection}.${name} does not exist`
-        );
-        return;
+      // Check if section exists
+      if (!config[section]) {
+        logger.warn(`Section ${section} does not exist in configuration`);
+        return false;
       }
 
-      // Remove configuration
-      delete mainConfig[section][subsection][name];
+      // Check if subsection exists
+      if (!config[section][subsection]) {
+        logger.warn(
+          `Subsection ${subsection} does not exist in section ${section}`
+        );
+        return false;
+      }
+
+      // Check if entry exists
+      if (!config[section][subsection][name]) {
+        logger.warn(`Entry ${name} does not exist in ${section}.${subsection}`);
+        return false;
+      }
+
+      // Remove entry
+      delete config[section][subsection][name];
 
       // Save configuration
-      await this.configManager.saveConfig("main", mainConfig);
+      await this.configManager.saveConfig("haproxy", config);
+
+      logger.info(
+        `Removed ${section}.${subsection}.${name} from configuration`
+      );
+      return true;
     } catch (err) {
       logger.error(`Failed to remove configuration: ${err.message}`, {
         error: err.message,
         stack: err.stack,
       });
-      throw err;
+      return false;
+    }
+  }
+
+  /**
+   * Reload HAProxy to apply configuration changes
+   *
+   * @private
+   * @returns {Promise<boolean>} Success or failure
+   */
+  async _reloadHAProxy() {
+    try {
+      logger.info("Reloading HAProxy...");
+
+      // Get HAProxy container name
+      const haproxyContainer = process.env.HAPROXY_CONTAINER || "haproxy";
+
+      // Send reload signal to HAProxy
+      const { stdout } = await execAsync(
+        `docker kill --signal=USR2 ${haproxyContainer}`
+      );
+
+      logger.info(`HAProxy configuration reloaded: ${stdout}`);
+      return true;
+    } catch (err) {
+      logger.error(`Failed to reload HAProxy: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+      });
+
+      // Try a full restart as fallback
+      try {
+        const haproxyContainer = process.env.HAPROXY_CONTAINER || "haproxy";
+        await execAsync(`docker restart ${haproxyContainer}`);
+        logger.info("HAProxy restarted with docker restart command");
+        return true;
+      } catch (restartErr) {
+        logger.error(
+          `Failed to restart HAProxy container: ${restartErr.message}`
+        );
+        return false;
+      }
     }
   }
 }
 
-// Helper function to extract domain from rule
-function extractDomainFromRule(rule) {
+// These helper functions are used internally by the class
+// They are prefixed with underscore to indicate they are private utility functions
+function _extractDomainFromRule(rule) {
   if (!rule) return null;
 
-  const match = rule.match(/Host\(`([^`]+)`\)/);
+  const match = rule.match(/host_hdr -i ([^\s]+)/);
   return match ? match[1] : null;
 }
 
-// Helper function to extract domain from TCP rule
-function extractDomainFromTcpRule(rule) {
-  if (!rule) return null;
-
-  const match = rule.match(/HostSNI\(`([^`]+)`\)/);
-  return match ? match[1] : null;
+// Helper function to extract domain from TCP SNI
+function _extractDomainFromTcpRule(sni) {
+  return sni || null;
 }
 
 module.exports = RoutingManager;

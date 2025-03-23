@@ -17,10 +17,16 @@ exports.requireAuth = (req, res, next) => {
     // Get authorization header
     const authHeader = req.headers.authorization;
     if (!authHeader) {
-      logger.warn("Missing Authorization header", { path: req.path });
+      logger.warn("Missing Authorization header", {
+        path: req.path,
+        ip: req.ip,
+        method: req.method,
+      });
       return res.status(401).json({
         success: false,
-        error: "Missing Authorization header",
+        error:
+          "Authentication required. Please include an Authorization header.",
+        code: "MISSING_AUTH_HEADER",
       });
     }
 
@@ -28,43 +34,96 @@ exports.requireAuth = (req, res, next) => {
     const parts = authHeader.split(" ");
 
     if (parts.length !== 2 || parts[0] !== "Bearer") {
-      logger.warn("Invalid Authorization format", { path: req.path });
+      logger.warn("Invalid Authorization format", {
+        path: req.path,
+        format: authHeader.substring(0, 20), // Log part of header for debugging (avoiding full token)
+        ip: req.ip,
+        method: req.method,
+      });
       return res.status(401).json({
         success: false,
-        error: "Invalid Authorization format",
+        error: "Invalid Authorization format. Use 'Bearer <token>'",
+        code: "INVALID_AUTH_FORMAT",
       });
     }
 
     const token = parts[1];
 
     if (!token) {
-      logger.warn("Empty token provided", { path: req.path });
+      logger.warn("Empty token provided", {
+        path: req.path,
+        ip: req.ip,
+        method: req.method,
+      });
       return res.status(401).json({
         success: false,
-        error: "Invalid token",
+        error: "Invalid token. Token cannot be empty",
+        code: "EMPTY_TOKEN",
       });
     }
 
     // Verify token
     try {
       // Ensure core services are initialized
-      if (!coreServices.agent) {
+      if (!coreServices.agentService) {
+        logger.error("Authentication service not available", {
+          path: req.path,
+          ip: req.ip,
+          method: req.method,
+        });
         throw new AppError("Authentication service not available", 503);
       }
 
-      const decoded = coreServices.agent.verifyAgentToken(token);
+      const decoded = coreServices.agentService.verifyAgentToken(token);
 
       if (!decoded || !decoded.agentId) {
+        logger.warn("Token payload missing required fields", {
+          path: req.path,
+          ip: req.ip,
+          method: req.method,
+        });
         throw new Error("Invalid token payload");
+      }
+
+      // Update last seen timestamp if agent exists
+      if (
+        decoded.agentId &&
+        coreServices.agentService.agents.has(decoded.agentId)
+      ) {
+        const agent = coreServices.agentService.agents.get(decoded.agentId);
+        if (agent) {
+          agent.lastSeen = new Date().toISOString();
+        }
       }
 
       req.user = decoded;
       next();
     } catch (err) {
-      logger.warn(`Invalid token: ${err.message}`, { path: req.path });
-      return res.status(401).json({
+      // Handle specific JWT errors
+      let errorMessage = "Invalid or expired token";
+      const statusCode = 401;
+      let errorCode = "INVALID_TOKEN";
+
+      if (err.name === "TokenExpiredError") {
+        errorMessage = "Token has expired. Please obtain a new token.";
+        errorCode = "TOKEN_EXPIRED";
+      } else if (err.name === "JsonWebTokenError") {
+        errorMessage =
+          "Invalid token. Token is malformed or signature is invalid.";
+        errorCode = "TOKEN_INVALID";
+      }
+
+      logger.warn(`Token verification failed: ${err.message}`, {
+        path: req.path,
+        error: err.name,
+        ip: req.ip,
+        method: req.method,
+      });
+
+      return res.status(statusCode).json({
         success: false,
-        error: "Invalid or expired token",
+        error: errorMessage,
+        code: errorCode,
       });
     }
   } catch (err) {
@@ -72,6 +131,8 @@ exports.requireAuth = (req, res, next) => {
       error: err.message,
       stack: err.stack,
       path: req.path,
+      ip: req.ip,
+      method: req.method,
     });
 
     // Handle service unavailable separately
@@ -79,12 +140,14 @@ exports.requireAuth = (req, res, next) => {
       return res.status(503).json({
         success: false,
         error: "Authentication service unavailable",
+        code: "AUTH_SERVICE_UNAVAILABLE",
       });
     }
 
     return res.status(500).json({
       success: false,
-      error: "Authentication error",
+      error: "Internal server error during authentication",
+      code: "AUTH_INTERNAL_ERROR",
     });
   }
 };
@@ -124,14 +187,14 @@ exports.optional = (req, res, next) => {
     // Verify token
     try {
       // Ensure core services are initialized
-      if (!coreServices.agent) {
+      if (!coreServices.agentService) {
         logger.debug("Authentication service not available in optional auth", {
           path: req.path,
         });
         return next();
       }
 
-      const decoded = coreServices.agent.verifyAgentToken(token);
+      const decoded = coreServices.agentService.verifyAgentToken(token);
 
       if (!decoded || !decoded.agentId) {
         logger.debug("Invalid token payload in optional auth", {
@@ -209,3 +272,6 @@ exports.requireAgentAccess = (paramName = "agentId") => {
     next();
   };
 };
+
+// Add convenience methods for common role requirements
+exports.requireAdmin = () => exports.requireRole("admin");

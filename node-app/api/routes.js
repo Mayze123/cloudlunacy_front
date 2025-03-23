@@ -96,7 +96,7 @@ router.get(
 router.post(
   "/config/repair",
   authMiddleware.requireAuth,
-  authMiddleware.requireRole("admin"),
+  authMiddleware.requireAdmin(),
   configController.repairConfig
 );
 
@@ -110,14 +110,14 @@ router.get(
   healthController.checkMongo
 );
 router.get(
-  "/health/traefik",
+  "/health/haproxy",
   authMiddleware.requireAuth,
-  healthController.checkTraefik
+  healthController.checkHAProxy
 );
 router.post(
   "/health/repair",
   authMiddleware.requireAuth,
-  authMiddleware.requireRole("admin"),
+  authMiddleware.requireAdmin(),
   healthController.repair
 );
 router.get(
@@ -142,6 +142,14 @@ router.get(
   authMiddleware.requireAuth,
   authMiddleware.requireAgentAccess(),
   certificateController.getAgentCertificates
+);
+
+// Let's Encrypt certificate issuance/renewal (admin only)
+router.post(
+  "/certificates/letsencrypt",
+  authMiddleware.requireAuth,
+  authMiddleware.requireAdmin(),
+  certificateController.issueLetsEncryptCert
 );
 
 // Apply error handling middleware

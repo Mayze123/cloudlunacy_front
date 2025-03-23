@@ -1,39 +1,36 @@
 /**
  * Routing Service
  *
- * Centralized service for HTTP and TCP routing configuration.
+ * Handles HTTP and TCP route management with proper error handling and retry logic.
+ * Uses the new HAProxyConfigManager and retry utilities for better reliability.
  */
 
-/* global process */
-const configService = require("./configService");
 const logger = require("../../utils/logger").getLogger("routingService");
-const Docker = require("dockerode");
-
-const docker = new Docker({ socketPath: "/var/run/docker.sock" });
-
-// Configuration
-const APP_DOMAIN = process.env.APP_DOMAIN || "apps.cloudlunacy.uk";
+const { AppError } = require("../../utils/errorHandler");
+const { withRetry } = require("../../utils/retryHandler");
+const HAProxyConfigManager = require("./haproxyConfigManager");
 
 class RoutingService {
   constructor() {
-    this.appDomain = process.env.APP_DOMAIN || "apps.cloudlunacy.uk";
     this.initialized = false;
-    this.routeCache = new Map(); // Cache of routes to avoid unnecessary updates
+    this.haproxyManager = new HAProxyConfigManager();
+    this.routeCache = new Map();
+    this.appDomain = process.env.APP_DOMAIN || "apps.cloudlunacy.uk";
+    this.mongoDomain = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
   }
 
   /**
    * Initialize the routing service
    */
   async initialize() {
-    if (this.initialized) {
-      return true;
-    }
+    logger.info("Initializing routing service");
 
     try {
-      logger.info("Initializing routing service");
+      // Initialize HAProxy config manager
+      await this.haproxyManager.initialize();
 
       // Load existing routes into cache
-      await this.loadExistingRoutes();
+      await this._loadRoutesIntoCache();
 
       this.initialized = true;
       logger.info("Routing service initialized successfully");
@@ -43,234 +40,500 @@ class RoutingService {
         error: err.message,
         stack: err.stack,
       });
-      throw err;
+      return false;
     }
   }
 
   /**
-   * Load existing routes into cache
+   * Load existing routes into cache for faster access
+   * @private
    */
-  async loadExistingRoutes() {
+  async _loadRoutesIntoCache() {
     try {
-      // Load main config
-      const mainConfig = configService.configs.main;
+      logger.info("Loading existing routes into cache");
 
-      // Process HTTP routes
-      if (mainConfig?.http?.routers) {
-        for (const [name, router] of Object.entries(mainConfig.http.routers)) {
-          this.routeCache.set(`http:${name}`, {
-            type: "http",
-            name,
-            rule: router.rule,
-            service: router.service,
-            lastUpdated: new Date().toISOString(),
-          });
-        }
-      }
+      // Get HAProxy config
+      const config = await this.haproxyManager.loadConfig();
 
-      // Process TCP routes
-      if (mainConfig?.tcp?.routers) {
-        for (const [name, router] of Object.entries(mainConfig.tcp.routers)) {
-          this.routeCache.set(`tcp:${name}`, {
-            type: "tcp",
-            name,
-            rule: router.rule,
-            service: router.service,
-            lastUpdated: new Date().toISOString(),
-          });
+      // Process backends and cache routes
+      if (config.backends) {
+        for (const backendName of Object.keys(config.backends)) {
+          // Extract information from backend name
+          // Assumes format: ${agentId}-${subdomain}-backend
+          const parts = backendName.split("-");
+          if (parts.length >= 3 && parts[parts.length - 1] === "backend") {
+            const agentId = parts[0];
+            const subdomain = parts.slice(1, parts.length - 1).join("-");
+
+            const backend = config.backends[backendName];
+            const server = backend.servers && backend.servers[0];
+
+            if (server) {
+              const targetUrl = server.url;
+
+              // Determine if HTTP or TCP route
+              const isTcp = backend.mode === "tcp";
+              const routeType = isTcp ? "tcp" : "http";
+
+              // Store in cache
+              this.routeCache.set(`${routeType}:${agentId}:${subdomain}`, {
+                name: backendName,
+                domain: isTcp
+                  ? `${agentId}.${this.mongoDomain}`
+                  : `${subdomain}.${this.appDomain}`,
+                targetUrl,
+                lastUpdated: new Date().toISOString(),
+              });
+            }
+          }
         }
       }
 
       logger.info(`Loaded ${this.routeCache.size} routes into cache`);
       return true;
     } catch (err) {
-      logger.error(`Failed to load existing routes: ${err.message}`, {
-        error: err.message,
-        stack: err.stack,
-      });
+      logger.error(`Failed to load routes into cache: ${err.message}`);
       return false;
     }
   }
 
   /**
-   * Add an HTTP route
+   * Add HTTP route with retry logic and validation
+   *
+   * @param {string} agentId - The agent ID
+   * @param {string} subdomain - The subdomain
+   * @param {string} targetUrl - The target URL
+   * @param {Object} options - Additional options
+   * @returns {Promise<Object>} Result
    */
-  async addHttpRoute(agentId, subdomain, targetUrl, _options = {}) {
-    logger.info(`Adding HTTP route for ${subdomain} to ${targetUrl}`);
-
-    try {
-      if (!this.initialized) {
-        await this.initialize();
-      }
-
-      // Validate inputs
-      if (!this.validateRouteInputs(subdomain, targetUrl)) {
-        throw new Error("Invalid subdomain or target URL");
-      }
-
-      // Get main config
-      const mainConfig = configService.configs.main;
-      if (!mainConfig) {
-        throw new Error("Main configuration not loaded");
-      }
-
-      // Ensure http section exists
-      if (!mainConfig.http) {
-        mainConfig.http = { routers: {}, services: {} };
-      }
-      if (!mainConfig.http.routers) {
-        mainConfig.http.routers = {};
-      }
-      if (!mainConfig.http.services) {
-        mainConfig.http.services = {};
-      }
-
-      // Create router name
-      const routerName = `${agentId}-${subdomain}`;
-
-      // Create router
-      mainConfig.http.routers[routerName] = {
-        rule: `Host(\`${subdomain}.${this.appDomain}\`)`,
-        service: `${routerName}-service`,
-        entryPoints: ["web", "websecure"],
-        tls: {
-          certResolver: "letsencrypt",
-        },
-      };
-
-      // Create service
-      mainConfig.http.services[`${routerName}-service`] = {
-        loadBalancer: {
-          servers: [{ url: targetUrl }],
-        },
-      };
-
-      // Save updated config
-      await configService.saveConfig(configService.paths.dynamic, mainConfig);
-
-      // Add to cache
-      this.routeCache.set(`http:${routerName}`, {
-        type: "http",
-        name: routerName,
-        domain: `${subdomain}.${this.appDomain}`,
-        targetUrl,
-        lastUpdated: new Date().toISOString(),
-      });
-
-      return {
-        success: true,
-        agentId,
-        subdomain,
-        domain: `${subdomain}.${this.appDomain}`,
-        targetUrl,
-      };
-    } catch (err) {
-      logger.error(`Failed to add HTTP route for ${subdomain}: ${err.message}`);
-      throw err;
+  async addHttpRoute(agentId, subdomain, targetUrl, options = {}) {
+    if (!this.initialized) {
+      await this.initialize();
     }
-  }
 
-  /**
-   * Validate route inputs
-   * @private
-   */
-  validateRouteInputs(subdomain, targetUrl) {
-    // Validate subdomain (alphanumeric and hyphens)
-    const validSubdomain = /^[a-z0-9-]+$/.test(subdomain);
+    // Validate inputs
+    if (!agentId) {
+      throw new AppError("Agent ID is required", 400);
+    }
 
-    // Validate target URL
-    const validUrl = /^(?:https?:\/\/)?[a-zA-Z0-9.-]+(?::\d+)?(?:\/.*)?$/.test(
-      targetUrl
+    if (!subdomain) {
+      throw new AppError("Subdomain is required", 400);
+    }
+
+    if (!targetUrl) {
+      throw new AppError("Target URL is required", 400);
+    }
+
+    logger.info(
+      `Adding HTTP route for ${subdomain}.${this.appDomain} to ${targetUrl}`
     );
 
-    if (!validSubdomain) {
-      logger.warn(`Invalid subdomain format: ${subdomain}`);
-    }
+    return withRetry(
+      async () => {
+        try {
+          // Normalize target URL
+          if (
+            !targetUrl.startsWith("http://") &&
+            !targetUrl.startsWith("https://")
+          ) {
+            targetUrl = `${options.protocol || "http"}://${targetUrl}`;
+          }
 
-    if (!validUrl) {
-      logger.warn(`Invalid target URL format: ${targetUrl}`);
-    }
+          // Generate backend name
+          const backendName = `${agentId}-${subdomain}-backend`;
 
-    return validSubdomain && validUrl;
+          // Generate domain
+          const domain = `${subdomain}.${this.appDomain}`;
+
+          // Create backend options
+          const backendOptions = {
+            mode: "http",
+            options: ["forwardfor"],
+            servers: [
+              {
+                name: `${agentId}-${subdomain}-server`,
+                url: targetUrl,
+                check: true,
+                ssl: options.useTls !== false,
+              },
+            ],
+          };
+
+          // Add backend to HAProxy config
+          await this.haproxyManager.addBackend(backendName, backendOptions);
+
+          // Add frontend rule
+          const aclName = `host-${agentId}-${subdomain}`;
+          const condition = `host_hdr -i ${domain}`;
+
+          await this.haproxyManager.addFrontendRule(
+            "https-in",
+            backendName,
+            condition,
+            aclName
+          );
+
+          // Apply configuration
+          await this.haproxyManager.applyConfig();
+
+          // Update cache
+          this.routeCache.set(`http:${agentId}:${subdomain}`, {
+            name: backendName,
+            domain,
+            targetUrl,
+            aclName,
+            lastUpdated: new Date().toISOString(),
+          });
+
+          return {
+            success: true,
+            agentId,
+            subdomain,
+            domain,
+            targetUrl,
+            type: "http",
+          };
+        } catch (err) {
+          // Log and rethrow to allow retry
+          logger.error(`Error adding HTTP route: ${err.message}`, {
+            error: err.message,
+            stack: err.stack,
+          });
+
+          throw err;
+        }
+      },
+      {
+        maxRetries: 3,
+        initialDelay: 1000,
+        onRetry: (err, attempt) => {
+          logger.warn(`Retry ${attempt} adding HTTP route (${err.message})`);
+        },
+      }
+    );
   }
 
   /**
-   * Remove an HTTP route
+   * Add TCP route for MongoDB with retry logic
+   *
+   * @param {string} agentId - The agent ID
+   * @param {string} targetHost - The target host
+   * @param {number} targetPort - The target port
+   * @param {Object} options - Additional options
+   * @returns {Promise<Object>} Result
    */
-  async removeHttpRoute(agentId, subdomain) {
-    try {
-      if (!this.initialized) {
-        await this.initialize();
+  async addTcpRoute(agentId, targetHost, targetPort, options = {}) {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+
+    // Validate inputs
+    if (!agentId) {
+      throw new AppError("Agent ID is required", 400);
+    }
+
+    if (!targetHost) {
+      throw new AppError("Target host is required", 400);
+    }
+
+    if (!targetPort) {
+      throw new AppError("Target port is required", 400);
+    }
+
+    logger.info(
+      `Adding TCP route for ${agentId}.${this.mongoDomain} to ${targetHost}:${targetPort}`
+    );
+
+    return withRetry(
+      async () => {
+        try {
+          // Generate backend name
+          const backendName = `${agentId}-mongo-backend`;
+
+          // Generate domain
+          const domain = `${agentId}.${this.mongoDomain}`;
+
+          // Create backend options
+          const backendOptions = {
+            mode: "tcp",
+            options: [],
+            servers: [
+              {
+                name: `${agentId}-mongo-server`,
+                url: `${targetHost}:${targetPort}`,
+                check: options.check !== false,
+                ssl: options.useTls !== false,
+                sni: domain,
+              },
+            ],
+          };
+
+          // Add backend to HAProxy config
+          await this.haproxyManager.addBackend(backendName, backendOptions);
+
+          // Add frontend rule for TCP
+          const aclName = `agent-${agentId}`;
+          const condition = `req_ssl_sni -i ${domain}`;
+
+          await this.haproxyManager.addFrontendRule(
+            "tcp-in",
+            backendName,
+            condition,
+            aclName
+          );
+
+          // Apply configuration
+          await this.haproxyManager.applyConfig();
+
+          // Update cache
+          this.routeCache.set(`tcp:${agentId}:mongo`, {
+            name: backendName,
+            domain,
+            targetUrl: `${targetHost}:${targetPort}`,
+            aclName,
+            lastUpdated: new Date().toISOString(),
+          });
+
+          return {
+            success: true,
+            agentId,
+            domain,
+            targetHost,
+            targetPort,
+            type: "tcp",
+          };
+        } catch (err) {
+          // Log and rethrow to allow retry
+          logger.error(`Error adding TCP route: ${err.message}`, {
+            error: err.message,
+            stack: err.stack,
+          });
+
+          throw err;
+        }
+      },
+      {
+        maxRetries: 3,
+        initialDelay: 1000,
+        onRetry: (err, attempt) => {
+          logger.warn(`Retry ${attempt} adding TCP route (${err.message})`);
+        },
       }
+    );
+  }
 
-      logger.info(`Removing HTTP route for ${subdomain}.${this.appDomain}`);
+  /**
+   * Remove a route (HTTP or TCP)
+   *
+   * @param {string} agentId - The agent ID
+   * @param {string} subdomain - The subdomain (for HTTP routes) or 'mongo' (for TCP routes)
+   * @param {string} type - Route type ('http' or 'tcp')
+   * @returns {Promise<Object>} Result
+   */
+  async removeRoute(agentId, subdomain, type = "http") {
+    if (!this.initialized) {
+      await this.initialize();
+    }
 
-      // Check if route exists
-      const routeName = `${agentId}-${subdomain}`;
-      const cacheKey = `http:${routeName}`;
+    return withRetry(
+      async () => {
+        try {
+          logger.info(
+            `Removing ${type} route for agent ${agentId}, subdomain ${subdomain}`
+          );
 
-      if (!this.routeCache.has(cacheKey)) {
+          // Check cache
+          const cacheKey = `${type}:${agentId}:${subdomain}`;
+          const cachedRoute = this.routeCache.get(cacheKey);
+
+          if (!cachedRoute) {
+            logger.warn(
+              `Route ${cacheKey} not found in cache, trying to remove anyway`
+            );
+          }
+
+          // Generate backend name based on type
+          const backendName =
+            type === "tcp"
+              ? `${agentId}-mongo-backend`
+              : `${agentId}-${subdomain}-backend`;
+
+          // Remove the backend and all related frontend rules
+          await this.haproxyManager.removeBackend(backendName);
+
+          // Apply configuration
+          await this.haproxyManager.applyConfig();
+
+          // Remove from cache
+          this.routeCache.delete(cacheKey);
+
+          return {
+            success: true,
+            agentId,
+            subdomain,
+            type,
+          };
+        } catch (err) {
+          // Log and rethrow to allow retry
+          logger.error(`Error removing route: ${err.message}`, {
+            error: err.message,
+            stack: err.stack,
+          });
+
+          throw err;
+        }
+      },
+      {
+        maxRetries: 2,
+        initialDelay: 500,
+        onRetry: (err, attempt) => {
+          logger.warn(`Retry ${attempt} removing route (${err.message})`);
+        },
+      }
+    );
+  }
+
+  /**
+   * Get all routes for an agent
+   *
+   * @param {string} agentId - The agent ID
+   * @returns {Promise<Array>} Routes
+   */
+  async getAgentRoutes(agentId) {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+
+    const routes = [];
+
+    // Search cache for routes belonging to this agent
+    for (const [key, route] of this.routeCache.entries()) {
+      const [type, routeAgentId] = key.split(":");
+
+      if (routeAgentId === agentId) {
+        routes.push({
+          type,
+          agentId,
+          ...route,
+        });
+      }
+    }
+
+    return routes;
+  }
+
+  /**
+   * Get all routes
+   *
+   * @returns {Promise<Array>} All routes
+   */
+  async getAllRoutes() {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+
+    const routes = [];
+
+    // Convert cache to array
+    for (const [key, route] of this.routeCache.entries()) {
+      const [type, agentId, subdomain] = key.split(":");
+
+      routes.push({
+        type,
+        agentId,
+        subdomain,
+        ...route,
+      });
+    }
+
+    return routes;
+  }
+
+  /**
+   * Check if a route exists
+   *
+   * @param {string} agentId - The agent ID
+   * @param {string} subdomain - The subdomain
+   * @param {string} type - Route type ('http' or 'tcp')
+   * @returns {Promise<boolean>} True if route exists
+   */
+  async routeExists(agentId, subdomain, type = "http") {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+
+    const cacheKey = `${type}:${agentId}:${subdomain}`;
+    return this.routeCache.has(cacheKey);
+  }
+
+  /**
+   * Repair HAProxy configuration if needed
+   *
+   * @returns {Promise<Object>} Repair result
+   */
+  async repairConfig() {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+
+    try {
+      logger.info("Repairing HAProxy configuration");
+
+      // Check health first
+      const healthCheck = await this.haproxyManager.checkHealth();
+      if (healthCheck.healthy) {
+        logger.info("HAProxy is healthy, no repair needed");
         return {
-          success: false,
-          error: `Route for ${subdomain}.${this.appDomain} not found`,
+          success: true,
+          repaired: false,
+          message: "HAProxy is healthy, no repair needed",
         };
       }
 
-      // Get main config
-      const mainConfig = configService.configs.main;
+      // Try to repair with rollback if needed
+      const rolledBack = await this.haproxyManager.rollback();
 
-      // Remove from HTTP routers
-      if (mainConfig?.http?.routers?.[routeName]) {
-        delete mainConfig.http.routers[routeName];
+      if (rolledBack) {
+        logger.info(
+          "Repaired HAProxy configuration by rolling back to previous version"
+        );
+        return {
+          success: true,
+          repaired: true,
+          message: "Repaired by rolling back configuration",
+        };
       }
 
-      // Remove from HTTP services
-      if (mainConfig?.http?.services?.[`${routeName}-service`]) {
-        delete mainConfig.http.services[`${routeName}-service`];
+      // If rollback didn't work, try restarting HAProxy
+      try {
+        const { execAsync } = require("../../utils/exec");
+        await execAsync(
+          `docker restart ${this.haproxyManager.haproxyContainer}`
+        );
+
+        logger.info("Repaired HAProxy by restarting container");
+        return {
+          success: true,
+          repaired: true,
+          message: "Repaired by restarting HAProxy container",
+        };
+      } catch (restartErr) {
+        logger.error(`Failed to restart HAProxy: ${restartErr.message}`);
+        return {
+          success: false,
+          repaired: false,
+          message: `Failed to repair: ${restartErr.message}`,
+        };
       }
-
-      // Save updated config
-      await configService.saveConfig(configService.paths.dynamic, mainConfig);
-
-      // Remove from cache
-      this.routeCache.delete(cacheKey);
-
+    } catch (err) {
+      logger.error(`Failed to repair HAProxy configuration: ${err.message}`);
       return {
-        success: true,
-        domain: `${subdomain}.${this.appDomain}`,
-        agentId,
+        success: false,
+        repaired: false,
+        message: `Failed to repair: ${err.message}`,
       };
-    } catch (err) {
-      logger.error(`Failed to remove HTTP route: ${err.message}`, {
-        error: err.message,
-        stack: err.stack,
-        subdomain,
-        agentId,
-      });
-      throw err;
-    }
-  }
-
-  /**
-   * Repair routing configuration
-   */
-  async repair() {
-    try {
-      logger.info("Repairing routing configuration");
-
-      // Reload routes
-      this.routeCache.clear();
-      await this.loadExistingRoutes();
-
-      return true;
-    } catch (err) {
-      logger.error(`Failed to repair routing configuration: ${err.message}`, {
-        error: err.message,
-        stack: err.stack,
-      });
-      return false;
     }
   }
 }
 
-module.exports = new RoutingService();
+module.exports = RoutingService;

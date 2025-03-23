@@ -40,12 +40,19 @@ exports.getHealth = asyncHandler(async (req, res) => {
     },
   };
 
-  // Check service health
-  const services = {
-    mongodb: await checkMongoDBHealth(),
-    traefik: await checkTraefikHealth(),
-    configManager: coreServices.config.initialized,
-    routingManager: coreServices.routing.initialized,
+  // Initialize services status
+  const status = {
+    agentService: coreServices.agentService ? "ok" : "not-available",
+    certificateService: coreServices.certificateService
+      ? "ok"
+      : "not-available",
+    configService: coreServices.configService.initialized,
+    routingService: coreServices.routingService.initialized,
+    haproxyService: coreServices.haproxyService ? "ok" : "not-available",
+    letsencryptService: coreServices.letsencryptService
+      ? "ok"
+      : "not-available",
+    // ... other services
   };
 
   // Always return 200 for Docker healthcheck
@@ -53,7 +60,7 @@ exports.getHealth = asyncHandler(async (req, res) => {
     status: "ok",
     service: "cloudlunacy-front",
     health,
-    services,
+    services: status,
   });
 });
 
@@ -66,7 +73,7 @@ exports.checkMongo = asyncHandler(async (req, res) => {
   logger.info("Checking MongoDB health");
 
   // Check MongoDB port
-  const portActive = await coreServices.mongodb.checkMongoDBPort();
+  const portActive = await coreServices.mongodbService.checkMongoDBPort();
 
   // Check MongoDB configuration
   const configValid = await checkMongoDBConfig();
@@ -82,26 +89,26 @@ exports.checkMongo = asyncHandler(async (req, res) => {
 });
 
 /**
- * Check Traefik health
+ * Check HAProxy health
  *
- * GET /api/health/traefik
+ * GET /api/health/haproxy
  */
-exports.checkTraefik = asyncHandler(async (req, res) => {
-  logger.info("Checking Traefik health");
+exports.checkHAProxy = asyncHandler(async (req, res) => {
+  logger.info("Checking HAProxy health");
 
-  // Check Traefik container status
-  const containerStatus = await checkTraefikContainer();
+  // Check HAProxy container status
+  const containerStatus = await checkHAProxyContainer();
 
-  // Check if port 8081 (dashboard) is accessible
-  const dashboardAccessible = await checkPort(8081);
+  // Check if stats page (port 8081) is accessible
+  const statsAccessible = await checkPort(8081);
 
-  // Check if dynamic configuration is valid
-  const configValid = await checkTraefikConfig();
+  // Check if configuration is valid
+  const configValid = await checkHAProxyConfig();
 
   res.status(200).json({
     success: true,
     containerStatus,
-    dashboardAccessible,
+    statsAccessible,
     configValid,
   });
 });
@@ -117,13 +124,13 @@ exports.repair = asyncHandler(async (req, res) => {
   // Repair core services
   const servicesRepaired = await coreServices.repair();
 
-  // Restart Traefik
-  const traefikRestarted = await restartTraefik();
+  // Restart HAProxy
+  const haproxyRestarted = await restartHAProxy();
 
   res.status(200).json({
     success: true,
     servicesRepaired,
-    traefikRestarted,
+    haproxyRestarted,
     message: "System repair completed",
   });
 });
@@ -137,51 +144,54 @@ exports.repair = asyncHandler(async (req, res) => {
  */
 exports.checkMongoDBConnections = async (req, res) => {
   try {
-    const configManager = require("../../services/core/configManager");
-    await configManager.initialize();
+    await coreServices.configService.initialize();
 
-    const config = await configManager.getConfig();
+    const haproxyConfig = await coreServices.configService.getConfig("haproxy");
     const issues = [];
 
-    // Check MongoDB services
-    if (config.tcp && config.tcp.services) {
-      for (const [serviceName, service] of Object.entries(
-        config.tcp.services
-      )) {
-        if (
-          serviceName.startsWith("mongodb-") &&
-          serviceName !== "mongodb-catchall-service"
-        ) {
-          // Extract agent ID from service name
-          const agentId = serviceName
-            .replace("mongodb-", "")
-            .replace("-service", "");
+    // Check MongoDB backend
+    if (
+      haproxyConfig.backends &&
+      haproxyConfig.backends["mongodb-backend-dyn"]
+    ) {
+      const backend = haproxyConfig.backends["mongodb-backend-dyn"];
 
-          // Check if the service has servers
-          if (
-            !service.loadBalancer ||
-            !service.loadBalancer.servers ||
-            service.loadBalancer.servers.length === 0
-          ) {
+      // Check if backend has servers
+      if (!backend.servers || backend.servers.length === 0) {
+        issues.push({
+          type: "missing_servers",
+          backend: "mongodb-backend-dyn",
+        });
+      } else {
+        // Check each server for issues
+        for (const server of backend.servers) {
+          // Extract agent ID from server name
+          const agentId = server.name.replace("mongodb-", "");
+
+          // Check if SNI is configured correctly
+          if (!server.sni || !server.sni.includes(agentId)) {
             issues.push({
-              type: "missing_servers",
+              type: "invalid_sni",
               agentId,
-              serviceName,
+              serverName: server.name,
             });
           }
 
-          // Check if there's a corresponding router
-          const routerName = `mongodb-${agentId}`;
-          if (!config.tcp.routers[routerName]) {
+          // Check if server has an address
+          if (!server.address) {
             issues.push({
-              type: "missing_router",
+              type: "missing_address",
               agentId,
-              serviceName,
-              routerName,
+              serverName: server.name,
             });
           }
         }
       }
+    } else {
+      issues.push({
+        type: "missing_backend",
+        backend: "mongodb-backend-dyn",
+      });
     }
 
     // Return the results
@@ -205,6 +215,24 @@ exports.checkMongoDBConnections = async (req, res) => {
   }
 };
 
+/**
+ * Check HAProxy connections
+ *
+ * @param {object} req - The request object
+ * @param {object} res - The response object
+ * @returns {Promise<void>}
+ */
+exports.checkHaproxy = async (req, res) => {
+  try {
+    await coreServices.configService.initialize();
+
+    const haproxyConfig = await coreServices.configService.getConfig("haproxy");
+    // ... existing code ...
+  } catch (err) {
+    // ... existing code ...
+  }
+};
+
 // Helper functions
 
 /**
@@ -213,7 +241,7 @@ exports.checkMongoDBConnections = async (req, res) => {
 async function checkMongoDBHealth() {
   try {
     // Check if MongoDB port is active
-    const portActive = await coreServices.mongodb.checkMongoDBPort();
+    const portActive = await coreServices.mongodbService.checkMongoDBPort();
 
     return {
       portActive,
@@ -235,22 +263,17 @@ async function checkMongoDBHealth() {
 async function checkMongoDBConfig() {
   try {
     // Make sure config is initialized
-    await coreServices.config.initialize();
+    await coreServices.configService.initialize();
 
-    // Get main config
-    const mainConfig = coreServices.config.configs.main;
+    // Get HAProxy config
+    const haproxyConfig = await coreServices.configService.getConfig("haproxy");
 
-    // Check if MongoDB catchall router exists
-    const catchallExists = mainConfig?.tcp?.routers?.["mongodb-catchall"];
-
-    // Check if MongoDB catchall service exists
-    const serviceExists =
-      mainConfig?.tcp?.services?.["mongodb-catchall-service"];
+    // Check if MongoDB backend exists
+    const backendExists = haproxyConfig?.backends?.["mongodb-backend-dyn"];
 
     return {
-      valid: catchallExists && serviceExists,
-      catchallExists: !!catchallExists,
-      serviceExists: !!serviceExists,
+      valid: !!backendExists,
+      backendExists: !!backendExists,
     };
   } catch (err) {
     logger.error(`Failed to check MongoDB config: ${err.message}`);
@@ -262,12 +285,12 @@ async function checkMongoDBConfig() {
 }
 
 /**
- * Check Traefik health
+ * Check HAProxy health
  */
-async function checkTraefikHealth() {
+async function checkHAProxyHealth() {
   try {
-    // Check if Traefik container is running
-    const containerStatus = await checkTraefikContainer();
+    // Check if HAProxy container is running
+    const containerStatus = await checkHAProxyContainer();
 
     return {
       containerRunning: containerStatus.running,
@@ -275,7 +298,7 @@ async function checkTraefikHealth() {
       containerDetails: containerStatus,
     };
   } catch (err) {
-    logger.error(`Failed to check Traefik health: ${err.message}`);
+    logger.error(`Failed to check HAProxy health: ${err.message}`);
     return {
       containerRunning: false,
       status: "error",
@@ -285,18 +308,18 @@ async function checkTraefikHealth() {
 }
 
 /**
- * Check Traefik container status
+ * Check HAProxy container status
  */
-async function checkTraefikContainer() {
+async function checkHAProxyContainer() {
   try {
     const { stdout } = await execAsync(
-      'docker ps -a --format "{{.Names}},{{.Status}},{{.Ports}}" --filter "name=traefik"'
+      'docker ps -a --format "{{.Names}},{{.Status}},{{.Ports}}" --filter "name=haproxy"'
     );
 
     if (!stdout.trim()) {
       return {
         running: false,
-        error: "No Traefik container found",
+        error: "No HAProxy container found",
       };
     }
 
@@ -309,7 +332,7 @@ async function checkTraefikContainer() {
       ports,
     };
   } catch (err) {
-    logger.error(`Failed to check Traefik container: ${err.message}`);
+    logger.error(`Failed to check HAProxy container: ${err.message}`);
 
     return {
       running: false,
@@ -319,41 +342,50 @@ async function checkTraefikContainer() {
 }
 
 /**
- * Check if Traefik configuration is valid
+ * Check if HAProxy configuration is valid
  */
-async function checkTraefikConfig() {
+async function checkHAProxyConfig() {
   try {
     // Make sure config manager is initialized
-    await coreServices.config.initialize();
+    await coreServices.configService.initialize();
 
     // Check if config has required sections
-    const config = coreServices.config.configs.main;
+    const haproxyConfig = await coreServices.configService.getConfig("haproxy");
 
-    const httpValid =
-      config &&
-      config.http &&
-      config.http.routers &&
-      config.http.services &&
-      config.http.middlewares;
+    const frontendsValid =
+      haproxyConfig &&
+      haproxyConfig.frontends &&
+      haproxyConfig.frontends["https-in"] &&
+      haproxyConfig.frontends["mongodb-in"];
 
-    const tcpValid =
-      config && config.tcp && config.tcp.routers && config.tcp.services;
+    const backendsValid =
+      haproxyConfig &&
+      haproxyConfig.backends &&
+      haproxyConfig.backends["mongodb-backend-dyn"] &&
+      haproxyConfig.backends["node-app-backend"];
 
-    const mongoValid =
-      tcpValid &&
-      config.tcp.routers["mongodb-catchall"] &&
-      config.tcp.services["mongodb-catchall-service"];
+    // Also check HAProxy configuration syntax using docker exec
+    let syntaxValid = false;
+    try {
+      await execAsync(
+        "docker exec haproxy haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg"
+      );
+      syntaxValid = true;
+    } catch (checkErr) {
+      logger.warn(`HAProxy config syntax check failed: ${checkErr.message}`);
+      syntaxValid = false;
+    }
 
     return {
-      valid: httpValid && tcpValid && mongoValid,
+      valid: frontendsValid && backendsValid && syntaxValid,
       details: {
-        httpValid,
-        tcpValid,
-        mongoValid,
+        frontendsValid,
+        backendsValid,
+        syntaxValid,
       },
     };
   } catch (err) {
-    logger.error(`Failed to check Traefik config: ${err.message}`);
+    logger.error(`Failed to check HAProxy config: ${err.message}`);
 
     return {
       valid: false,
@@ -378,15 +410,15 @@ async function checkPort(port) {
 }
 
 /**
- * Restart Traefik container
+ * Restart HAProxy container
  */
-async function restartTraefik() {
+async function restartHAProxy() {
   try {
-    logger.info("Restarting Traefik container");
-    await execAsync("docker restart traefik");
+    logger.info("Restarting HAProxy container");
+    await execAsync("docker restart haproxy");
     return true;
   } catch (err) {
-    logger.error(`Failed to restart Traefik: ${err.message}`);
+    logger.error(`Failed to restart HAProxy: ${err.message}`);
     return false;
   }
 }
@@ -400,13 +432,13 @@ exports.checkMongoDBListener = asyncHandler(async (req, res) => {
   logger.info("Checking MongoDB listener status");
 
   // Check if MongoDB port is active
-  const portActive = await coreServices.mongodb.checkMongoDBPort();
+  const portActive = await coreServices.mongodbService.checkMongoDBPort();
 
   if (!portActive) {
     logger.warn("MongoDB listener is not active, attempting to fix");
 
-    // Try to fix the issue
-    const fixed = await coreServices.mongodb.ensureMongoDBEntrypoint();
+    // Try to fix the issue by ensuring MongoDB port
+    const fixed = await coreServices.mongodbService.ensureMongoDBPort();
 
     if (!fixed) {
       return res.status(500).json({

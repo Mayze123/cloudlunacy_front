@@ -12,7 +12,7 @@ fi
 
 # Create symlinks for config directory
 ln -sf /config /app/config 2>/dev/null || true
-ln -sf /config /etc/traefik 2>/dev/null || true
+ln -sf /config /app/config/haproxy 2>/dev/null || true
 
 # Set default environment variables if not provided
 export NODE_PORT=${NODE_PORT:-3005}

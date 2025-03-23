@@ -38,7 +38,7 @@ exports.addSubdomain = asyncHandler(async (req, res) => {
   const effectiveAgentId = agentId || subdomain;
 
   // Register the MongoDB subdomain
-  const result = await coreServices.mongodb.registerAgent(
+  const result = await coreServices.mongodbService.registerAgent(
     effectiveAgentId,
     targetIp,
     {
@@ -56,7 +56,7 @@ exports.addSubdomain = asyncHandler(async (req, res) => {
   res.status(201).json({
     success: true,
     subdomain: effectiveAgentId,
-    domain: `${effectiveAgentId}.${coreServices.mongodb.mongoDomain}`,
+    domain: `${effectiveAgentId}.${coreServices.mongodbService.mongoDomain}`,
     targetIp,
     mongodbUrl: result.mongodbUrl,
     connectionString: result.connectionString,
@@ -72,13 +72,16 @@ exports.addSubdomain = asyncHandler(async (req, res) => {
 exports.listSubdomains = asyncHandler(async (req, res) => {
   logger.info("Listing all MongoDB subdomains");
 
-  // Get all TCP routes from cache
-  const routes = Array.from(coreServices.routing.routeCache.entries())
-    .filter(([key]) => key.startsWith("tcp:") && !key.includes("catchall"))
-    .map(([, route]) => ({
+  // Get all routes from HAProxy manager
+  const routes = coreServices.haproxyService
+    .listRoutes()
+    .filter(
+      (route) => route.key.startsWith("tcp:") && route.key !== "tcp:mongodb"
+    )
+    .map((route) => ({
       name: route.name,
-      domain: extractDomainFromTcpRule(route.rule),
-      targetIp: extractTargetFromAddress(route.targetAddress),
+      agentId: route.agentId,
+      targetAddress: route.targetAddress,
       lastUpdated: route.lastUpdated,
     }));
 
@@ -100,7 +103,7 @@ exports.removeSubdomain = asyncHandler(async (req, res) => {
   logger.info(`Removing MongoDB subdomain for agent ${agentId}`);
 
   // Remove the MongoDB subdomain
-  const result = await coreServices.mongodb.deregisterAgent(agentId);
+  const result = await coreServices.mongodbService.deregisterAgent(agentId);
 
   if (!result.success) {
     throw new AppError(
@@ -124,21 +127,10 @@ exports.testMongoDB = asyncHandler(async (req, res) => {
   logger.info(`Testing MongoDB connectivity for agent ${agentId}`);
 
   // Test MongoDB connectivity
-  const result = await coreServices.mongodb.testConnection(agentId, targetIp);
+  const result = await coreServices.mongodbService.testConnection(
+    agentId,
+    targetIp
+  );
 
   res.status(200).json(result);
 });
-
-// Helper function to extract domain from TCP rule
-function extractDomainFromTcpRule(rule) {
-  if (!rule) return null;
-
-  const match = rule.match(/HostSNI\(`([^`]+)`\)/);
-  return match ? match[1] : null;
-}
-
-// Helper function to extract target IP from address
-function extractTargetFromAddress(address) {
-  if (!address) return null;
-  return address.split(":")[0];
-}

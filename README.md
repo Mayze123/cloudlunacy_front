@@ -1,191 +1,557 @@
 # CloudLunacy Front Server
 
-A Node.js service for dynamically managing Traefik routing rules for MongoDB Docker instances and other applications.
+A robust platform for dynamically managing HAProxy routing rules for MongoDB instances and applications with full TLS/SSL encryption support.
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Features](#features)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+  - [Automatic Installation](#automatic-installation)
+  - [Manual Installation](#manual-installation)
+- [Configuration](#configuration)
+  - [Environment Variables](#environment-variables)
+  - [HAProxy Configuration](#haproxy-configuration)
+  - [MongoDB Configuration](#mongodb-configuration)
+- [SSL Certificate Management](#ssl-certificate-management)
+  - [Automatic SSL with Let's Encrypt](#automatic-ssl-with-lets-encrypt)
+  - [Manual SSL Certificate Setup](#manual-ssl-certificate-setup)
+- [Usage](#usage)
+  - [Agent Management](#agent-management)
+  - [MongoDB Subdomain Management](#mongodb-subdomain-management)
+  - [Application Routing](#application-routing)
+- [Maintenance](#maintenance)
+  - [Health Checks](#health-checks)
+  - [Backup and Restore](#backup-and-restore)
+  - [Updating](#updating)
+- [Monitoring](#monitoring)
+  - [HAProxy Statistics](#haproxy-statistics)
+  - [Logging](#logging)
+- [Troubleshooting](#troubleshooting)
+  - [Common Issues](#common-issues)
+  - [Diagnostic Commands](#diagnostic-commands)
+- [API Reference](#api-reference)
+- [Security Considerations](#security-considerations)
+- [Architecture](#architecture)
+- [License](#license)
+
+## Overview
+
+CloudLunacy Front Server is a comprehensive solution for managing dynamic routing to MongoDB instances and applications. It uses HAProxy as a reverse proxy, providing TLS encryption, load balancing, and high availability. The system automatically manages SSL certificates, agent registration, and health monitoring.
 
 ## Features
 
-- **Dynamic Routing:** Automatically updates Traefik's dynamic configuration to add new subdomain routes
+- **Dynamic Routing:** Automatically updates HAProxy's configuration to add new subdomain routes
 - **Agent Management:** Handles registration and authentication of agents that connect to the system
 - **MongoDB Management:** Configures and manages MongoDB instances with TLS/SSL support
 - **Certificate Management:** Generates and manages TLS certificates for secure communications
+- **Automatic SSL:** Integration with Let's Encrypt for automatic SSL certificate issuance and renewal
 - **Secure API:** Provides authenticated endpoints with role-based access control
 - **Health Monitoring:** Includes comprehensive health checks and self-healing capabilities
 - **Docker Integration:** Works seamlessly with Docker and Docker Compose environments
-- **Hot-Reload:** Leverages Traefik's file provider to apply configuration changes without requiring restarts
+- **Hot-Reload:** Leverages HAProxy's runtime API to apply configuration changes without requiring restarts
 
-## Repository Structure
+## Prerequisites
 
-### Root Directory
+Before installing CloudLunacy Front Server, ensure you have:
 
-- `docker-compose.yml` - Production Docker Compose configuration
-- `docker-compose.dev.yml` - Development Docker Compose configuration
-- `.env` - Production environment variables
-- `.env.dev` - Development environment variables
-- `start-dev.sh` - Script to start the development environment
-- `dev-down.sh` - Script to shut down the development environment
-- `reset-dev.sh` - Script to reset the development environment
-- `hosts-setup.sh` - Script to set up local host entries for development
-- `install.sh` - Production installation script
-- `agent-mongodb-tls.sh` - Script to set up MongoDB TLS for agents
+- A Linux server with sudo privileges (Ubuntu 20.04+ or Debian 11+ recommended)
+- Domain name(s) configured with DNS pointing to your server
+- Docker (20.10+) and Docker Compose (2.0+) installed
+- Ports 80, 443, 8081, and 27017 available and not in use
+- If using Cloudflare for DNS:
+  - Cloudflare account with your domain configured
+  - Cloudflare Global API Key
+  - Cloudflare Zone API Token with DNS edit permissions
+  - Cloudflare DNS API Token for automatic certificate renewal
 
-### Node.js Application (`node-app/`)
+### Installing Prerequisites
 
-- `server.js` - Main application entry point
-- `start.js` - Application startup script
-- `Dockerfile` - Production Docker configuration
-- `Dockerfile.dev` - Development Docker configuration
-- `package.json` - Node.js dependencies and scripts
+For Ubuntu/Debian:
 
-#### API Routes (`node-app/api/`)
+```bash
+# Update system
+sudo apt update && sudo apt upgrade -y
 
-- `routes.js` - Defines all API endpoints
+# Install Docker
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
 
-#### API Controllers (`node-app/api/controllers/`)
-
-- `agentController.js` - Handles agent registration and authentication
-- `appController.js` - Manages application routing
-- `mongodbController.js` - Manages MongoDB subdomains
-- `configController.js` - Manages system configuration
-- `healthController.js` - Provides health check endpoints
-- `certificateController.js` - Handles certificate operations
-
-#### API Middleware (`node-app/api/middleware/`)
-
-- `auth.js` - Authentication and authorization middleware
-
-#### Core Services (`node-app/services/core/`)
-
-- `index.js` - Initializes and exports all core services
-- `configManager.js` - Manages configuration files
-- `routingManager.js` - Manages Traefik routing rules
-- `mongodbService.js` - Manages MongoDB instances and configuration
-- `agentService.js` - Handles agent registration and authentication
-- `certificateService.js` - Manages TLS certificates
-- `routingService.js` - Manages routing configurations
-- `configService.js` - Configuration service APIs
-
-#### Utilities (`node-app/utils/`)
-
-- `logger.js` - Logging utility with Winston
-- `pathManager.js` - Manages file and directory paths
-- `errorHandler.js` - Global error handling middleware
-- `configValidator.js` - Validates configuration structures
-- `connectivityTester.js` - Tests network connectivity
-- `exec.js` - Executes shell commands
-
-## API Endpoints
-
-### Agent Management
-
-- `POST /api/agent/register` - Register a new agent
-- `POST /api/agent/authenticate` - Authenticate an agent
-- `GET /api/agent/:agentId/status` - Get agent status
-- `DELETE /api/agent/:agentId` - Deregister an agent
-
-### Application Management
-
-- `POST /api/frontdoor/add-app` - Add a new application
-- `GET /api/app` - List all applications
-- `DELETE /api/app/:agentId/:subdomain` - Remove an application
-
-### MongoDB Management
-
-- `POST /api/frontdoor/add-subdomain` - Add a MongoDB subdomain
-- `GET /api/mongodb` - List all MongoDB subdomains
-- `DELETE /api/mongodb/:agentId` - Remove a MongoDB subdomain
-- `GET /api/mongodb/:agentId/test` - Test MongoDB connectivity
-
-### Configuration
-
-- `GET /api/config` - Get global configuration
-- `GET /api/config/:agentId` - Get agent-specific configuration
-- `POST /api/config/repair` - Repair system configuration
-
-### Health Checks
-
-- `GET /api/health` - Get overall health status
-- `GET /api/health/mongo` - Check MongoDB health
-- `GET /api/health/traefik` - Check Traefik health
-- `POST /api/health/repair` - Repair system health issues
-- `GET /api/health/mongodb-listener` - Check MongoDB listener status
-
-### Certificate Management
-
-- `GET /api/certificates/mongodb-ca` - Get MongoDB CA certificate
-- `GET /api/certificates/agent/:agentId` - Get agent certificates
-
-## Core Services
-
-### ConfigManager
-
-Manages all configuration files for the system, including Traefik dynamic configuration and static configuration.
-
-### RoutingManager
-
-Handles Traefik routing rules, adding and removing routes for applications and MongoDB instances.
-
-### MongoDBService
-
-Manages MongoDB instances, including port configuration, TLS setup, and connectivity testing.
-
-### AgentService
-
-Handles agent registration, authentication, and management.
-
-### CertificateService
-
-Generates and manages TLS certificates for secure communications.
-
-## Environment Variables
-
-### Required Variables
-
-- `NODE_ENV` - Environment (production, development)
-- `NODE_PORT` - Port for the Node.js application (default: 3005)
-- `JWT_SECRET` - Secret for JWT token generation
-- `TRAEFIK_FILE_PROVIDER_DIR` - Directory for Traefik dynamic configuration
-- `TRAEFIK_STATIC_CONFIG_FILE` - Path to Traefik static configuration file
-- `MONGODB_HOSTNAME` - MongoDB hostname
-- `MONGODB_PORT` - MongoDB port
-
-### Optional Variables
-
-- `HEALTH_CHECK_INTERVAL` - Interval for health checks in milliseconds (default: 900000)
-- `LOG_LEVEL` - Logging level (default: info)
-- `DOCKER_SOCKET_PATH` - Path to Docker socket (default: /var/run/docker.sock)
+# Install Docker Compose
+sudo apt install -y docker-compose-plugin
+sudo apt install -y openssl curl netcat-openbsd git
+```
 
 ## Installation
 
-### Using Docker Compose
+### Automatic Installation
 
-1. Clone the repository
-2. Configure environment variables in `.env`
-3. Run `docker-compose up -d`
+The easiest way to install CloudLunacy Front Server is using the provided installation script:
 
-### Development Setup
+```bash
+# Download the installation script
+curl -O https://raw.githubusercontent.com/Mayze123/cloudlunacy_front/main/install.sh
+chmod +x install.sh
 
-1. Clone the repository
-2. Configure environment variables in `.env.dev`
-3. Run `bash start-dev.sh`
-4. Run `bash hosts-setup.sh` to configure local hosts
+# Run the installation script (interactive mode)
+sudo ./install.sh
+
+# OR Run in non-interactive mode
+sudo ./install.sh --no-interactive
+```
+
+The installation script will:
+
+1. Check prerequisites
+2. Create necessary directories
+3. Clone the repository
+4. Configure the system
+5. Set up Docker networks
+6. Start containers
+7. Verify services
+
+### Manual Installation
+
+If you prefer a manual installation:
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/Mayze123/cloudlunacy_front.git
+cd cloudlunacy_front
+
+# 2. Configure environment variables
+cp .env.example .env
+nano .env  # Edit with your settings
+
+# 3. Create networks
+docker network create haproxy-network
+docker network create cloudlunacy-network
+
+# 4. Start the services
+docker-compose up -d
+```
+
+## Configuration
+
+### Environment Variables
+
+Edit the `.env` file to configure the system:
+
+```bash
+# Required settings
+DOMAIN=cloudlunacy.local           # Your primary domain
+MONGO_DOMAIN=mongodb.cloudlunacy.uk # MongoDB domain
+APP_DOMAIN=apps.cloudlunacy.uk     # Applications domain
+NODE_PORT=3005                     # Node.js app port
+JWT_SECRET=your_secure_jwt_secret  # JWT authentication secret
+
+# SSL/Let's Encrypt settings (for automatic SSL)
+CF_EMAIL=your_cloudflare_email@example.com
+CF_API_KEY=your_cloudflare_global_api_key
+CF_DNS_API_TOKEN=your_cloudflare_dns_api_token
+CF_ZONE_API_TOKEN=your_cloudflare_zone_api_token
+
+# Optional settings
+LOG_LEVEL=info                     # Logging level (debug, info, warn, error)
+HAPROXY_COMPOSE_PATH=/opt/haproxy/docker-compose.yml
+```
+
+### HAProxy Configuration
+
+The main HAProxy configuration is at `/opt/cloudlunacy_front/config/haproxy/haproxy.cfg`. The system manages this file automatically, but you can make manual adjustments if needed:
+
+```bash
+# Edit HAProxy configuration
+nano /opt/cloudlunacy_front/config/haproxy/haproxy.cfg
+
+# Check configuration validity
+docker exec haproxy haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
+
+# Apply changes
+docker kill -s HUP haproxy
+```
+
+### MongoDB Configuration
+
+For each MongoDB instance you want to expose:
+
+1. Register the agent using the API or web interface
+2. Configure MongoDB to use SSL/TLS
+3. Configure firewall to only allow connections from your CloudLunacy Front Server
+
+## SSL Certificate Management
+
+### Automatic SSL with Let's Encrypt
+
+CloudLunacy Front Server integrates with Let's Encrypt for automatic SSL certificate issuance and renewal:
+
+1. Configure Cloudflare credentials in your `.env` file:
+
+   ```
+   CF_EMAIL=your_cloudflare_email@example.com
+   CF_API_KEY=your_cloudflare_global_api_key
+   CF_DNS_API_TOKEN=your_cloudflare_dns_api_token
+   CF_ZONE_API_TOKEN=your_cloudflare_zone_api_token
+   ```
+
+2. Issue initial certificates:
+
+   ```bash
+   cd /opt/cloudlunacy_front
+   docker exec -it cloudlunacy-front node scripts/renew-letsencrypt.js --force
+   ```
+
+3. Verify automatic renewal is enabled:
+
+   ```bash
+   docker logs cloudlunacy-front | grep "certificate renewal"
+   ```
+
+4. Add a cron job for extra reliability (optional):
+   ```bash
+   # Add to crontab -e
+   0 0 * * * docker exec cloudlunacy-front node /app/scripts/renew-letsencrypt.js >> /var/log/certbot-renew.log 2>&1
+   ```
+
+### Manual SSL Certificate Setup
+
+If you prefer to manage certificates manually:
+
+1. Place your certificates in `/opt/cloudlunacy_front/config/certs/`:
+
+   ```
+   default.crt - Certificate file
+   default.key - Private key file
+   default.pem - Combined file (cat default.crt default.key > default.pem)
+   ```
+
+2. Make sure the permission are correct:
+
+   ```bash
+   chmod 600 /opt/cloudlunacy_front/config/certs/*.key
+   chmod 600 /opt/cloudlunacy_front/config/certs/*.pem
+   ```
+
+3. Reload HAProxy:
+   ```bash
+   docker kill -s HUP haproxy
+   ```
+
+## Usage
+
+### Agent Management
+
+#### Registering a New Agent
+
+```bash
+# Using curl
+curl -X POST http://localhost:3005/api/agent/register \
+  -H "Content-Type: application/json" \
+  -d '{"agentId": "my-agent-id"}'
+```
+
+#### Retrieving Agent Status
+
+```bash
+# Get agent token first
+TOKEN=$(curl -s -X POST http://localhost:3005/api/agent/authenticate \
+  -H "Content-Type: application/json" \
+  -d '{"agentId": "my-agent-id"}' | jq -r .token)
+
+# Get status
+curl http://localhost:3005/api/agent/my-agent-id/status \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+#### Deregistering an Agent
+
+```bash
+curl -X DELETE http://localhost:3005/api/agent/my-agent-id \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### MongoDB Subdomain Management
+
+#### Adding a MongoDB Subdomain
+
+```bash
+curl -X POST http://localhost:3005/api/frontdoor/add-subdomain \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "subdomain": "test-db",
+    "targetIp": "192.168.1.100",
+    "agentId": "my-agent-id"
+  }'
+```
+
+This makes the MongoDB instance accessible at `my-agent-id.mongodb.cloudlunacy.uk:27017`
+
+#### Listing MongoDB Subdomains
+
+```bash
+curl http://localhost:3005/api/mongodb \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+#### Removing a MongoDB Subdomain
+
+```bash
+curl -X DELETE http://localhost:3005/api/mongodb/my-agent-id \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### Application Routing
+
+#### Adding an Application Route
+
+```bash
+curl -X POST http://localhost:3005/api/frontdoor/add-app \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "subdomain": "myapp",
+    "targetUrl": "http://192.168.1.100:8080",
+    "agentId": "my-agent-id"
+  }'
+```
+
+This makes the application accessible at `myapp.apps.cloudlunacy.uk`
+
+#### Listing Applications
+
+```bash
+curl http://localhost:3005/api/app \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+#### Removing an Application
+
+```bash
+curl -X DELETE http://localhost:3005/api/app/my-agent-id/myapp \
+  -H "Authorization: Bearer $TOKEN"
+```
 
 ## Maintenance
 
 ### Health Checks
 
-The system performs automatic health checks every 15 minutes (configurable) to ensure:
+CloudLunacy Front Server performs regular health checks automatically. You can manually check system health:
 
-- MongoDB port is correctly exposed
-- Traefik configuration is valid
-- Agent connections are healthy
+```bash
+# Overall health
+curl http://localhost:3005/api/health
 
-### Repair Operations
+# HAProxy health
+curl http://localhost:3005/api/health/haproxy \
+  -H "Authorization: Bearer $TOKEN"
 
-If issues are detected, the system can self-heal using:
+# MongoDB port health
+curl http://localhost:3005/api/health/mongo \
+  -H "Authorization: Bearer $TOKEN"
+```
 
-- `POST /api/health/repair` - Repair overall system health
-- `POST /api/config/repair` - Repair configuration issues
+### Repairing the System
+
+If issues are detected, you can trigger a repair operation:
+
+```bash
+# Repair system configuration
+curl -X POST http://localhost:3005/api/config/repair \
+  -H "Authorization: Bearer $TOKEN"
+
+# Repair system health
+curl -X POST http://localhost:3005/api/health/repair \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### Backup and Restore
+
+To back up your CloudLunacy Front Server configuration:
+
+```bash
+# Create a backup
+cd /opt/cloudlunacy_front
+tar -czf cloudlunacy_backup_$(date +%Y%m%d).tar.gz config .env
+```
+
+To restore from a backup:
+
+```bash
+# Stop the services
+cd /opt/cloudlunacy_front
+docker-compose down
+
+# Restore configuration
+tar -xzf cloudlunacy_backup_YYYYMMDD.tar.gz -C /opt/cloudlunacy_front
+
+# Start the services
+docker-compose up -d
+```
+
+### Updating
+
+To update CloudLunacy Front Server:
+
+```bash
+# Pull latest changes
+cd /opt/cloudlunacy_front
+git pull
+
+# Rebuild and restart containers
+docker-compose down
+docker-compose up -d --build
+```
+
+## Monitoring
+
+### HAProxy Statistics
+
+HAProxy provides a statistics dashboard accessible at:
+
+```
+http://localhost:8081/stats
+```
+
+Default credentials are configured in the HAProxy config file (admin/admin_password by default).
+
+### Logging
+
+View logs for troubleshooting:
+
+```bash
+# HAProxy logs
+docker logs haproxy
+
+# CloudLunacy Front Server logs
+docker logs cloudlunacy-front
+
+# Follow logs in real-time
+docker logs -f cloudlunacy-front
+```
+
+Log files are also stored in:
+
+- `/var/log/haproxy/` - HAProxy logs
+- `/opt/cloudlunacy_front/logs/` - Application logs
+
+## Troubleshooting
+
+### Common Issues
+
+#### HAProxy Won't Start
+
+Check the configuration:
+
+```bash
+docker exec haproxy haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
+```
+
+View logs:
+
+```bash
+docker logs haproxy
+```
+
+#### Certificate Issues
+
+Verify certificate files:
+
+```bash
+ls -la /opt/cloudlunacy_front/config/certs/
+```
+
+Check certificate validity:
+
+```bash
+openssl x509 -in /opt/cloudlunacy_front/config/certs/default.crt -text -noout
+```
+
+#### MongoDB Connection Problems
+
+Test connectivity:
+
+```bash
+nc -zv your-mongodb-server 27017
+```
+
+Verify MongoDB is listening for connections:
+
+```bash
+docker exec -it your-mongodb-container ss -tulpn | grep 27017
+```
+
+### Diagnostic Commands
+
+```bash
+# Check container status
+docker ps
+
+# Check Docker networks
+docker network ls
+
+# Verify ports are open
+netstat -tulpn | grep -E '80|443|8081|27017'
+
+# Test HAProxy configuration
+docker exec haproxy haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
+```
+
+## API Reference
+
+See the [API Documentation](docs/api.md) for details on all available endpoints.
+
+Main API endpoints:
+
+- **Agent Management:**
+
+  - `POST /api/agent/register` - Register a new agent
+  - `POST /api/agent/authenticate` - Authenticate an agent
+  - `GET /api/agent/:agentId/status` - Get agent status
+  - `DELETE /api/agent/:agentId` - Deregister an agent
+
+- **MongoDB Management:**
+
+  - `POST /api/frontdoor/add-subdomain` - Add MongoDB subdomain
+  - `GET /api/mongodb` - List MongoDB subdomains
+  - `DELETE /api/mongodb/:agentId` - Remove subdomain
+
+- **App Management:**
+  - `POST /api/frontdoor/add-app` - Add application route
+  - `GET /api/app` - List applications
+  - `DELETE /api/app/:agentId/:subdomain` - Remove application
+
+## Security Considerations
+
+- **JWT Secret:** Use a strong, unique JWT secret in the `.env` file
+- **Access Control:** Restrict access to the API endpoints through firewalls
+- **TLS/SSL:** Ensure TLS is enabled for all communications
+- **API Tokens:** Rotate authentication tokens regularly
+- **Regular Updates:** Keep all components updated
+- **Firewall Rules:** Implement proper firewall rules between components
+- **Logging:** Monitor logs for suspicious activities
+
+## Architecture
+
+CloudLunacy Front Server consists of:
+
+1. **HAProxy Container:** Handles TLS termination and routing
+2. **Node.js Application Container:** Manages configuration and API
+3. **Docker Networks:** Isolation between components
+4. **Certbot Container:** Manages Let's Encrypt certificate renewal (optional)
+
+### Connection Flow:
+
+1. Client connects to `<subdomain>.mongodb.cloudlunacy.uk` or `<subdomain>.apps.cloudlunacy.uk`
+2. HAProxy terminates TLS connection and routes based on hostname
+3. For MongoDB: HAProxy establishes a new TLS connection to the target MongoDB server
+4. For Apps: HAProxy forwards the request to the target application
 
 ## License
 
 ISC
+
+---
+
+For support or contributions, please visit the [GitHub repository](https://github.com/Mayze123/cloudlunacy_front).

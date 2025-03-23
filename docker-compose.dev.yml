@@ -1,9 +1,9 @@
 version: "3.8"
 
 services:
-  traefik:
-    image: traefik:v2.10
-    container_name: traefik-dev
+  haproxy:
+    image: haproxy:2.8-alpine
+    container_name: haproxy-dev
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -11,28 +11,23 @@ services:
       - "80:80"
       - "443:443"
       - "8081:8081"
-      - "27018:27017"
+      - "27017:27017"
     networks:
-      - traefik-network
+      - haproxy-network
       - cloudlunacy-network
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./config:/etc/traefik
-      - ./traefik-certs:/traefik-certs
-      - ./logs:/var/log/traefik
+      - ./config/haproxy:/usr/local/etc/haproxy
+      - ./config/certs:/etc/ssl/certs
+      - ./logs:/var/log/haproxy
     environment:
       - TZ=UTC
     healthcheck:
-      test: ["CMD", "traefik", "healthcheck"]
+      test: ["CMD", "haproxy", "-c", "-f", "/usr/local/etc/haproxy/haproxy.cfg"]
       interval: 10s
       timeout: 5s
       retries: 3
       start_period: 30s
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.dashboard.rule=Host(`traefik.localhost`)"
-      - "traefik.http.routers.dashboard.service=api@internal"
-      - "traefik.http.routers.dashboard.entrypoints=dashboard"
 
   node-app:
     build:
@@ -41,7 +36,7 @@ services:
     container_name: cloudlunacy-front-dev
     restart: unless-stopped
     networks:
-      - traefik-network
+      - haproxy-network
       - cloudlunacy-network
     ports:
       - "3005:3005"
@@ -57,9 +52,8 @@ services:
       - NODE_ENV=development
       - MONGO_DOMAIN=mongodb.localhost
       - APP_DOMAIN=apps.localhost
-      - DYNAMIC_CONFIG_PATH=/app/config/dynamic.yml
-      - TRAEFIK_CONTAINER=traefik-dev
-      - MONGO_PORT=27018
+      - HAPROXY_CONTAINER=haproxy-dev
+      - MONGO_PORT=27017
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3005/health"]
       interval: 1000s
@@ -67,11 +61,11 @@ services:
       retries: 3
       start_period: 10s
     depends_on:
-      - traefik
+      - haproxy
 
 networks:
-  traefik-network:
-    name: traefik-network
+  haproxy-network:
+    name: haproxy-network
     external: true
   cloudlunacy-network:
     name: cloudlunacy-network

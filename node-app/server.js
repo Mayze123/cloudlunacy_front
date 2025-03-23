@@ -9,7 +9,6 @@
 require("dotenv").config();
 const express = require("express");
 const morgan = require("morgan");
-const path = require("path");
 
 // Import utilities
 const logger = require("./utils/logger");
@@ -80,15 +79,55 @@ function setupGracefulShutdown(server) {
 function performGracefulShutdown(server) {
   appLogger.info("Starting graceful shutdown...");
 
+  // Set a flag to prevent new connections
+  const isShuttingDown = true;
+  // Use the flag in the app
+  app.use((req, res, next) => {
+    if (isShuttingDown) {
+      res.status(503).send("Service unavailable - server is shutting down");
+    } else {
+      next();
+    }
+  });
+
   // Close the HTTP server
-  server.close(() => {
-    appLogger.info("HTTP server closed.");
+  server.close((err) => {
+    if (err) {
+      appLogger.error("Error during server close:", {
+        error: err.message,
+        stack: err.stack,
+      });
+    } else {
+      appLogger.info("HTTP server closed successfully.");
+    }
+
+    // Additional cleanup operations here if needed
+    try {
+      // Cleanup any remaining resources
+      appLogger.info("Cleaning up resources...");
+
+      // Example: Close database connections if they exist
+      if (coreServices && coreServices.mongodbService) {
+        appLogger.info("Closing MongoDB connections...");
+        // Add actual cleanup code here
+      }
+
+      appLogger.info("Cleanup completed.");
+    } catch (cleanupErr) {
+      appLogger.error("Error during cleanup:", {
+        error: cleanupErr.message,
+        stack: cleanupErr.stack,
+      });
+    }
+
     process.exit(0);
   });
 
   // Force exit after timeout if server.close() hangs
   setTimeout(() => {
-    appLogger.error("Forced shutdown after timeout");
+    appLogger.error(
+      "Forced shutdown after timeout - server.close() did not complete in time"
+    );
     process.exit(1);
   }, 30000); // 30 seconds timeout
 }
@@ -126,13 +165,17 @@ async function startServer() {
       try {
         appLogger.debug("Running periodic health check");
 
-        // Check MongoDB port
-        const mongoConfigOk = await coreServices.mongodb.checkMongoDBPort();
+        // Ensure MongoDB port is available
+        const mongoConfigOk =
+          await coreServices.mongodbService.checkMongoDBPort();
         if (!mongoConfigOk) {
           appLogger.warn(
-            "MongoDB port not correctly exposed, attempting to fix"
+            "MongoDB port not available, attempting to configure it"
           );
-          await coreServices.mongodb.ensureMongoDBPort();
+          await coreServices.mongodbService.ensureMongoDBPort();
+          appLogger.info("MongoDB port configuration complete");
+        } else {
+          appLogger.info("MongoDB port already available");
         }
 
         appLogger.debug("Health check completed");

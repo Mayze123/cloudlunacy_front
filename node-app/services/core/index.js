@@ -1,87 +1,120 @@
 /**
- * Core Services
+ * Core Services Index
  *
- * This module initializes and exports all core services.
+ * Exports all core services and handles initialization.
+ * Uses the new improved implementations for certificate handling and routing.
  */
 
-const pathManager = require("../../utils/pathManager");
-const ConfigManager = require("./configManager");
-const RoutingManager = require("./routingManager");
-const MongoDBService = require("./mongodbService");
-const AgentService = require("./agentService");
-const CertificateService = require("./certificateService");
 const logger = require("../../utils/logger").getLogger("coreServices");
+const configService = require("./configManager");
+const agentService = require("./agentService");
 
-// Initialize services
-const configManager = new ConfigManager();
-const routingManager = new RoutingManager(configManager);
-const mongodbService = new MongoDBService(configManager, routingManager);
-const certificateService = new CertificateService(configManager);
-const agentService = new AgentService(configManager, mongodbService);
+// Import the new services
+const CertificateManager = require("./certificateManager");
+const RoutingService = require("./routingService");
+const HAProxyManager = require("./haproxyConfigManager");
+const LetsEncryptManager = require("./letsencryptManager");
+const mongodbService = require("./mongodbService");
 
-/**
- * Initialize all core services
- */
-async function initialize() {
-  logger.info("Initializing core services");
+// Create instances
+const haproxyService = new HAProxyManager();
+const certificateService = new CertificateManager(configService);
+const routingService = new RoutingService();
+const letsencryptService = new LetsEncryptManager(configService);
 
-  try {
-    // Initialize path manager first
-    await pathManager.initialize();
+const coreServices = {
+  configService,
+  agentService,
+  routingService,
+  certificateService,
+  haproxyService,
+  letsencryptService,
+  mongodbService,
 
-    // Initialize in order of dependencies
-    await configManager.initialize();
-    await routingManager.initialize();
-    await mongodbService.initialize();
-    await agentService.initialize();
-    await certificateService.initialize();
+  /**
+   * Initialize all core services
+   */
+  async initialize() {
+    try {
+      logger.info("Initializing core services");
 
-    logger.info("Core services initialized successfully");
-    return true;
-  } catch (err) {
-    logger.error(`Failed to initialize core services: ${err.message}`, {
-      error: err.message,
-      stack: err.stack,
-    });
-    return false;
-  }
-}
+      // Initialize config service first
+      await configService.initialize();
 
-/**
- * Repair core services
- */
-async function repair() {
-  logger.info("Repairing core services");
+      // Initialize certificate service
+      const certInitialized = await certificateService.initialize();
+      if (!certInitialized) {
+        logger.error("Failed to initialize certificate service");
+        return false;
+      }
 
-  try {
-    // Repair configuration
-    await configManager.repair();
+      // Initialize HAProxy service
+      const haproxyInitialized = await haproxyService.initialize();
+      if (!haproxyInitialized) {
+        logger.error("Failed to initialize HAProxy service");
+        return false;
+      }
 
-    // Ensure MongoDB port and entrypoint
-    await mongodbService.ensureMongoDBPort();
-    await mongodbService.ensureMongoDBEntrypoint();
+      // Initialize routing service
+      const routingInitialized = await routingService.initialize();
+      if (!routingInitialized) {
+        logger.error("Failed to initialize routing service");
+        return false;
+      }
 
-    // Restart Traefik to apply changes
-    await mongodbService.restartTraefik();
+      // Initialize Let's Encrypt service
+      const letsencryptInitialized = await letsencryptService.initialize();
+      if (!letsencryptInitialized) {
+        logger.warn(
+          "Failed to initialize Let's Encrypt service, continuing without it"
+        );
+        // Not critical for system operation, so continue
+      } else {
+        // Set up automated renewal checks
+        letsencryptService.setupAutoRenewal(24); // Check every 24 hours
+      }
 
-    logger.info("Core services repaired successfully");
-    return true;
-  } catch (err) {
-    logger.error(`Failed to repair core services: ${err.message}`, {
-      error: err.message,
-      stack: err.stack,
-    });
-    return false;
-  }
-}
+      // Initialize agent service
+      const agentInitialized = await agentService.initialize();
+      if (!agentInitialized) {
+        logger.error("Failed to initialize agent service");
+        return false;
+      }
 
-// Export all services
-module.exports = {
-  initialize,
-  config: configManager,
-  routing: routingManager,
-  mongodb: mongodbService,
-  agent: agentService,
-  certificate: certificateService,
-  repair,
+      // Initialize MongoDB service
+      const mongoInitialized = await mongodbService.initialize();
+      if (!mongoInitialized) {
+        logger.error("Failed to initialize MongoDB service");
+        return false;
+      }
+
+      logger.info("All core services initialized successfully");
+      return true;
+    } catch (err) {
+      logger.error(`Failed to initialize core services: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+      });
+      return false;
+    }
+  },
+
+  /**
+   * Shutdown all core services
+   */
+  async shutdown() {
+    try {
+      logger.info("Shutting down core services");
+
+      // Add any cleanup needed for services
+
+      logger.info("Core services shutdown complete");
+      return true;
+    } catch (err) {
+      logger.error(`Error during core services shutdown: ${err.message}`);
+      return false;
+    }
+  },
 };
+
+module.exports = coreServices;
