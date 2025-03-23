@@ -10,13 +10,15 @@
 const crypto = require("crypto");
 const { MongoClient } = require("mongodb");
 const logger = require("../../utils/logger").getLogger("mongodbService");
-const haproxyManager = require("./haproxyManager");
 
 class MongoDBService {
-  constructor() {
+  constructor(configService, routingService) {
+    this.configService = configService;
+    this.routingService = routingService;
     this.initialized = false;
     this.mongoDomain = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
     this.connectionCache = new Map();
+    this.haproxyManager = null; // Will be initialized later to avoid circular dependencies
   }
 
   /**
@@ -27,14 +29,27 @@ class MongoDBService {
       return true;
     }
 
-    // Initialize HAProxy manager if not already initialized
-    if (!haproxyManager.initialized) {
-      await haproxyManager.initialize();
-    }
+    // Get the haproxyManager from the core services
+    // This avoids circular dependencies by waiting until initialization time
+    try {
+      // Dynamically require haproxyManager to avoid circular dependencies
+      const haproxyManager = require("./haproxyConfigManager");
+      this.haproxyManager = haproxyManager;
 
-    this.initialized = true;
-    logger.info("MongoDB service initialized");
-    return true;
+      if (this.haproxyManager && !this.haproxyManager.initialized) {
+        await this.haproxyManager.initialize();
+      }
+
+      this.initialized = true;
+      logger.info("MongoDB service initialized");
+      return true;
+    } catch (error) {
+      logger.error(`Failed to initialize MongoDB service: ${error.message}`, {
+        error: error.message,
+        stack: error.stack,
+      });
+      return false;
+    }
   }
 
   /**
@@ -64,7 +79,7 @@ class MongoDBService {
       );
 
       // Update HAProxy configuration
-      const result = await haproxyManager.updateMongoDBBackend(
+      const result = await this.haproxyManager.updateMongoDBBackend(
         agentId,
         targetIp,
         targetPort
@@ -135,7 +150,7 @@ class MongoDBService {
       logger.info(`Deregistering MongoDB agent: ${agentId}`);
 
       // Remove from HAProxy configuration
-      const result = await haproxyManager.removeMongoDBBackend(agentId);
+      const result = await this.haproxyManager.removeMongoDBBackend(agentId);
 
       if (!result.success) {
         logger.error(`Failed to remove MongoDB backend: ${result.error}`);
@@ -325,4 +340,5 @@ class MongoDBService {
   }
 }
 
-module.exports = new MongoDBService();
+// Export the class instead of an instance to match how it's used in core/index.js
+module.exports = MongoDBService;
