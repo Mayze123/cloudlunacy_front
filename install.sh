@@ -434,6 +434,7 @@ services:
 networks:
   haproxy-network:
     name: haproxy-network
+    external: true
   ${SHARED_NETWORK}:
     external: true
 EOF
