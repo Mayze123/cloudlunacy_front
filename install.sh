@@ -227,6 +227,13 @@ create_directories() {
 
 # Clone repository
 clone_repository() {
+  # Check if we're already in the cloned repository
+  if [ -f "./install.sh" ] && [ -d "./node-app" ]; then
+    log "Already in the repository directory, skipping clone step"
+    update_install_state "repository_cloned" "true"
+    return 0
+  fi
+  
   log "Cloning front server repository from $FRONT_REPO_URL..."
   
   # Check if git is installed
