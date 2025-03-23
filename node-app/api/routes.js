@@ -80,7 +80,7 @@ router.get(
   "/mongodb/:agentId/test",
   authMiddleware.requireAuth,
   authMiddleware.requireAgentAccess(),
-  mongodbController.testMongoDB
+  mongodbController.testConnection
 );
 
 /**
