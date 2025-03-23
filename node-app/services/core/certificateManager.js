@@ -328,7 +328,7 @@ class CertificateManager {
 
   /**
    * Get CA certificate content
-   * @returns {Promise<string>} CA certificate content
+   * @returns {Promise<Object>} Object containing CA certificate content
    */
   async getCA() {
     try {
@@ -337,10 +337,16 @@ class CertificateManager {
       }
 
       const caCert = await fs.readFile(this.caCertPath, "utf8");
-      return caCert;
+      return {
+        success: true,
+        caCert,
+      };
     } catch (err) {
       logger.error(`Failed to get CA certificate: ${err.message}`);
-      throw err;
+      return {
+        success: false,
+        error: err.message,
+      };
     }
   }
 
