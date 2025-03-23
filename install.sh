@@ -262,10 +262,12 @@ clone_repository() {
 
 # Create configuration files
 create_config_files() {
-  log "Creating configuration files..."
+  log "Creating/updating configuration files..."
   
-  # Create .env file
-  cat > "${BASE_DIR}/.env" <<EOF
+  # Create .env file if it doesn't exist or if force recreate is specified
+  if [ ! -f "${BASE_DIR}/.env" ] || [ "$FORCE_RECREATE" = true ]; then
+    log "Creating .env file..."
+    cat > "${BASE_DIR}/.env" <<EOF
 # CloudLunacy Front Server Environment Configuration
 # Generated on $(date)
 DOMAIN=${DOMAIN}
@@ -277,6 +279,9 @@ SHARED_NETWORK=${SHARED_NETWORK}
 CONFIG_BASE_PATH=${CONFIG_DIR}
 LOG_LEVEL=info
 EOF
+  else
+    log ".env file already exists, skipping creation"
+  fi
 
   # Create directory structure
   mkdir -p "${CONFIG_DIR}/haproxy"
@@ -284,12 +289,18 @@ EOF
   mkdir -p "${CONFIG_DIR}/agents"
   mkdir -p "${LOGS_DIR}"
 
-  # Create HAProxy configuration
-  cat > "${CONFIG_DIR}/haproxy/haproxy.cfg" <<'EOF'
+  # Create HAProxy configuration if it doesn't exist or if force recreate is specified
+  if [ ! -f "${CONFIG_DIR}/haproxy/haproxy.cfg" ] || [ "$FORCE_RECREATE" = true ]; then
+    log "Creating HAProxy configuration file..."
+    cat > "${CONFIG_DIR}/haproxy/haproxy.cfg" <<'EOF'
 # HAProxy Configuration for CloudLunacy Front Server
 global
     log /dev/log local0
     log /dev/log local1 notice
+    stats socket /var/run/haproxy.sock mode 660 level admin expose-fd listeners
+    stats timeout 30s
+    user haproxy
+    group haproxy
     daemon
     maxconn 4096
     tune.ssl.default-dh-param 2048
@@ -304,13 +315,14 @@ defaults
     timeout connect 5000ms
     timeout client 50000ms
     timeout server 50000ms
-    errorfile 400 /etc/haproxy/errors/400.http
-    errorfile 403 /etc/haproxy/errors/403.http
-    errorfile 408 /etc/haproxy/errors/408.http
-    errorfile 500 /etc/haproxy/errors/500.http
-    errorfile 502 /etc/haproxy/errors/502.http
-    errorfile 503 /etc/haproxy/errors/503.http
-    errorfile 504 /etc/haproxy/errors/504.http
+    # Comment out errorfile references that might cause errors
+    # errorfile 400 /etc/haproxy/errors/400.http
+    # errorfile 403 /etc/haproxy/errors/403.http
+    # errorfile 408 /etc/haproxy/errors/408.http
+    # errorfile 500 /etc/haproxy/errors/500.http
+    # errorfile 502 /etc/haproxy/errors/502.http
+    # errorfile 503 /etc/haproxy/errors/503.http
+    # errorfile 504 /etc/haproxy/errors/504.http
 
 # Stats page
 frontend stats
@@ -322,65 +334,67 @@ frontend stats
     stats admin if TRUE
 
 # HTTP Frontend
-frontend http
+frontend http-in
     bind *:80
     mode http
     option forwardfor
-    http-request redirect scheme https unless { ssl_fc }
+    default_backend node-app-backend
 
-# HTTPS Frontend
-frontend https
-    bind *:443 ssl crt /etc/ssl/certs/default.pem
+# Backend for Node.js app
+backend node-app-backend
     mode http
-    option forwardfor
-    
-    # ACL for node-app
-    acl host_node_app hdr(host) -i front.cloudlunacy.local
-    
-    # Route to backend based on host
-    use_backend node_app if host_node_app
-    
-    # Default backend
-    default_backend node_app
-
-# Node.js App Backend
-backend node_app
-    mode http
-    option forwardfor
-    server node1 node-app:3005 check
-
-# MongoDB Frontend
-frontend mongodb
-    bind *:27017 ssl crt /etc/ssl/certs/default.pem
-    mode tcp
-    option tcplog
-    
-    # Default MongoDB service
-    default_backend mongodb_default
+    server node-app node-app:3005 check
 
 # Default MongoDB Backend
 backend mongodb_default
     mode tcp
     server mongodb1 127.0.0.1:27018 check
-EOF
 
-  # Create a self-signed default certificate for initial setup
-  log "Creating self-signed certificate for initial setup..."
-  openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-    -keyout "${CONFIG_DIR}/certs/default.key" \
-    -out "${CONFIG_DIR}/certs/default.crt" \
-    -subj "/CN=*.${DOMAIN}/O=CloudLunacy/C=US" 
-  
-  # Combine key and certificate for HAProxy
-  cat "${CONFIG_DIR}/certs/default.crt" "${CONFIG_DIR}/certs/default.key" > "${CONFIG_DIR}/certs/default.pem"
-  chmod 600 "${CONFIG_DIR}/certs/default.pem"
+# Backend for Let's Encrypt challenges
+backend letsencrypt-backend
+    mode http
+    server certbot certbot:80
+
+# Empty backend for rejected connections
+backend empty-backend
+    mode tcp
+    timeout server 1s
+    server empty-server 127.0.0.1:1 check
+EOF
+  else
+    log "HAProxy configuration file already exists, skipping creation"
+    if [ "$UPDATE_MODE" = true ]; then
+      log "Update mode: Backing up existing HAProxy configuration..."
+      # Create a timestamped backup
+      cp "${CONFIG_DIR}/haproxy/haproxy.cfg" "${CONFIG_DIR}/haproxy/haproxy.cfg.bak.$(date +%Y%m%d%H%M%S)"
+    fi
+  fi
+
+  # Create self-signed certificate if it doesn't exist or if force recreate is specified
+  if [ ! -f "${CONFIG_DIR}/certs/default.pem" ] || [ "$FORCE_RECREATE" = true ]; then
+    log "Creating self-signed certificate for initial setup..."
+    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+      -keyout "${CONFIG_DIR}/certs/default.key" \
+      -out "${CONFIG_DIR}/certs/default.crt" \
+      -subj "/CN=*.${DOMAIN}/O=CloudLunacy/C=US" 
+    
+    # Combine key and certificate for HAProxy
+    cat "${CONFIG_DIR}/certs/default.crt" "${CONFIG_DIR}/certs/default.key" > "${CONFIG_DIR}/certs/default.pem"
+    chmod 600 "${CONFIG_DIR}/certs/default.pem"
+  else
+    log "Default certificate already exists, skipping creation"
+  fi
 
   # Create sample agent configuration directory
   mkdir -p "${CONFIG_DIR}/agents"
-  touch "${CONFIG_DIR}/agents/default.json"
+  if [ ! -f "${CONFIG_DIR}/agents/default.json" ] || [ "$FORCE_RECREATE" = true ]; then
+    touch "${CONFIG_DIR}/agents/default.json"
+  fi
 
-  # Create docker-compose.yml with network configuration
-  cat > "${BASE_DIR}/docker-compose.yml" <<EOF
+  # Create docker-compose.yml with network configuration only if it doesn't exist or force recreate is specified
+  if [ ! -f "${BASE_DIR}/docker-compose.yml" ] || [ "$FORCE_RECREATE" = true ]; then
+    log "Creating docker-compose.yml file..."
+    cat > "${BASE_DIR}/docker-compose.yml" <<EOF
 version: '3.8'
 
 services:
@@ -438,8 +452,15 @@ networks:
   ${SHARED_NETWORK}:
     external: true
 EOF
+  else
+    log "docker-compose.yml already exists, skipping creation"
+    if [ "$UPDATE_MODE" = true ]; then
+      log "Update mode: Creating backup of existing docker-compose.yml..."
+      cp "${BASE_DIR}/docker-compose.yml" "${BASE_DIR}/docker-compose.yml.bak.$(date +%Y%m%d%H%M%S)"
+    fi
+  fi
 
-  log "Configuration files created successfully"
+  log "Configuration files created/updated successfully"
   update_install_state "config_files_created" "true"
   return 0
 }
@@ -471,9 +492,46 @@ create_networks() {
 
 # Start Docker containers
 start_containers() {
+  if [ "$SKIP_DOCKER_RESTART" = true ]; then
+    log "Skipping Docker container restart as requested"
+    update_install_state "containers_started" "true"
+    return 0
+  fi
+
   log "Building and starting containers..."
   cd "${BASE_DIR}" || return 1
-  docker-compose up -d --build
+  
+  # Check if the containers are already running
+  if docker ps | grep -q "haproxy" && docker ps | grep -q "node-app"; then
+    log "Containers are already running"
+    
+    if [ "$UPDATE_MODE" = true ] || [ "$FORCE_RECREATE" = true ]; then
+      log "Update mode: Restarting containers to apply any configuration changes..."
+      docker-compose restart
+    else
+      log "Skipping restart since neither update nor force-recreate was specified"
+    fi
+    
+    update_install_state "containers_started" "true"
+    return 0
+  fi
+  
+  # If containers exist but are stopped, restart them
+  if docker ps -a | grep -q "haproxy" && docker ps -a | grep -q "node-app"; then
+    log "Containers exist but are not running, restarting them..."
+    
+    if [ "$FORCE_RECREATE" = true ]; then
+      log "Force recreate specified: Removing and recreating containers..."
+      docker-compose down
+      docker-compose up -d --build
+    else
+      docker-compose start
+    fi
+  else
+    # Otherwise, start with build
+    log "Building and starting containers from scratch..."
+    docker-compose up -d --build
+  fi
   
   if [ $? -ne 0 ]; then
     log_error "Failed to start containers. Check docker-compose configuration."
@@ -607,6 +665,9 @@ parse_arguments() {
   # Default values
   INTERACTIVE=true
   SKIP_CONFIRMATION=false
+  UPDATE_MODE=false
+  FORCE_RECREATE=false
+  SKIP_DOCKER_RESTART=false
   
   # Parse arguments
   while [[ $# -gt 0 ]]; do
@@ -614,6 +675,21 @@ parse_arguments() {
       --no-interactive)
         INTERACTIVE=false
         SKIP_CONFIRMATION=true
+        shift
+        ;;
+      --update)
+        UPDATE_MODE=true
+        log "Running in update mode - will preserve existing configurations"
+        shift
+        ;;
+      --force-recreate)
+        FORCE_RECREATE=true
+        log "Force recreate mode - will overwrite existing configurations"
+        shift
+        ;;
+      --skip-docker-restart)
+        SKIP_DOCKER_RESTART=true
+        log "Will skip restarting Docker containers"
         shift
         ;;
       --help)
@@ -637,8 +713,11 @@ CloudLunacy Front Server Installation Script (Version 3.0.0)
 Usage: ./install.sh [options]
 
 Options:
-  --no-interactive    Run without interactive prompts
-  --help              Show this help message
+  --no-interactive     Run without interactive prompts
+  --update             Run in update mode (preserves existing configurations)
+  --force-recreate     Force recreation of configuration files
+  --skip-docker-restart Skip restarting Docker containers
+  --help               Show this help message
 
 For more information, visit: https://github.com/Mayze123/cloudlunacy_front
 EOF
@@ -651,30 +730,51 @@ main() {
 
   # Display welcome message (skip in non-interactive mode)
   if [ "$INTERACTIVE" = true ]; then
-    echo "===================================================================="
-    echo "   CloudLunacy Front Server Installation Script (Version 3.0.0)     "
-    echo "===================================================================="
-    echo "This script will install CloudLunacy Front Server with HAProxy for:"
-    echo "  - HTTPS reverse proxy"
-    echo "  - Certificate management"
-    echo "  - MongoDB routing"
-    echo "  - Load balancing"
-    echo ""
-    echo "The installation will perform the following steps:"
-    echo "  1. Check prerequisites"
-    echo "  2. Create necessary directories"
-    echo "  3. Clone the repository"
-    echo "  4. Configure services"
-    echo "  5. Set up Docker networks"
-    echo "  6. Start containers"
-    echo "  7. Verify services"
-    echo ""
+    if [ "$UPDATE_MODE" = true ]; then
+      echo "===================================================================="
+      echo "   CloudLunacy Front Server Update Script (Version 3.0.0)           "
+      echo "===================================================================="
+      echo "This script will update your CloudLunacy Front Server installation."
+      echo "It will preserve existing configurations whenever possible."
+      echo ""
+      echo "The update will perform the following steps:"
+      echo "  1. Check prerequisites"
+      echo "  2. Backup existing configurations"
+      echo "  3. Update configuration files if needed"
+      echo "  4. Maintain Docker networks"
+      echo "  5. Restart containers if necessary"
+      echo "  6. Verify services"
+      echo ""
+    else
+      echo "===================================================================="
+      echo "   CloudLunacy Front Server Installation Script (Version 3.0.0)     "
+      echo "===================================================================="
+      echo "This script will install CloudLunacy Front Server with HAProxy for:"
+      echo "  - HTTPS reverse proxy"
+      echo "  - Certificate management"
+      echo "  - MongoDB routing"
+      echo "  - Load balancing"
+      echo ""
+      echo "The installation will perform the following steps:"
+      echo "  1. Check prerequisites"
+      echo "  2. Create necessary directories"
+      echo "  3. Clone the repository (if needed)"
+      echo "  4. Configure services"
+      echo "  5. Set up Docker networks"
+      echo "  6. Start containers"
+      echo "  7. Verify services"
+      echo ""
+    fi
     echo "Press Ctrl+C to cancel or Enter to continue..."
     read -r
     echo "===================================================================="
   fi
   
-  log "Starting CloudLunacy Front Server installation..."
+  if [ "$UPDATE_MODE" = true ]; then
+    log "Starting CloudLunacy Front Server update..."
+  else
+    log "Starting CloudLunacy Front Server installation..."
+  fi
   
   # Initialize installation state
   init_install_state
@@ -683,7 +783,13 @@ main() {
   
   create_directories || error_exit "Failed to create directories"
   
-  clone_repository || error_exit "Failed to clone repository"
+  # Only clone repository if it doesn't exist or we're in force recreate mode
+  if [ ! -d "${BASE_DIR}/node-app" ] || [ "$FORCE_RECREATE" = true ]; then
+    clone_repository || error_exit "Failed to clone repository"
+  else
+    log "Repository already exists, skipping clone step"
+    update_install_state "repository_cloned" "true"
+  fi
   
   create_config_files || error_exit "Failed to create configuration files"
   
@@ -697,9 +803,12 @@ main() {
   update_install_state "installation_completed" "true"
   
   # Display installation summary
-  display_summary
+  if [ "$UPDATE_MODE" = true ]; then
+    log_success "CloudLunacy Front Server update completed successfully"
+  else
+    display_summary
+  fi
   
-  log "Installation completed successfully"
   return 0
 }
 
