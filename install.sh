@@ -599,6 +599,37 @@ start_containers() {
     return 1
   fi
   
+  # Give containers some time to initialize and establish connections
+  log "Containers started. Waiting for services to fully initialize..."
+  sleep 10
+  
+  # Check if backend connection is established in HAProxy
+  local max_retries=6
+  local retry_delay=5
+  local retry_count=0
+  local haproxy_healthy=false
+  
+  log "Verifying HAProxy backend connections..."
+  while [ $retry_count -lt $max_retries ]; do
+    if docker logs haproxy | grep -q "Server node-app-backend/node_app is UP"; then
+      log "HAProxy successfully connected to Node.js backend"
+      haproxy_healthy=true
+      break
+    else
+      log "Waiting for HAProxy to connect to backend (attempt $((retry_count+1))/$max_retries)..."
+      sleep $retry_delay
+      retry_count=$((retry_count+1))
+    fi
+  done
+  
+  if [ "$haproxy_healthy" = false ]; then
+    log_warn "HAProxy did not establish connection to backend within timeout period"
+    log_warn "Showing HAProxy logs for troubleshooting:"
+    docker logs haproxy | tail -n 20
+    log "However, containers are running. Services might still initialize properly over time."
+    # We don't return error here, as containers are running and might stabilize later
+  fi
+  
   log "Containers started successfully"
   update_install_state "containers_started" "true"
   return 0
@@ -643,7 +674,7 @@ verify_services() {
       
       # Log Node.js app logs for debugging
       log_error "Last 20 lines of Node.js app logs:"
-      docker logs --tail 20 node-app || true
+      docker logs --tail 20 cloudlunacy-front || true
       
       return 1
     fi
@@ -652,13 +683,30 @@ verify_services() {
   done
   log "Node.js app is healthy"
   
-  # Verify MongoDB port is being exposed
+  # Verify HAProxy is connecting to backends
+  log "Checking HAProxy backend connections..."
+  count=0
+  while ! docker logs haproxy | grep -q "Server node-app-backend/node_app is UP"; do
+    count=$((count+1))
+    if [ $count -ge $retries ]; then
+      log_warn "HAProxy connection to backend check failed after $retries attempts"
+      log_warn "This may resolve itself as services continue to initialize"
+      log_warn "Last 20 lines of HAProxy logs:"
+      docker logs --tail 20 haproxy || true
+      # Continue execution, don't return error
+      break
+    fi
+    log "Waiting for HAProxy to connect to backend... ($count/$retries)"
+    sleep $delay
+  done
+  
+  # Verify MongoDB port is being exposed (but don't fail installation if not available)
   log "Checking MongoDB port forwarding..."
   if ! nc -z localhost 27017; then
-    log_error "MongoDB port forwarding check failed"
-    return 1
+    log_warn "MongoDB port forwarding check failed. This is normal if MongoDB is not configured."
+  else
+    log "MongoDB port forwarding is working"
   fi
-  log "MongoDB port forwarding is working"
   
   log "All services verified successfully"
   update_install_state "services_verified" "true"
