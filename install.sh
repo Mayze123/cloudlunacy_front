@@ -516,7 +516,7 @@ create_networks() {
   # Create HAProxy network if it doesn't exist
   if ! docker network ls | grep -q "${HAPROXY_NETWORK}"; then
     log "Creating ${HAPROXY_NETWORK} network..."
-    docker network create "${HAPROXY_NETWORK}" || error_exit "Failed to create ${HAPROXY_NETWORK} network"
+    docker network create "${HAPROXY_NETWORK}" || log_warn "Failed to create ${HAPROXY_NETWORK} network - it may already exist"
   else
     log "${HAPROXY_NETWORK} network already exists"
   fi
@@ -524,7 +524,7 @@ create_networks() {
   # Check if shared network exists
   if ! docker network ls | grep -q "${SHARED_NETWORK}"; then
     log "Creating ${SHARED_NETWORK} network..."
-    docker network create "${SHARED_NETWORK}" || error_exit "Failed to create ${SHARED_NETWORK} network"
+    docker network create "${SHARED_NETWORK}" || log_warn "Failed to create ${SHARED_NETWORK} network - it may already exist"
   else
     log "${SHARED_NETWORK} network already exists"
   fi

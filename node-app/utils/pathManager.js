@@ -184,7 +184,7 @@ class PathManager {
     try {
       await fs.access(pathToCheck);
       return true;
-    } catch (_err) {
+    } catch (_) {
       return false;
     }
   }
@@ -198,7 +198,7 @@ class PathManager {
     try {
       await fs.access(dirPath);
       return true;
-    } catch (_err) {
+    } catch (_) {
       try {
         await fs.mkdir(dirPath, { recursive: true });
         logger.info(`Created directory: ${dirPath}`);
