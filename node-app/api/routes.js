@@ -17,6 +17,9 @@ const configController = require("./controllers/configController");
 const healthController = require("./controllers/healthController");
 const certificateController = require("./controllers/certificateController");
 
+// Import route modules
+const mongodbRoutes = require("./routes/mongodb.routes");
+
 // Import middleware
 const authMiddleware = require("./middleware/auth");
 const { errorMiddleware } = require("../utils/errorHandler");
@@ -82,6 +85,9 @@ router.get(
   authMiddleware.requireAgentAccess(),
   mongodbController.testConnection
 );
+
+// Mount MongoDB routes module
+router.use("/mongodb", mongodbRoutes);
 
 /**
  * Configuration Routes
