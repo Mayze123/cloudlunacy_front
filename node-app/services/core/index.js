@@ -8,20 +8,22 @@
 const logger = require("../../utils/logger").getLogger("coreServices");
 const ConfigManager = require("./configManager");
 const configService = new ConfigManager(); // Create an instance of the ConfigManager
-const agentService = require("./agentService");
+const AgentService = require("./agentService"); // Import the AgentService class
+const mongodbService = require("./mongodbService");
 
 // Import the new services
 const CertificateManager = require("./certificateManager");
 const RoutingService = require("./routingService");
 const HAProxyManager = require("./haproxyConfigManager");
 const LetsEncryptManager = require("./letsencryptManager");
-const mongodbService = require("./mongodbService");
 
 // Create instances
 const haproxyService = new HAProxyManager();
 const certificateService = new CertificateManager(configService);
 const routingService = new RoutingService();
 const letsencryptService = new LetsEncryptManager(configService);
+// Create an instance of AgentService with dependencies
+const agentService = new AgentService(configService, mongodbService);
 
 const coreServices = {
   configService,
@@ -75,17 +77,17 @@ const coreServices = {
         letsencryptService.setupAutoRenewal(24); // Check every 24 hours
       }
 
+      // Initialize MongoDB service first before agent service since agent service depends on it
+      const mongoInitialized = await mongodbService.initialize();
+      if (!mongoInitialized) {
+        logger.error("Failed to initialize MongoDB service");
+        return false;
+      }
+
       // Initialize agent service
       const agentInitialized = await agentService.initialize();
       if (!agentInitialized) {
         logger.error("Failed to initialize agent service");
-        return false;
-      }
-
-      // Initialize MongoDB service
-      const mongoInitialized = await mongodbService.initialize();
-      if (!mongoInitialized) {
-        logger.error("Failed to initialize MongoDB service");
         return false;
       }
 
