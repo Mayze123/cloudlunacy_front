@@ -9,7 +9,7 @@ const logger = require("../../utils/logger").getLogger("coreServices");
 const ConfigManager = require("./configManager");
 const configService = new ConfigManager(); // Create an instance of the ConfigManager
 const AgentService = require("./agentService"); // Import the AgentService class
-const mongodbService = require("./mongodbService");
+const MongoDBService = require("./mongodbService");
 
 // Import the new services
 const CertificateManager = require("./certificateManager");
@@ -22,6 +22,8 @@ const haproxyService = new HAProxyManager();
 const certificateService = new CertificateManager(configService);
 const routingService = new RoutingService();
 const letsencryptService = new LetsEncryptManager(configService);
+// Create instance of MongoDBService with dependencies
+const mongodbService = new MongoDBService(configService, routingService);
 // Create an instance of AgentService with dependencies
 const agentService = new AgentService(configService, mongodbService);
 

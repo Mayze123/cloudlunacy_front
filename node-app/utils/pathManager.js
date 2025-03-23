@@ -18,6 +18,7 @@ class PathManager {
       logs: process.env.LOGS_BASE_PATH || "/app/logs",
       certs: process.env.CERTS_BASE_PATH || "/app/config/certs",
       scripts: process.env.SCRIPTS_BASE_PATH || "/app/scripts",
+      certbot: process.env.CERTBOT_BASE_PATH || "/app/config/certbot",
     };
 
     // Derived paths
