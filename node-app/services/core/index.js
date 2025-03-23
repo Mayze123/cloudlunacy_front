@@ -80,7 +80,8 @@ const coreServices = {
       }
 
       // Initialize MongoDB service first before agent service since agent service depends on it
-      const mongoInitialized = await mongodbService.initialize();
+      // Pass the haproxyService instance to avoid circular dependencies
+      const mongoInitialized = await mongodbService.initialize(haproxyService);
       if (!mongoInitialized) {
         logger.error("Failed to initialize MongoDB service");
         return false;

@@ -18,26 +18,27 @@ class MongoDBService {
     this.initialized = false;
     this.mongoDomain = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
     this.connectionCache = new Map();
-    this.haproxyManager = null; // Will be initialized later to avoid circular dependencies
+    this.haproxyManager = null; // Will be set during initialize
   }
 
   /**
    * Initialize the MongoDB service
+   * @param {Object} haproxyService - The HAProxy service instance from core/index.js
    */
-  async initialize() {
+  async initialize(haproxyService) {
     if (this.initialized) {
       return true;
     }
 
-    // Get the haproxyManager from the core services
-    // This avoids circular dependencies by waiting until initialization time
     try {
-      // Dynamically require haproxyManager to avoid circular dependencies
-      const haproxyManager = require("./haproxyConfigManager");
-      this.haproxyManager = haproxyManager;
-
-      if (this.haproxyManager && !this.haproxyManager.initialized) {
-        await this.haproxyManager.initialize();
+      // Set the haproxyManager from the parameter
+      if (haproxyService) {
+        this.haproxyManager = haproxyService;
+        logger.info("HAProxy service reference set successfully");
+      } else {
+        logger.warn(
+          "No HAProxy service provided during initialization, MongoDB routes will not work correctly"
+        );
       }
 
       this.initialized = true;
