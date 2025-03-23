@@ -87,6 +87,6 @@ services:
 networks:
   haproxy-network:
     name: haproxy-network
-    driver: bridge
+    external: true
   cloudlunacy-network:
     external: true
