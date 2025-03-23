@@ -26,6 +26,7 @@ class PathManager {
       haproxyConfig: path.join(this.basePaths.config, "haproxy/haproxy.cfg"),
       agentsConfig: path.join(this.basePaths.config, "agents"),
       configBackups: path.join(this.basePaths.config, "backups"),
+      dynamicConfig: path.join(this.basePaths.config, "dynamic-config.yaml"),
 
       // Certificate paths
       certsAgents: path.join(this.basePaths.certs, "agents"),

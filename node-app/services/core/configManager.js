@@ -76,18 +76,26 @@ class ConfigManager {
 
       const configPath = this.paths[name];
       if (!configPath) {
+        logger.error(`Unknown configuration path key: ${name}`);
         throw new Error(`Unknown configuration: ${name}`);
       }
 
       // Check if the file exists
+      let fileExists = false;
       try {
         await fs.access(configPath);
+        fileExists = true;
       } catch (err) {
         logger.warn(
           `Configuration file not found at ${configPath}, creating default`
         );
+      }
+
+      if (!fileExists) {
         this.configs[name] = this._createDefaultConfig(name);
         await this.saveConfig(name, this.configs[name]);
+        logger.info(`Created default ${name} configuration at ${configPath}`);
+        return this.configs[name];
       }
 
       // Read and parse the configuration
@@ -111,7 +119,16 @@ class ConfigManager {
 
       // Create a default configuration if loading failed
       this.configs[name] = this._createDefaultConfig(name);
-      await this.saveConfig(name, this.configs[name]);
+
+      try {
+        await this.saveConfig(name, this.configs[name]);
+        logger.info(`Created default ${name} configuration as fallback`);
+      } catch (saveErr) {
+        logger.error(
+          `Failed to save default ${name} configuration: ${saveErr.message}`
+        );
+      }
+
       return this.configs[name];
     }
   }
