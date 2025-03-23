@@ -14,11 +14,13 @@ const MongoDBService = require("./mongodbService");
 // Import the new services
 const CertificateManager = require("./certificateManager");
 const RoutingService = require("./routingService");
-const HAProxyManager = require("./haproxyConfigManager");
+const HAProxyConfigManager = require("./haproxyConfigManager");
+const HAProxyManager = require("./haproxyManager");
 const LetsEncryptManager = require("./letsencryptManager");
 
 // Create instances
-const haproxyService = new HAProxyManager();
+const haproxyConfigService = new HAProxyConfigManager();
+const haproxyManager = new HAProxyManager(configService);
 const certificateService = new CertificateManager(configService);
 const routingService = new RoutingService();
 const letsencryptService = new LetsEncryptManager(configService);
@@ -32,7 +34,9 @@ const coreServices = {
   agentService,
   routingService,
   certificateService,
-  haproxyService,
+  haproxyService: haproxyConfigService, // For backward compatibility
+  haproxyManager: haproxyManager, // New service for MongoDB operations
+  haproxyConfigService, // Explicit name
   letsencryptService,
   mongodbService,
 
@@ -53,10 +57,17 @@ const coreServices = {
         return false;
       }
 
-      // Initialize HAProxy service
-      const haproxyInitialized = await haproxyService.initialize();
-      if (!haproxyInitialized) {
-        logger.error("Failed to initialize HAProxy service");
+      // Initialize HAProxy config service
+      const haproxyConfigInitialized = await haproxyConfigService.initialize();
+      if (!haproxyConfigInitialized) {
+        logger.error("Failed to initialize HAProxy config service");
+        return false;
+      }
+
+      // Initialize HAProxy manager service
+      const haproxyManagerInitialized = await haproxyManager.initialize();
+      if (!haproxyManagerInitialized) {
+        logger.error("Failed to initialize HAProxy manager service");
         return false;
       }
 
@@ -81,7 +92,9 @@ const coreServices = {
 
       // Initialize MongoDB service first before agent service since agent service depends on it
       // Pass the haproxyService instance to avoid circular dependencies
-      const mongoInitialized = await mongodbService.initialize(haproxyService);
+      const mongoInitialized = await mongodbService.initialize(
+        haproxyConfigService
+      );
       if (!mongoInitialized) {
         logger.error("Failed to initialize MongoDB service");
         return false;

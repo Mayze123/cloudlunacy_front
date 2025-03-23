@@ -33,12 +33,30 @@ class MongoDBService {
     try {
       // Set the haproxyManager from the parameter
       if (haproxyService) {
+        // For backward compatibility, we use haproxyService parameter but internally store it as haproxyManager
         this.haproxyManager = haproxyService;
         logger.info("HAProxy service reference set successfully");
       } else {
-        logger.warn(
-          "No HAProxy service provided during initialization, MongoDB routes will not work correctly"
-        );
+        // Try to dynamically import haproxyManager to avoid circular dependencies
+        try {
+          const coreServices = require("../core");
+          if (coreServices.haproxyManager) {
+            this.haproxyManager = coreServices.haproxyManager;
+            logger.info("HAProxy manager reference set from core services");
+          } else {
+            logger.warn("No HAProxy manager found in core services");
+          }
+        } catch (error) {
+          logger.warn("Could not import haproxyManager from core services", {
+            error: error.message,
+          });
+        }
+
+        if (!this.haproxyManager) {
+          logger.warn(
+            "No HAProxy service provided during initialization, MongoDB routes will not work correctly"
+          );
+        }
       }
 
       this.initialized = true;

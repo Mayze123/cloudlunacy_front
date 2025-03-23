@@ -151,7 +151,7 @@ exports.listSubdomains = asyncHandler(async (req, res) => {
   logger.info("Listing all MongoDB subdomains");
 
   // Get all routes from HAProxy manager
-  const routes = coreServices.haproxyService
+  const routes = coreServices.haproxyManager
     .listRoutes()
     .filter(
       (route) => route.key.startsWith("tcp:") && route.key !== "tcp:mongodb"
