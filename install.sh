@@ -79,7 +79,39 @@ log_success() {
 error_exit() {
   log_error "$1"
   
-  # Ask if user wants to attempt cleanup
+  # In update mode, try to restore from backups rather than doing a full cleanup
+  if [ "$UPDATE_MODE" = true ]; then
+    log_warn "Error occurred during update. Attempting to restore from backups..."
+    
+    # Try to restore .env file
+    if [ -f "${BASE_DIR}/.env.bak.$(date +%Y%m%d)" ]; then
+      log "Restoring .env file from backup..."
+      cp "${BASE_DIR}/.env.bak.$(date +%Y%m%d)"* "${BASE_DIR}/.env" 2>/dev/null || true
+    fi
+    
+    # Try to restore HAProxy config
+    if [ -f "${CONFIG_DIR}/haproxy/haproxy.cfg.bak.$(date +%Y%m%d)" ]; then
+      log "Restoring HAProxy configuration from backup..."
+      cp "${CONFIG_DIR}/haproxy/haproxy.cfg.bak.$(date +%Y%m%d)"* "${CONFIG_DIR}/haproxy/haproxy.cfg" 2>/dev/null || true
+    fi
+    
+    # Try to restore docker-compose.yml
+    if [ -f "${BASE_DIR}/docker-compose.yml.bak.$(date +%Y%m%d)" ]; then
+      log "Restoring docker-compose.yml from backup..."
+      cp "${BASE_DIR}/docker-compose.yml.bak.$(date +%Y%m%d)"* "${BASE_DIR}/docker-compose.yml" 2>/dev/null || true
+    fi
+    
+    # Try to restart containers with previous configuration
+    if docker ps -a | grep -q "haproxy" && docker ps -a | grep -q "node-app"; then
+      log "Attempting to restart containers with previous configuration..."
+      cd "${BASE_DIR}" && docker-compose restart || true
+    fi
+    
+    log_warn "Attempted to restore from backups. Please check your configuration and try again."
+    exit 1
+  fi
+  
+  # For non-update mode or if explicitly requested, perform cleanup
   if [ "${SKIP_CONFIRMATION:-false}" = false ] && [ "${2:-}" != "no_prompt" ]; then
     read -p "Do you want to attempt cleanup of incomplete installation? (y/N): " choice
     case "$choice" in
@@ -265,7 +297,7 @@ create_config_files() {
   log "Creating/updating configuration files..."
   
   # Create .env file if it doesn't exist or if force recreate is specified
-  if [ ! -f "${BASE_DIR}/.env" ] || [ "$FORCE_RECREATE" = true ]; then
+  if [ ! -f "${BASE_DIR}/.env" ]; then
     log "Creating .env file..."
     cat > "${BASE_DIR}/.env" <<EOF
 # CloudLunacy Front Server Environment Configuration
@@ -279,8 +311,27 @@ SHARED_NETWORK=${SHARED_NETWORK}
 CONFIG_BASE_PATH=${CONFIG_DIR}
 LOG_LEVEL=info
 EOF
+  elif [ "$FORCE_RECREATE" = true ] && [ "$UPDATE_MODE" != true ]; then
+    # Only overwrite .env if force recreate is true AND update mode is false
+    log "Force recreate mode: Creating new .env file..."
+    cat > "${BASE_DIR}/.env" <<EOF
+# CloudLunacy Front Server Environment Configuration
+# Generated on $(date)
+DOMAIN=${DOMAIN}
+MONGO_DOMAIN=${MONGO_DOMAIN}
+APP_DOMAIN=${APP_DOMAIN}
+NODE_PORT=${NODE_PORT}
+JWT_SECRET=${JWT_SECRET}
+SHARED_NETWORK=${SHARED_NETWORK}
+CONFIG_BASE_PATH=${CONFIG_DIR}
+LOG_LEVEL=info
+EOF
   else
-    log ".env file already exists, skipping creation"
+    log ".env file already exists, preserving custom environment variables"
+    if [ "$UPDATE_MODE" = true ]; then
+      log "Update mode: Creating backup of existing .env file"
+      cp "${BASE_DIR}/.env" "${BASE_DIR}/.env.bak.$(date +%Y%m%d%H%M%S)"
+    fi
   fi
 
   # Create directory structure
@@ -315,14 +366,7 @@ defaults
     timeout connect 5000ms
     timeout client 50000ms
     timeout server 50000ms
-    # Comment out errorfile references that might cause errors
-    # errorfile 400 /etc/haproxy/errors/400.http
-    # errorfile 403 /etc/haproxy/errors/403.http
-    # errorfile 408 /etc/haproxy/errors/408.http
-    # errorfile 500 /etc/haproxy/errors/500.http
-    # errorfile 502 /etc/haproxy/errors/502.http
-    # errorfile 503 /etc/haproxy/errors/503.http
-    # errorfile 504 /etc/haproxy/errors/504.http
+    # No errorfile references to avoid errors when files don't exist
 
 # Stats page
 frontend stats
@@ -334,16 +378,16 @@ frontend stats
     stats admin if TRUE
 
 # HTTP Frontend
-frontend http-in
+frontend http_in
     bind *:80
     mode http
     option forwardfor
-    default_backend node-app-backend
+    default_backend node_app_backend
 
 # Backend for Node.js app
-backend node-app-backend
+backend node_app_backend
     mode http
-    server node-app node-app:3005 check
+    server node_app node-app:3005 check
 
 # Default MongoDB Backend
 backend mongodb_default
@@ -351,15 +395,15 @@ backend mongodb_default
     server mongodb1 127.0.0.1:27018 check
 
 # Backend for Let's Encrypt challenges
-backend letsencrypt-backend
+backend letsencrypt_backend
     mode http
     server certbot certbot:80
 
 # Empty backend for rejected connections
-backend empty-backend
+backend empty_backend
     mode tcp
     timeout server 1s
-    server empty-server 127.0.0.1:1 check
+    server empty_server 127.0.0.1:1 check
 EOF
   else
     log "HAProxy configuration file already exists, skipping creation"
@@ -563,8 +607,8 @@ start_containers() {
 # Verify services are operational
 verify_services() {
   log "Verifying services..."
-  local retries=5
-  local delay=10
+  local retries=10       # Increased from 5 to 10
+  local delay=15         # Increased from 10 to 15
   local count=0
   
   # Verify HAProxy is healthy
@@ -573,6 +617,15 @@ verify_services() {
     count=$((count+1))
     if [ $count -ge $retries ]; then
       log_error "HAProxy health check failed after $retries attempts"
+      
+      # Log HAProxy config for debugging
+      log_error "HAProxy configuration validation failed. Here's the output:"
+      docker exec haproxy haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg || true
+      
+      # Log HAProxy logs for debugging
+      log_error "Last 20 lines of HAProxy logs:"
+      docker logs --tail 20 haproxy || true
+      
       return 1
     fi
     log "Waiting for HAProxy to be ready... ($count/$retries)"
@@ -587,6 +640,11 @@ verify_services() {
     count=$((count+1))
     if [ $count -ge $retries ]; then
       log_error "Node.js app health check failed after $retries attempts"
+      
+      # Log Node.js app logs for debugging
+      log_error "Last 20 lines of Node.js app logs:"
+      docker logs --tail 20 node-app || true
+      
       return 1
     fi
     log "Waiting for Node.js app to be ready... ($count/$retries)"
