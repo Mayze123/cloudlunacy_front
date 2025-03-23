@@ -22,8 +22,15 @@ NC='\033[0m' # No Color
 
 # Configuration variables - defaults that can be overridden by environment variables
 USERNAME="cloudlunacy"
-BASE_DIR="/opt/cloudlunacy"
-CERTS_DIR="${BASE_DIR}/certs"
+# Check if we're already in the cloned repository directory
+if [ -f "./install.sh" ] && [ -d "./node-app" ]; then
+  BASE_DIR=$(pwd)
+  echo -e "${BLUE}[INFO]${NC} Using current directory as base: ${BASE_DIR}"
+else
+  BASE_DIR="/opt/cloudlunacy"
+fi
+
+CERTS_DIR="${BASE_DIR}/config/certs"
 # Use the front server's IP as the default API URL.
 : "${FRONT_API_URL:=http://138.199.165.36:3005}"
 : "${NODE_PORT:=3005}"
@@ -230,12 +237,6 @@ clone_repository() {
   # Check if we're already in the cloned repository
   if [ -f "./install.sh" ] && [ -d "./node-app" ]; then
     log "Already in the repository directory, skipping clone step"
-    # Set BASE_DIR to current directory when already in the repository
-    BASE_DIR=$(pwd)
-    CONFIG_DIR="${BASE_DIR}/config"
-    AGENTS_CONFIG_DIR="${CONFIG_DIR}/agents"
-    CERTS_DIR="${BASE_DIR}/config/certs"
-    log "Using current directory as base: ${BASE_DIR}"
     update_install_state "repository_cloned" "true"
     return 0
   fi
