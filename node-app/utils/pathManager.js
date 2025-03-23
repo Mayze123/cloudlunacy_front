@@ -25,6 +25,7 @@ class PathManager {
       // Config paths
       haproxyConfig: path.join(this.basePaths.config, "haproxy/haproxy.cfg"),
       agentsConfig: path.join(this.basePaths.config, "agents"),
+      configBackups: path.join(this.basePaths.config, "backups"),
 
       // Certificate paths
       certsAgents: path.join(this.basePaths.certs, "agents"),
@@ -65,6 +66,7 @@ class PathManager {
         this.basePaths.certs,
         this.derivedPaths.certsAgents,
         this.derivedPaths.agentsConfig,
+        this.derivedPaths.configBackups,
       ]);
 
       this.initialized = true;
