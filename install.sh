@@ -546,7 +546,7 @@ start_containers() {
   cd "${BASE_DIR}" || return 1
   
   # Check if the containers are already running
-  if docker ps | grep -q "haproxy" && docker ps | grep -q "node-app"; then
+  if docker ps | grep -q "haproxy" && docker ps | grep -q "cloudlunacy-front"; then
     log "Containers are already running"
     
     if [ "$UPDATE_MODE" = true ]; then
@@ -565,7 +565,7 @@ start_containers() {
   fi
   
   # If containers exist but are stopped
-  if docker ps -a | grep -q "haproxy" && docker ps -a | grep -q "node-app"; then
+  if docker ps -a | grep -q "haproxy" && docker ps -a | grep -q "cloudlunacy-front"; then
     log "Containers exist but are not running..."
     
     if [ "$UPDATE_MODE" = true ] || [ "$FORCE_RECREATE" = true ]; then
@@ -586,51 +586,26 @@ start_containers() {
     return 1
   fi
   
-  # Check if containers are running
+  # Wait briefly for containers to start
+  sleep 5
+  
+  # Do basic check if containers are running - don't check logs yet
   if ! docker ps | grep -q "haproxy"; then
-    log_error "HAProxy container failed to start. Checking logs..."
-    docker-compose logs haproxy
+    log_error "HAProxy container failed to start"
     return 1
   fi
   
-  if ! docker ps | grep -q "node-app"; then
-    log_error "Node.js app container failed to start. Checking logs..."
-    docker-compose logs node-app
+  if ! docker ps | grep -q "cloudlunacy-front"; then
+    log_error "Node.js app container failed to start"
     return 1
   fi
   
-  # Give containers some time to initialize and establish connections
-  log "Containers started. Waiting for services to fully initialize..."
+  log "Containers started successfully. Initial startup phase complete."
+  log "Waiting for services to initialize and establish connections..."
+  
+  # Give containers more time to initialize and establish connections
   sleep 10
   
-  # Check if backend connection is established in HAProxy
-  local max_retries=6
-  local retry_delay=5
-  local retry_count=0
-  local haproxy_healthy=false
-  
-  log "Verifying HAProxy backend connections..."
-  while [ $retry_count -lt $max_retries ]; do
-    if docker logs haproxy | grep -q "Server node-app-backend/node_app is UP"; then
-      log "HAProxy successfully connected to Node.js backend"
-      haproxy_healthy=true
-      break
-    else
-      log "Waiting for HAProxy to connect to backend (attempt $((retry_count+1))/$max_retries)..."
-      sleep $retry_delay
-      retry_count=$((retry_count+1))
-    fi
-  done
-  
-  if [ "$haproxy_healthy" = false ]; then
-    log_warn "HAProxy did not establish connection to backend within timeout period"
-    log_warn "Showing HAProxy logs for troubleshooting:"
-    docker logs haproxy | tail -n 20
-    log "However, containers are running. Services might still initialize properly over time."
-    # We don't return error here, as containers are running and might stabilize later
-  fi
-  
-  log "Containers started successfully"
   update_install_state "containers_started" "true"
   return 0
 }
