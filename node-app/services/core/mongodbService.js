@@ -209,6 +209,8 @@ class MongoDBService {
    * @returns {Promise<Object>} - Test result
    */
   async testConnection(agentId, targetIp = null) {
+    let client = null;
+
     try {
       if (!this.initialized) {
         await this.initialize();
@@ -228,17 +230,20 @@ class MongoDBService {
 
       // Use provided target IP or get from connection cache
       let uri;
+      let domain;
 
       if (connectionInfo) {
         // If we have connection info in cache, use the domain name and stored connection string
         uri = connectionInfo.connectionString;
+        domain = connectionInfo.domain;
         logger.info(
-          `Using cached connection string for agent ${agentId} with domain ${connectionInfo.domain}`
+          `Using cached connection string for agent ${agentId} with domain ${domain}`
         );
       } else {
         // Fallback to direct IP connection if no cache entry exists
         const host = targetIp;
         const port = 27017;
+        domain = `${host}:${port}`;
         uri = `mongodb://admin:adminpassword@${host}:${port}/admin?tls=true&tlsAllowInvalidCertificates=true`;
         logger.info(
           `Using direct IP connection to ${host}:${port} for agent ${agentId}`
@@ -249,19 +254,38 @@ class MongoDBService {
         `Connecting to MongoDB at ${uri.replace(/:[^:]*@/, ":***@")}`
       );
 
-      // Connect to MongoDB
-      const client = new MongoClient(uri, {
+      // Connect to MongoDB with explicit options
+      client = new MongoClient(uri, {
         serverSelectionTimeoutMS: 5000, // 5 seconds timeout
         connectTimeoutMS: 5000,
         socketTimeoutMS: 5000,
+        retryWrites: false, // Disable retry writes for diagnosis
+        maxPoolSize: 1, // Use minimal connection pool
       });
 
+      logger.info(`Attempting to connect to MongoDB at ${domain}...`);
       await client.connect();
-      const adminDb = client.db("admin");
-      const pingResult = await adminDb.command({ ping: 1 });
-      await client.close();
 
-      logger.info(`MongoDB connection test successful for agent ${agentId}`);
+      if (!client) {
+        throw new Error("MongoDB client is null after connection attempt");
+      }
+
+      logger.info(
+        `Connected to MongoDB at ${domain}, testing admin database...`
+      );
+      const adminDb = client.db("admin");
+
+      if (!adminDb) {
+        throw new Error("Failed to get admin database");
+      }
+
+      logger.info(`Admin database accessed, sending ping command...`);
+      const pingResult = await adminDb.command({ ping: 1 });
+
+      logger.info(
+        `MongoDB connection test successful for agent ${agentId}, ping result:`,
+        pingResult
+      );
 
       return {
         success: true,
@@ -281,6 +305,16 @@ class MongoDBService {
         success: false,
         message: `MongoDB connection test failed: ${error.message}`,
       };
+    } finally {
+      // Ensure client is closed if it was created successfully
+      if (client) {
+        try {
+          await client.close();
+          logger.debug(`MongoDB client closed for agent ${agentId}`);
+        } catch (closeError) {
+          logger.warn(`Error closing MongoDB client: ${closeError.message}`);
+        }
+      }
     }
   }
 
