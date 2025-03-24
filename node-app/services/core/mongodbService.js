@@ -227,14 +227,22 @@ class MongoDBService {
       }
 
       // Use provided target IP or get from connection cache
-      const host = targetIp || connectionInfo.targetIp;
-      const port = connectionInfo ? connectionInfo.targetPort : 27017;
-      const useTls = connectionInfo ? connectionInfo.useTls : true;
+      let uri;
 
-      // Build connection URI
-      let uri = `mongodb://admin:adminpassword@${host}:${port}/admin`;
-      if (useTls) {
-        uri += "?tls=true&tlsAllowInvalidCertificates=true";
+      if (connectionInfo) {
+        // If we have connection info in cache, use the domain name and stored connection string
+        uri = connectionInfo.connectionString;
+        logger.info(
+          `Using cached connection string for agent ${agentId} with domain ${connectionInfo.domain}`
+        );
+      } else {
+        // Fallback to direct IP connection if no cache entry exists
+        const host = targetIp;
+        const port = 27017;
+        uri = `mongodb://admin:adminpassword@${host}:${port}/admin?tls=true&tlsAllowInvalidCertificates=true`;
+        logger.info(
+          `Using direct IP connection to ${host}:${port} for agent ${agentId}`
+        );
       }
 
       logger.debug(
