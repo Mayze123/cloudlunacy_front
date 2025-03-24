@@ -165,26 +165,60 @@ class HAProxyManager {
       const configContent = await fs.readFile(this.hostConfigPath, "utf8");
       logger.info(`Read HAProxy configuration from ${this.hostConfigPath}`);
 
-      // Find the mongodb_default backend section
-      const backendRegex = /backend\s+mongodb_default[^\}]*\}/s;
+      // Build the server line for this agent
+      const serverLine = `    server mongodb-agent-${agentId} ${targetAddress} check`;
+      logger.info(`Generated server line: ${serverLine}`);
+
+      // Try to find the mongodb_default backend section
+      // We're using a regex that looks for "backend mongodb_default" followed by lines up to the next section
+      const backendRegex =
+        /backend\s+mongodb_default\s*\n([\s\S]*?)(?=\n\s*\n|\n\s*#|\n\s*backend|\s*$)/;
       const backendMatch = configContent.match(backendRegex);
 
       if (!backendMatch) {
         logger.error(
-          "MongoDB backend section not found in HAProxy configuration"
+          `mongodb_default backend not found in HAProxy configuration`
         );
+
+        // Dump the config for debugging
+        logger.debug(
+          `HAProxy config content: ${configContent.substring(0, 500)}...`
+        );
+
+        // Create the mongodb_default backend if it doesn't exist
+        const newBackend = `\n# MongoDB Backend for ${agentId}\nbackend mongodb_default\n    mode tcp\n${serverLine}\n`;
+        const updatedConfig = configContent + newBackend;
+
+        await fs.writeFile(this.hostConfigPath, updatedConfig, "utf8");
+        logger.info(
+          `Created new mongodb_default backend in HAProxy configuration`
+        );
+
+        // Update route cache
+        this.routeCache.set(`tcp:${agentId}`, {
+          name: "mongodb_default",
+          agentId,
+          targetAddress,
+          lastUpdated: new Date().toISOString(),
+        });
+
+        // Reload HAProxy configuration
+        await this._reloadHAProxyConfig();
+        logger.info(
+          "HAProxy configuration with new backend reloaded successfully"
+        );
+
         return {
-          success: false,
-          error: "MongoDB backend section not found in HAProxy configuration",
+          success: true,
+          agentId,
+          targetAddress,
+          message: `Created new HAProxy mongodb_default backend for agent: ${agentId}`,
         };
       }
 
-      // Build the server line
-      const serverLine = `    server mongodb-agent-${agentId} ${targetAddress} check`;
-      logger.info(`Generated server line: ${serverLine}`);
-
       // Extract the content of the mongodb_default backend
       const backendContent = backendMatch[0];
+      logger.info(`Found mongodb_default backend: ${backendContent.trim()}`);
 
       // Check if this agent already has a server line
       const agentServerRegex = new RegExp(
@@ -199,9 +233,13 @@ class HAProxyManager {
         updatedConfig = configContent.replace(agentServerRegex, serverLine);
         logger.info(`Replaced existing server line for agent ${agentId}`);
       } else {
-        // Add a new server line at the end of the backend
-        const updatedBackend = backendContent.replace(/}$/, `${serverLine}\n}`);
-        updatedConfig = configContent.replace(backendRegex, updatedBackend);
+        // Add a new server line to the backend section
+        const lastLine = backendContent.trim().split("\n").pop();
+        const updatedBackend = backendContent.replace(
+          lastLine,
+          `${lastLine}\n${serverLine}`
+        );
+        updatedConfig = configContent.replace(backendContent, updatedBackend);
         logger.info(`Added new server line for agent ${agentId}`);
       }
 
