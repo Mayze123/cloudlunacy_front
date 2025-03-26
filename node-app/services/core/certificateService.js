@@ -281,6 +281,66 @@ ${altNames}
       return false;
     }
   }
+
+  /**
+   * Get agent certificates
+   * @param {string} agentId - Agent ID
+   * @returns {Promise<Object>} Certificate data
+   */
+  async getAgentCertificates(agentId) {
+    try {
+      if (!this.initialized) {
+        await this.initialize();
+      }
+
+      logger.info(`Getting certificates for agent ${agentId}`);
+
+      const certDir = path.join(this.certsDir, "agents", agentId);
+      const serverKeyPath = path.join(certDir, "server.key");
+      const serverCertPath = path.join(certDir, "server.crt");
+
+      // Check if certificates exist
+      try {
+        await fs.access(serverKeyPath);
+        await fs.access(serverCertPath);
+      } catch (err) {
+        // If certificates don't exist, generate them
+        logger.info(
+          `Certificates for agent ${agentId} not found, generating new ones`
+        );
+        const genResult = await this.generateAgentCertificate(agentId);
+        if (!genResult.success) {
+          throw new Error(
+            `Failed to generate certificates: ${genResult.error}`
+          );
+        }
+        // Return generated certificates
+        return {
+          caCert: genResult.caCert,
+          serverKey: genResult.serverKey,
+          serverCert: genResult.serverCert,
+        };
+      }
+
+      // Read the certificate files
+      const caCert = await fs.readFile(this.caCertPath, "utf8");
+      const serverKey = await fs.readFile(serverKeyPath, "utf8");
+      const serverCert = await fs.readFile(serverCertPath, "utf8");
+
+      logger.info(`Certificates for agent ${agentId} retrieved successfully`);
+
+      return {
+        caCert,
+        serverKey,
+        serverCert,
+      };
+    } catch (err) {
+      logger.error(
+        `Failed to get certificates for agent ${agentId}: ${err.message}`
+      );
+      throw err;
+    }
+  }
 }
 
 module.exports = CertificateService;
