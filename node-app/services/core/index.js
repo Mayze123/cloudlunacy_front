@@ -14,6 +14,7 @@ const RoutingService = require("./routingService");
 const CertificateService = require("./certificateService");
 const DatabaseFactory = require("./databases/databaseFactory");
 const HAProxyManager = require("./haproxyManager");
+const AgentService = require("./agentService");
 
 // Create instances of all services
 const configService = new ConfigService();
@@ -25,6 +26,12 @@ const haproxyManager = new HAProxyManager(configService);
 // This avoids circular dependency issues
 const databaseFactory = new DatabaseFactory(routingService, haproxyManager);
 
+// Get MongoDB service instance
+const mongodbService = databaseFactory.getService("mongodb");
+
+// Create agent service with config service and MongoDB service
+const agentService = new AgentService(configService, mongodbService);
+
 // Export all service instances and utilities
 module.exports = {
   // Core services
@@ -32,10 +39,11 @@ module.exports = {
   routingService,
   certificateService,
   haproxyManager,
+  agentService,
 
   // Database services
   databaseFactory,
-  mongodbService: databaseFactory.getService("mongodb"),
+  mongodbService,
   redisService: databaseFactory.getService("redis"),
 
   // Convenience helpers for backward compatibility
@@ -84,6 +92,13 @@ module.exports = {
       const dbInitialized = await databaseFactory.initialize();
       if (!dbInitialized) {
         logger.error("Failed to initialize database services");
+        return false;
+      }
+
+      // Initialize agent service
+      const agentInitialized = await agentService.initialize();
+      if (!agentInitialized) {
+        logger.error("Failed to initialize agent service");
         return false;
       }
 
