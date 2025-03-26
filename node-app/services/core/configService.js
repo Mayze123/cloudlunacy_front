@@ -7,7 +7,6 @@
 
 const fs = require("fs").promises;
 const path = require("path");
-const yaml = require("yaml");
 const logger = require("../../utils/logger").getLogger("configService");
 const pathManager = require("../../utils/pathManager");
 
@@ -28,16 +27,9 @@ class ConfigService {
       app: process.env.APP_DOMAIN || "apps.cloudlunacy.uk",
     };
 
-    // Configuration templates
-    this.templates = {
-      agent: null,
-      haproxy: null,
-    };
-
     // Loaded configurations
     this.configs = {
       agents: new Map(),
-      main: null,
       haproxy: null,
     };
 
@@ -64,8 +56,8 @@ class ConfigService {
       await pathManager.ensureDirectory(this.paths.base);
       await pathManager.ensureDirectory(this.paths.agents);
 
-      // Load main configuration
-      await this.loadMainConfig();
+      // Load HAProxy configuration
+      await this.loadHAProxyConfig();
 
       this.initialized = true;
       logger.info("Configuration service initialized successfully");
@@ -84,7 +76,7 @@ class ConfigService {
         logger.info("Attempting recovery with fallback paths");
         await this.resolvePathsFallback();
         await this.ensureDirectories();
-        await this.loadMainConfig();
+        await this.loadHAProxyConfig();
 
         this.initialized = true;
         logger.info("Configuration service initialized with fallback paths");
@@ -148,125 +140,344 @@ class ConfigService {
   }
 
   /**
-   * Load configuration templates
+   * Load HAProxy configuration
    */
-  loadTemplates() {
-    // Agent template
-    this.templates.agent = {
-      http: { routers: {}, services: {}, middlewares: {} },
-      tcp: { routers: {}, services: {} },
-    };
-
-    // HAProxy template
-    this.templates.haproxy = {
-      http: {
-        routers: {
-          dashboard: {
-            rule: "Host(`haproxy.localhost`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))",
-            service: "api@internal",
-            entryPoints: ["dashboard"],
-            middlewares: ["auth"],
-          },
-        },
-        middlewares: {
-          auth: {
-            basicAuth: {
-              users: ["admin:$apr1$H6uskkkW$IgXLP6ewTrSuBkTrqE8wj/"],
-            },
-          },
-          "web-to-websecure": {
-            redirectScheme: {
-              scheme: "https",
-              permanent: true,
-            },
-          },
-        },
-        services: {},
-      },
-      tcp: {
-        routers: {
-          "mongodb-catchall": {
-            rule: `HostSNI(\`*.${this.domains.mongo}\`)`,
-            entryPoints: ["mongodb"],
-            service: "mongodb-catchall-service",
-            tls: {
-              certResolver: "default",
-              domains: [
-                {
-                  main: this.domains.mongo,
-                  sans: [`*.${this.domains.mongo}`],
-                },
-              ],
-            },
-          },
-        },
-        services: {
-          "mongodb-catchall-service": {
-            loadBalancer: {
-              servers: [],
-            },
-          },
-        },
-        serversTransports: {
-          "mongodb-tls-transport": {
-            serverName: "mongodb",
-            insecureSkipVerify: false,
-            rootCAs: ["/certs/ca.crt"],
-            certificates: [
-              {
-                certFile: "/certs/client.crt",
-                keyFile: "/certs/client.key",
-              },
-            ],
-          },
-        },
-      },
-    };
-
-    logger.debug("Loaded configuration templates");
-  }
-
-  /**
-   * Load main configuration
-   */
-  async loadMainConfig() {
+  async loadHAProxyConfig() {
     try {
-      // Try to read haproxy.cfg
+      // Try to read the HAProxy config file (as plain text, not YAML)
       try {
         const content = await fs.readFile(this.paths.haproxy, "utf8");
-        this.configs.main = yaml.parse(content);
-        logger.debug("Loaded main configuration from file");
+        this.configs.haproxy = content;
+        logger.debug("Loaded HAProxy configuration from file");
       } catch (err) {
-        // If file doesn't exist or is invalid, use template
-        logger.warn(`Failed to load main configuration: ${err.message}`);
-        logger.info("Using template for main configuration");
-        this.configs.main = this.templates.haproxy;
+        // If file doesn't exist, use a default template
+        logger.warn(`Failed to load HAProxy configuration: ${err.message}`);
+        logger.info("Using default template for HAProxy configuration");
 
-        // Save the template to file
-        await this.saveConfig(this.paths.haproxy, this.configs.main);
+        // Create a default HAProxy configuration
+        this.configs.haproxy = this.getDefaultHAProxyConfig();
+
+        // Save the default configuration to file
+        await this.saveHAProxyConfig();
       }
 
       return true;
     } catch (err) {
-      logger.error(`Failed to load main configuration: ${err.message}`);
+      logger.error(`Failed to load HAProxy configuration: ${err.message}`);
       throw err;
     }
   }
 
   /**
-   * Save configuration to file
+   * Get the default HAProxy configuration template
+   * @returns {string} Default HAProxy configuration
    */
-  async saveConfig(filePath, config) {
+  getDefaultHAProxyConfig() {
+    return `# HAProxy Configuration for CloudLunacy Front Server
+global
+    log stdout format raw local0 info
+    log stderr format raw local1 notice
+    stats socket /tmp/haproxy.sock mode 660 level admin expose-fd listeners
+    stats timeout 30s
+    user haproxy
+    group haproxy
+    daemon
+    maxconn 20000
+    
+    # Enable runtime API
+    stats socket ipv4@127.0.0.1:9999 level admin
+    stats timeout 2m
+
+defaults
+    log global
+    mode http
+    option httplog
+    option dontlognull
+    timeout connect 5000ms
+    timeout client 50000ms
+    timeout server 50000ms
+
+# Stats page
+frontend stats
+    bind *:8081
+    stats enable
+    stats uri /stats
+    stats refresh 10s
+    stats auth admin:admin_password
+    stats admin if TRUE
+
+# Frontend for HTTP traffic
+frontend http-in
+    bind *:80
+    mode http
+    option forwardfor
+    default_backend node-app-backend
+    
+# Backend for Node.js app
+backend node-app-backend
+    mode http
+    option httpchk GET /health
+    http-check expect status 200
+    server node_app node-app:3005 check inter 5s rise 2 fall 3
+
+# Default MongoDB Backend
+backend mongodb_default
+    mode tcp
+    server mongodb1 127.0.0.1:27018 check
+
+# Frontend for MongoDB traffic
+frontend mongodb-in
+    bind *:27017
+    mode tcp
+    option tcplog
+    default_backend mongodb_default`;
+  }
+
+  /**
+   * Save the HAProxy configuration to file
+   */
+  async saveHAProxyConfig() {
     try {
-      const content = yaml.stringify(config);
-      await fs.writeFile(filePath, content, "utf8");
-      logger.debug(`Saved configuration to ${filePath}`);
+      if (!this.configs.haproxy) {
+        throw new Error("HAProxy configuration is not loaded");
+      }
+
+      await fs.writeFile(this.paths.haproxy, this.configs.haproxy, "utf8");
+      logger.debug("Saved HAProxy configuration to file");
       return true;
     } catch (err) {
-      logger.error(
-        `Failed to save configuration to ${filePath}: ${err.message}`
-      );
+      logger.error(`Failed to save HAProxy configuration: ${err.message}`);
       throw err;
+    }
+  }
+
+  /**
+   * Add or update a MongoDB backend server in the HAProxy configuration
+   * @param {string} agentId - Agent ID
+   * @param {string} targetIp - Target IP address
+   * @param {number} targetPort - Target port
+   * @returns {Promise<boolean>} Success status
+   */
+  async updateMongoDBBackend(agentId, targetIp, targetPort = 27017) {
+    try {
+      if (!this.initialized) {
+        await this.initialize();
+      }
+
+      if (!this.configs.haproxy) {
+        await this.loadHAProxyConfig();
+      }
+
+      // Generate the server line
+      const serverLine = `    server mongodb-agent-${agentId} ${targetIp}:${targetPort} check`;
+
+      // Check if the mongodb_default backend exists
+      const backendRegex =
+        /backend\s+mongodb_default\s*\n([\s\S]*?)(?=\n\s*\n|\n\s*#|\n\s*backend|\s*$)/;
+      const backendMatch = this.configs.haproxy.match(backendRegex);
+
+      let updatedConfig;
+      if (!backendMatch) {
+        // Backend doesn't exist, add it
+        const newBackend = `\n# MongoDB Backend for ${agentId}\nbackend mongodb_default\n    mode tcp\n${serverLine}\n`;
+        updatedConfig = this.configs.haproxy + newBackend;
+
+        // Also add the frontend if it doesn't exist
+        if (!this.configs.haproxy.includes("frontend mongodb-in")) {
+          updatedConfig += `\n# Frontend for MongoDB traffic\nfrontend mongodb-in\n    bind *:27017\n    mode tcp\n    option tcplog\n    default_backend mongodb_default\n`;
+        }
+      } else {
+        // Backend exists, check if this agent already has a server line
+        const agentServerRegex = new RegExp(
+          "server\\s+mongodb-agent-" + agentId + "\\s+.*",
+          "m"
+        );
+        const existingServerLine = backendMatch[0].match(agentServerRegex);
+
+        if (existingServerLine) {
+          // Replace existing server line
+          updatedConfig = this.configs.haproxy.replace(
+            agentServerRegex,
+            serverLine
+          );
+        } else {
+          // Add new server line to existing backend
+          const lastLine = backendMatch[0].trim().split("\n").pop();
+          const updatedBackend = backendMatch[0].replace(
+            lastLine,
+            `${lastLine}\n${serverLine}`
+          );
+          updatedConfig = this.configs.haproxy.replace(
+            backendMatch[0],
+            updatedBackend
+          );
+        }
+      }
+
+      // Update the configuration and save
+      this.configs.haproxy = updatedConfig;
+      await this.saveHAProxyConfig();
+
+      logger.info(`Updated MongoDB backend for agent ${agentId}`);
+      return true;
+    } catch (err) {
+      logger.error(`Failed to update MongoDB backend: ${err.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Add or update a Redis backend server in the HAProxy configuration
+   * @param {string} agentId - Agent ID
+   * @param {string} targetIp - Target IP address
+   * @param {number} targetPort - Target port
+   * @returns {Promise<boolean>} Success status
+   */
+  async updateRedisBackend(agentId, targetIp, targetPort = 6379) {
+    try {
+      if (!this.initialized) {
+        await this.initialize();
+      }
+
+      if (!this.configs.haproxy) {
+        await this.loadHAProxyConfig();
+      }
+
+      // Generate the server line
+      const serverLine = `    server redis-agent-${agentId} ${targetIp}:${targetPort} check`;
+
+      // Check if the redis_default backend exists
+      const backendRegex =
+        /backend\s+redis_default\s*\n([\s\S]*?)(?=\n\s*\n|\n\s*#|\n\s*backend|\s*$)/;
+      const backendMatch = this.configs.haproxy.match(backendRegex);
+
+      let updatedConfig;
+      if (!backendMatch) {
+        // Backend doesn't exist, add it
+        const newBackend = `\n# Redis Backend for ${agentId}\nbackend redis_default\n    mode tcp\n${serverLine}\n`;
+        updatedConfig = this.configs.haproxy + newBackend;
+
+        // Also add the frontend if it doesn't exist
+        if (!this.configs.haproxy.includes("frontend redis-in")) {
+          updatedConfig += `\n# Frontend for Redis traffic\nfrontend redis-in\n    bind *:6379\n    mode tcp\n    option tcplog\n    default_backend redis_default\n`;
+        }
+      } else {
+        // Backend exists, check if this agent already has a server line
+        const agentServerRegex = new RegExp(
+          "server\\s+redis-agent-" + agentId + "\\s+.*",
+          "m"
+        );
+        const existingServerLine = backendMatch[0].match(agentServerRegex);
+
+        if (existingServerLine) {
+          // Replace existing server line
+          updatedConfig = this.configs.haproxy.replace(
+            agentServerRegex,
+            serverLine
+          );
+        } else {
+          // Add new server line to existing backend
+          const lastLine = backendMatch[0].trim().split("\n").pop();
+          const updatedBackend = backendMatch[0].replace(
+            lastLine,
+            `${lastLine}\n${serverLine}`
+          );
+          updatedConfig = this.configs.haproxy.replace(
+            backendMatch[0],
+            updatedBackend
+          );
+        }
+      }
+
+      // Update the configuration and save
+      this.configs.haproxy = updatedConfig;
+      await this.saveHAProxyConfig();
+
+      logger.info(`Updated Redis backend for agent ${agentId}`);
+      return true;
+    } catch (err) {
+      logger.error(`Failed to update Redis backend: ${err.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Remove a MongoDB backend server from the HAProxy configuration
+   * @param {string} agentId - Agent ID
+   * @returns {Promise<boolean>} Success status
+   */
+  async removeMongoDBBackend(agentId) {
+    try {
+      if (!this.initialized) {
+        await this.initialize();
+      }
+
+      if (!this.configs.haproxy) {
+        await this.loadHAProxyConfig();
+      }
+
+      // Pattern to find the server line
+      const serverRegex = new RegExp(
+        "\\s*server\\s+mongodb-agent-" + agentId + "\\s+[^\\n]+\\n",
+        "g"
+      );
+
+      // Check if the pattern exists in the configuration
+      if (!serverRegex.test(this.configs.haproxy)) {
+        logger.info(`No MongoDB backend found for agent ${agentId}`);
+        return true;
+      }
+
+      // Remove the server line
+      const updatedConfig = this.configs.haproxy.replace(serverRegex, "\n");
+      this.configs.haproxy = updatedConfig;
+
+      await this.saveHAProxyConfig();
+      logger.info(`Removed MongoDB backend for agent ${agentId}`);
+      return true;
+    } catch (err) {
+      logger.error(`Failed to remove MongoDB backend: ${err.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Remove a Redis backend server from the HAProxy configuration
+   * @param {string} agentId - Agent ID
+   * @returns {Promise<boolean>} Success status
+   */
+  async removeRedisBackend(agentId) {
+    try {
+      if (!this.initialized) {
+        await this.initialize();
+      }
+
+      if (!this.configs.haproxy) {
+        await this.loadHAProxyConfig();
+      }
+
+      // Pattern to find the server line
+      const serverRegex = new RegExp(
+        "\\s*server\\s+redis-agent-" + agentId + "\\s+[^\\n]+\\n",
+        "g"
+      );
+
+      // Check if the pattern exists in the configuration
+      if (!serverRegex.test(this.configs.haproxy)) {
+        logger.info(`No Redis backend found for agent ${agentId}`);
+        return true;
+      }
+
+      // Remove the server line
+      const updatedConfig = this.configs.haproxy.replace(serverRegex, "\n");
+      this.configs.haproxy = updatedConfig;
+
+      await this.saveHAProxyConfig();
+      logger.info(`Removed Redis backend for agent ${agentId}`);
+      return true;
+    } catch (err) {
+      logger.error(`Failed to remove Redis backend: ${err.message}`);
+      return false;
     }
   }
 
@@ -293,111 +504,25 @@ class ConfigService {
   }
 
   /**
-   * Repair all configurations
+   * Repair the configuration
    */
   async repair() {
-    logger.info("Repairing all configurations");
+    logger.info("Repairing configuration");
 
     // Reset state
     this.initialized = false;
     this.configs.agents.clear();
-    this.configs.main = null;
+    this.configs.haproxy = null;
 
     // Re-initialize
     await this.initialize();
 
-    // Save main config from template
-    await this.saveConfig(this.paths.haproxy, this.templates.haproxy);
+    // Reset HAProxy config with a clean template
+    this.configs.haproxy = this.getDefaultHAProxyConfig();
+    await this.saveHAProxyConfig();
 
     logger.info("Configuration repair completed");
     return true;
-  }
-
-  /**
-   * Update a TCP router in the configuration
-   * @param {string} name - Router name
-   * @param {object} config - Router configuration
-   */
-  async updateTcpRouter(name, config) {
-    try {
-      logger.debug(`Updating TCP router: ${name}`);
-      await this.initialize();
-
-      // Make sure main config is loaded
-      if (!this.configs.main) {
-        await this.loadMainConfig();
-      }
-
-      // Ensure tcp section exists
-      if (!this.configs.main.tcp) {
-        this.configs.main.tcp = { routers: {}, services: {} };
-      }
-      if (!this.configs.main.tcp.routers) {
-        this.configs.main.tcp.routers = {};
-      }
-
-      // Update or add the router
-      this.configs.main.tcp.routers[name] = config;
-
-      // Save the configuration
-      await this.saveConfiguration();
-      logger.info(`TCP router ${name} updated successfully`);
-      return true;
-    } catch (err) {
-      logger.error(`Failed to update TCP router ${name}: ${err.message}`, {
-        error: err.message,
-        stack: err.stack,
-        name,
-      });
-      throw err;
-    }
-  }
-
-  /**
-   * Update a TCP service in the configuration
-   * @param {string} name - Service name
-   * @param {object} config - Service configuration
-   */
-  async updateTcpService(name, config) {
-    try {
-      logger.debug(`Updating TCP service: ${name}`);
-      await this.initialize();
-
-      // Make sure main config is loaded
-      if (!this.configs.main) {
-        await this.loadMainConfig();
-      }
-
-      // Ensure tcp section exists
-      if (!this.configs.main.tcp) {
-        this.configs.main.tcp = { routers: {}, services: {} };
-      }
-      if (!this.configs.main.tcp.services) {
-        this.configs.main.tcp.services = {};
-      }
-
-      // Update or add the service
-      this.configs.main.tcp.services[name] = config;
-
-      // Save the configuration
-      await this.saveConfiguration();
-      logger.info(`TCP service ${name} updated successfully`);
-      return true;
-    } catch (err) {
-      logger.error(`Failed to update TCP service ${name}: ${err.message}`, {
-        error: err.message,
-        stack: err.stack,
-        name,
-      });
-      throw err;
-    }
-  }
-
-  /**
-   * Save the configuration
-   */
-  async saveConfiguration() {
-    return this.saveConfig(this.paths.haproxy, this.configs.main);
   }
 }
 
