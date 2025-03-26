@@ -401,4 +401,4 @@ class ConfigService {
   }
 }
 
-module.exports = new ConfigService();
+module.exports = ConfigService;
