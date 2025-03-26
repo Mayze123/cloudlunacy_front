@@ -3,22 +3,20 @@
  * API Routes
  *
  * Defines all API routes for the front server.
- * Grouped by functionality: agent, app, mongodb, etc.
+ * Grouped by functionality: agent, app, database, etc.
  */
 
 const express = require("express");
 const router = express.Router();
+const { AppError } = require("../utils/errorHandler");
+const coreServices = require("../services/core");
 
 // Import controllers
 const agentController = require("./controllers/agentController");
 const appController = require("./controllers/appController");
-const mongodbController = require("./controllers/mongodbController");
 const configController = require("./controllers/configController");
 const healthController = require("./controllers/healthController");
 const certificateController = require("./controllers/certificateController");
-
-// Import route modules
-const mongodbRoutes = require("./routes/mongodb.routes");
 
 // Import middleware
 const authMiddleware = require("./middleware/auth");
@@ -59,35 +57,6 @@ router.delete(
   authMiddleware.requireAgentAccess(),
   appController.removeApp
 );
-
-/**
- * MongoDB Management Routes
- */
-router.post(
-  "/frontdoor/add-subdomain",
-  authMiddleware.requireAuth,
-  mongodbController.addSubdomain
-);
-router.get(
-  "/mongodb",
-  authMiddleware.requireAuth,
-  mongodbController.listSubdomains
-);
-router.delete(
-  "/mongodb/:agentId",
-  authMiddleware.requireAuth,
-  authMiddleware.requireAgentAccess(),
-  mongodbController.removeSubdomain
-);
-router.get(
-  "/mongodb/:agentId/test",
-  authMiddleware.requireAuth,
-  authMiddleware.requireAgentAccess(),
-  mongodbController.testConnection
-);
-
-// Mount MongoDB routes module
-router.use("/mongodb", mongodbRoutes);
 
 /**
  * Configuration Routes
@@ -157,6 +126,220 @@ router.post(
   authMiddleware.requireAdmin(),
   certificateController.issueLetsEncryptCert
 );
+
+/**
+ * Database Routes
+ */
+
+// Helper function to get database service and handle errors
+const withDatabaseService = (req, res, dbType, callback) => {
+  const dbService = coreServices.databaseFactory.getService(dbType);
+
+  if (!dbService) {
+    throw new AppError(`Database service '${dbType}' not available`, 503);
+  }
+
+  return callback(dbService);
+};
+
+// List available database services
+router.get("/databases", (req, res) => {
+  const dbServices = coreServices.databaseFactory.getAvailableServices();
+  res.json({
+    success: true,
+    databases: dbServices,
+  });
+});
+
+// Register a database agent with type
+router.post("/databases/:dbType/register", async (req, res, next) => {
+  try {
+    const { dbType } = req.params;
+    const { agentId, targetIp, options } = req.body;
+
+    if (!agentId) {
+      throw new AppError("Agent ID is required", 400);
+    }
+
+    if (!targetIp) {
+      throw new AppError("Target IP is required", 400);
+    }
+
+    const result = await withDatabaseService(req, res, dbType, (service) =>
+      service.registerAgent(agentId, targetIp, options || {})
+    );
+
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Deregister a database agent with type
+router.post("/databases/:dbType/deregister", async (req, res, next) => {
+  try {
+    const { dbType } = req.params;
+    const { agentId } = req.body;
+
+    if (!agentId) {
+      throw new AppError("Agent ID is required", 400);
+    }
+
+    const result = await withDatabaseService(req, res, dbType, (service) =>
+      service.deregisterAgent(agentId)
+    );
+
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Test connection to a database
+router.post("/databases/:dbType/test-connection", async (req, res, next) => {
+  try {
+    const { dbType } = req.params;
+    const { agentId, targetIp } = req.body;
+
+    if (!agentId) {
+      throw new AppError("Agent ID is required", 400);
+    }
+
+    const result = await withDatabaseService(req, res, dbType, (service) =>
+      service.testConnection(agentId, targetIp)
+    );
+
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Get connection info for a database
+router.get("/databases/:dbType/connection/:agentId", async (req, res, next) => {
+  try {
+    const { dbType, agentId } = req.params;
+
+    if (!agentId) {
+      throw new AppError("Agent ID is required", 400);
+    }
+
+    const result = await withDatabaseService(req, res, dbType, (service) =>
+      service.getConnectionInfo(agentId)
+    );
+
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Generate credentials for a database
+router.post("/databases/:dbType/credentials", async (req, res, next) => {
+  try {
+    const { dbType } = req.params;
+    const { agentId, dbName, username } = req.body;
+
+    if (!agentId) {
+      throw new AppError("Agent ID is required", 400);
+    }
+
+    const result = await withDatabaseService(req, res, dbType, (service) =>
+      service.generateCredentials(agentId, dbName, username)
+    );
+
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * Routing Routes
+ */
+
+// Add an HTTP route
+router.post("/routes/http", async (req, res, next) => {
+  try {
+    const { agentId, subdomain, targetUrl, options } = req.body;
+
+    if (!agentId) {
+      throw new AppError("Agent ID is required", 400);
+    }
+
+    if (!subdomain) {
+      throw new AppError("Subdomain is required", 400);
+    }
+
+    if (!targetUrl) {
+      throw new AppError("Target URL is required", 400);
+    }
+
+    const result = await coreServices.routingService.addHttpRoute(
+      agentId,
+      subdomain,
+      targetUrl,
+      options || {}
+    );
+
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Remove a route
+router.delete("/routes", async (req, res, next) => {
+  try {
+    const { agentId, subdomain, type } = req.body;
+
+    if (!agentId) {
+      throw new AppError("Agent ID is required", 400);
+    }
+
+    if (!subdomain) {
+      throw new AppError("Subdomain is required", 400);
+    }
+
+    const result = await coreServices.routingService.removeRoute(
+      agentId,
+      subdomain,
+      type || "http"
+    );
+
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Get all routes for an agent
+router.get("/routes/agent/:agentId", async (req, res, next) => {
+  try {
+    const { agentId } = req.params;
+
+    if (!agentId) {
+      throw new AppError("Agent ID is required", 400);
+    }
+
+    const result = await coreServices.routingService.getAgentRoutes(agentId);
+
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Get all routes
+router.get("/routes", async (req, res, next) => {
+  try {
+    const result = await coreServices.routingService.getAllRoutes();
+
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
 
 // Apply error handling middleware
 router.use(errorMiddleware);

@@ -1,7 +1,7 @@
 /**
  * HAProxy Manager
  *
- * Manages MongoDB routes in HAProxy configuration based on agentId.
+ * Manages MongoDB and Redis routes in HAProxy configuration based on agentId.
  */
 
 const fs = require("fs").promises;
@@ -15,6 +15,7 @@ class HAProxyManager {
     this.initialized = false;
     this.routeCache = new Map();
     this.mongoDomain = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
+    this.redisDomain = process.env.REDIS_DOMAIN || "redis.cloudlunacy.uk";
     this.haproxyContainer = process.env.HAPROXY_CONTAINER || "haproxy";
     this.haproxyConfigPath = "/usr/local/etc/haproxy/haproxy.cfg"; // Path inside container
     this.hostConfigPath =
@@ -177,7 +178,7 @@ class HAProxyManager {
 
       if (!backendMatch) {
         logger.error(
-          `mongodb_default backend not found in HAProxy configuration`
+          "mongodb_default backend not found in HAProxy configuration"
         );
 
         // Dump the config for debugging
@@ -191,7 +192,7 @@ class HAProxyManager {
 
         await fs.writeFile(this.hostConfigPath, updatedConfig, "utf8");
         logger.info(
-          `Created new mongodb_default backend in HAProxy configuration`
+          "Created new mongodb_default backend in HAProxy configuration"
         );
 
         // Update route cache
@@ -364,6 +365,273 @@ class HAProxyManager {
       key,
       ...route,
     }));
+  }
+
+  /**
+   * Update HAProxy Redis backend server
+   *
+   * @param {string} agentId - The agent ID
+   * @param {string} targetHost - Target host
+   * @param {number} targetPort - Target port (default: 6379)
+   */
+  async updateRedisBackend(agentId, targetHost, targetPort = 6379) {
+    logger.info(
+      `Updating Redis backend for agentId: ${agentId}, target: ${targetHost}:${targetPort}`
+    );
+
+    if (!this.initialized) {
+      logger.info("HAProxy manager not initialized, initializing now...");
+      await this.initialize();
+    }
+
+    try {
+      // Build the target address
+      const targetAddress = `${targetHost}:${targetPort}`;
+      logger.info(`Using target address: ${targetAddress}`);
+
+      // Read current configuration
+      const configContent = await fs.readFile(this.hostConfigPath, "utf8");
+      logger.info(`Read HAProxy configuration from ${this.hostConfigPath}`);
+
+      // Build the server line for this agent
+      const serverLine = `    server redis-agent-${agentId} ${targetAddress} check`;
+      logger.info(`Generated server line: ${serverLine}`);
+
+      // Try to find the redis_default backend section
+      const backendRegex =
+        /backend\s+redis_default\s*\n([\s\S]*?)(?=\n\s*\n|\n\s*#|\n\s*backend|\s*$)/;
+      const backendMatch = configContent.match(backendRegex);
+
+      let updatedConfig;
+
+      if (!backendMatch) {
+        logger.info("redis_default backend not found, creating it");
+        // Create the redis_default backend if it doesn't exist
+        const newBackend = `\n# Redis Backend for ${agentId}\nbackend redis_default\n    mode tcp\n${serverLine}\n`;
+        updatedConfig = configContent + newBackend;
+
+        // Also need to ensure we have a frontend for Redis
+        if (!configContent.includes("frontend redis-in")) {
+          logger.info("Creating Redis frontend section");
+          const redisFrontend =
+            "\n# Redis Frontend\nfrontend redis-in\n    bind *:6379\n    mode tcp\n    default_backend redis_default\n";
+          updatedConfig = updatedConfig + redisFrontend;
+        }
+      } else {
+        logger.info("Found redis_default backend, updating it");
+        // Check if this agent already has a server line
+        const agentServerRegex = new RegExp(
+          `server\\s+redis-agent-${agentId}\\s+[^\\s]+\\s+check`,
+          "g"
+        );
+        const agentMatch = backendMatch[1].match(agentServerRegex);
+
+        if (agentMatch) {
+          // Update existing server line
+          logger.info(`Updating existing server line for agent ${agentId}`);
+          updatedConfig = configContent.replace(agentServerRegex, serverLine);
+        } else {
+          // Add server line to existing backend
+          logger.info(`Adding new server line for agent ${agentId}`);
+          const updatedBackend = backendMatch[0] + `\n${serverLine}`;
+          updatedConfig = configContent.replace(
+            backendMatch[0],
+            updatedBackend
+          );
+        }
+      }
+
+      // Write updated configuration
+      await fs.writeFile(this.hostConfigPath, updatedConfig, "utf8");
+      logger.info(
+        `Updated HAProxy configuration with Redis backend for ${agentId}`
+      );
+
+      // Reload HAProxy configuration
+      await this._reloadHAProxyConfig();
+
+      // Update route cache
+      this.routeCache.set(`tcp:redis:${agentId}`, {
+        name: "redis_default",
+        agentId,
+        targetAddress,
+        lastUpdated: new Date().toISOString(),
+      });
+
+      return {
+        success: true,
+        message: `Redis backend updated for agent ${agentId}`,
+      };
+    } catch (error) {
+      logger.error(`Failed to update Redis backend: ${error.message}`, {
+        error: error.message,
+        stack: error.stack,
+      });
+      return {
+        success: false,
+        error: `Failed to update Redis backend: ${error.message}`,
+      };
+    }
+  }
+
+  /**
+   * Remove Redis backend server for specific agent
+   *
+   * @param {string} agentId - The agent ID to remove
+   * @returns {Promise<Object>} - Result
+   */
+  async removeRedisBackend(agentId) {
+    logger.info(`Removing Redis backend for agentId: ${agentId}`);
+
+    if (!this.initialized) {
+      logger.info("HAProxy manager not initialized, initializing now...");
+      await this.initialize();
+    }
+
+    try {
+      // Read current configuration
+      const configContent = await fs.readFile(this.hostConfigPath, "utf8");
+
+      // Find the server line for this agent
+      const serverRegex = new RegExp(
+        `\\s*server\\s+redis-agent-${agentId}\\s+[^\\n]+\\n`,
+        "g"
+      );
+
+      // Check if the pattern exists in the configuration
+      if (!serverRegex.test(configContent)) {
+        logger.info(`No Redis backend found for agent ${agentId}`);
+        return {
+          success: true,
+          message: `No Redis backend found for agent ${agentId}`,
+        };
+      }
+
+      // Remove the server line
+      const updatedConfig = configContent.replace(serverRegex, "\n");
+
+      // Write updated configuration
+      await fs.writeFile(this.hostConfigPath, updatedConfig, "utf8");
+      logger.info(
+        `Removed Redis backend for agent ${agentId} from HAProxy configuration`
+      );
+
+      // Reload HAProxy configuration
+      await this._reloadHAProxyConfig();
+
+      // Update route cache
+      this.routeCache.delete(`tcp:redis:${agentId}`);
+
+      return {
+        success: true,
+        message: `Redis backend removed for agent ${agentId}`,
+      };
+    } catch (error) {
+      logger.error(`Failed to remove Redis backend: ${error.message}`, {
+        error: error.message,
+        stack: error.stack,
+      });
+      return {
+        success: false,
+        error: `Failed to remove Redis backend: ${error.message}`,
+      };
+    }
+  }
+
+  /**
+   * Check if Redis port is configured in HAProxy
+   * @returns {Promise<Object>} - Result
+   */
+  async checkRedisPort() {
+    logger.info("Checking Redis port configuration");
+
+    if (!this.initialized) {
+      await this.initialize();
+    }
+
+    try {
+      // Read current configuration
+      const configContent = await fs.readFile(this.hostConfigPath, "utf8");
+
+      // Check if Redis frontend exists
+      const redisFrontendExists = configContent.includes("frontend redis-in");
+
+      return {
+        success: redisFrontendExists,
+        message: redisFrontendExists
+          ? "Redis port is configured in HAProxy"
+          : "Redis port is not configured in HAProxy",
+      };
+    } catch (error) {
+      logger.error(`Failed to check Redis port: ${error.message}`, {
+        error: error.message,
+        stack: error.stack,
+      });
+      return {
+        success: false,
+        error: `Failed to check Redis port: ${error.message}`,
+      };
+    }
+  }
+
+  /**
+   * Ensure Redis port is configured in HAProxy
+   * @returns {Promise<Object>} - Result
+   */
+  async ensureRedisPort() {
+    logger.info("Ensuring Redis port is configured");
+
+    if (!this.initialized) {
+      await this.initialize();
+    }
+
+    try {
+      // Check current configuration
+      const checkResult = await this.checkRedisPort();
+
+      if (checkResult.success) {
+        logger.info("Redis port already configured in HAProxy");
+        return checkResult;
+      }
+
+      // Read current configuration
+      const configContent = await fs.readFile(this.hostConfigPath, "utf8");
+
+      // Add Redis frontend and backend
+      const redisConfig = `
+# Redis Frontend
+frontend redis-in
+    bind *:6379
+    mode tcp
+    default_backend redis_default
+
+# Redis Backend
+backend redis_default
+    mode tcp
+`;
+
+      // Update configuration
+      const updatedConfig = configContent + redisConfig;
+      await fs.writeFile(this.hostConfigPath, updatedConfig, "utf8");
+
+      // Reload HAProxy configuration
+      await this._reloadHAProxyConfig();
+
+      logger.info("Redis port configured successfully");
+      return {
+        success: true,
+        message: "Redis port configured successfully in HAProxy",
+      };
+    } catch (error) {
+      logger.error(`Failed to ensure Redis port: ${error.message}`, {
+        error: error.message,
+        stack: error.stack,
+      });
+      return {
+        success: false,
+        error: `Failed to ensure Redis port: ${error.message}`,
+      };
+    }
   }
 }
 
