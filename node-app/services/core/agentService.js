@@ -111,38 +111,9 @@ class AgentService {
       // Generate a token for this agent
       const token = this.generateAgentToken(agentId);
 
-      // Register MongoDB for this agent if needed
-      let mongoResult = null;
+      // MongoDB registration is now handled separately
+      // This is done when the agent explicitly installs MongoDB
       let certificates = null;
-
-      if (this.mongodbService) {
-        try {
-          mongoResult = await this.mongodbService.registerAgent(
-            agentId,
-            targetIp,
-            {
-              useTls: options.useTls !== false,
-            }
-          );
-
-          if (!mongoResult.success) {
-            logger.warn(
-              `MongoDB registration warning for agent ${agentId}: ${mongoResult.error}`
-            );
-          }
-        } catch (mongoErr) {
-          logger.error(
-            `MongoDB registration failed for agent ${agentId}: ${mongoErr.message}`,
-            {
-              error: mongoErr.message,
-              stack: mongoErr.stack,
-            }
-          );
-          // Continue with agent registration even if MongoDB registration fails
-        }
-      } else {
-        logger.warn(`MongoDB service not available for agent ${agentId}`);
-      }
 
       // Generate certificates if needed
       if (
@@ -194,12 +165,6 @@ class AgentService {
         targetIp,
         tlsEnabled: options.useTls !== false,
       };
-
-      // Add MongoDB info if available
-      if (mongoResult && mongoResult.success) {
-        response.mongodbUrl = mongoResult.mongodbUrl;
-        response.connectionString = mongoResult.connectionString;
-      }
 
       // Add certificates if available
       if (certificates) {

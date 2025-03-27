@@ -76,15 +76,9 @@ exports.registerAgent = asyncHandler(async (req, res) => {
       success: true,
       agentId,
       token: result.token,
-      mongodbUrl: result.mongodbUrl,
       targetIp,
       tlsEnabled: result.tlsEnabled,
       certificates: result.certificates,
-      connectionString:
-        result.connectionString ||
-        `mongodb://username:password@${agentId}.${
-          process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk"
-        }:27017/admin?ssl=true&tlsAllowInvalidCertificates=true`,
     });
   } catch (err) {
     logger.error(`Agent registration failed: ${err.message}`, {
