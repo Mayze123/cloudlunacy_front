@@ -194,7 +194,14 @@ backend node-app-backend
         content = `# MongoDB Frontend with TLS and SNI support
 frontend mongodb_frontend
 {{#useSsl}}
+    {{#sslKeyPath}}
+    # Use explicit cert and key format for HAProxy 2.8+
+    bind *:27017 ssl crt {{{sslCertPath}}} key {{{sslKeyPath}}}
+    {{/sslKeyPath}}
+    {{^sslKeyPath}}
+    # Legacy SSL format (HAProxy 2.7 and earlier)
     bind *:27017 ssl crt {{{sslCertPath}}}
+    {{/sslKeyPath}}
     # Extract the agent ID from the SNI hostname for routing
     http-request set-var(txn.agent_id) req.ssl_sni,field(1,'.')
 {{/useSsl}}

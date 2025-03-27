@@ -100,7 +100,7 @@ class CertificateService {
   }
 
   /**
-   * Create combined PEM file and update HAProxy configuration using template system
+   * Create certificate files for HAProxy 2.8 and update HAProxy configuration
    * @param {string} agentId - The agent ID
    * @param {string} targetIp - Target IP address
    * @param {string} serverCertPath - Path to server certificate
@@ -122,30 +122,27 @@ class CertificateService {
       const serverCert = await fs.readFile(serverCertPath, "utf8");
       const serverKey = await fs.readFile(serverKeyPath, "utf8");
 
-      // Create combined PEM file
+      // Create combined PEM file (for backward compatibility)
       const pemBundle = serverCert + serverKey;
       await fs.writeFile(serverPemPath, pemBundle);
       await fs.chmod(serverPemPath, 0o600);
 
       logger.info(`Created combined PEM certificate at ${serverPemPath}`);
 
-      // Copy to system location if possible
+      // Copy to system location with separate cert and key files for HAProxy 2.8
       let sslConfigured = false;
       try {
-        // Use standard system location
-        const haproxyDir = "/etc/ssl/certs";
-        const haproxyPem = path.join(haproxyDir, "mongodb.pem");
+        // Create directories if they don't exist
+        await fs.mkdir("/etc/ssl/certs", { recursive: true });
+        await fs.mkdir("/etc/ssl/private", { recursive: true });
 
-        // Create directory if it doesn't exist
-        await fs.mkdir(haproxyDir, { recursive: true });
+        // Copy certificate and key to separate files
+        await fs.copyFile(serverCertPath, "/etc/ssl/certs/mongodb.crt");
+        await fs.copyFile(serverKeyPath, "/etc/ssl/private/mongodb.key");
+        await fs.chmod("/etc/ssl/certs/mongodb.crt", 0o644);
+        await fs.chmod("/etc/ssl/private/mongodb.key", 0o600);
 
-        // Copy PEM file to HAProxy location
-        await fs.copyFile(serverPemPath, haproxyPem);
-        await fs.chmod(haproxyPem, 0o600);
-
-        logger.info(
-          `Copied PEM certificate to HAProxy location at ${haproxyPem}`
-        );
+        logger.info(`Copied certificate and key to HAProxy locations`);
         sslConfigured = true;
       } catch (copyErr) {
         logger.warn(
@@ -178,7 +175,8 @@ class CertificateService {
                 includeHttp: true,
                 includeMongoDB: true,
                 useSsl: sslConfigured,
-                sslCertPath: "/etc/ssl/certs/mongodb.pem",
+                sslCertPath: "/etc/ssl/certs/mongodb.crt",
+                sslKeyPath: "/etc/ssl/private/mongodb.key",
                 mongoDBServers:
                   this.configManager.haproxyManager.mongoDBServers || [],
               };
@@ -214,7 +212,9 @@ class CertificateService {
         sslConfigured,
       };
     } catch (err) {
-      logger.error(`Failed to create PEM and update HAProxy: ${err.message}`);
+      logger.error(
+        `Failed to create certificates and update HAProxy: ${err.message}`
+      );
       return {
         success: false,
         error: err.message,
