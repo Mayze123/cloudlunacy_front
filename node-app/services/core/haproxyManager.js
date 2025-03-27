@@ -809,20 +809,16 @@ backend redis_default
       // Read current configuration
       const configContent = await fs.readFile(this.hostConfigPath, "utf8");
 
-      // Create MongoDB frontend with TLS/SSL and SNI support
+      // Check if it already contains a mongodb_frontend section
+      const hasMongoDB = configContent.includes("frontend mongodb_frontend");
+
+      // Create MongoDB frontend without TLS/SSL initially (safer default)
       const mongodbFrontend = `
-# MongoDB Frontend with TLS and SNI support
+# MongoDB Frontend
 frontend mongodb_frontend
-    bind *:27017 ssl crt /etc/ssl/certs/mongodb.pem
+    bind *:27017
     mode tcp
     option tcplog
-    
-    # Extract the agent ID from the SNI hostname for routing
-    http-request set-var(txn.agent_id) req.ssl_sni,field(1,'.')
-    
-    # Add enhanced logging for SNI debugging
-    log-format %ci:%cp\\ [%t]\\ %ft\\ %b/%s\\ %Tw/%Tc/%Tt\\ %B\\ %ts\\ %ac/%fc/%bc/%sc/%rc\\ %sq/%bq\\ SNI=%[ssl_fc_sni]
-    
     default_backend mongodb_default
 
 # MongoDB Backend
@@ -831,50 +827,20 @@ backend mongodb_default
     balance roundrobin
 `;
 
-      // Check if it already contains a mongodb_frontend section
-      if (!configContent.includes("frontend mongodb_frontend")) {
+      if (!hasMongoDB) {
         const updatedConfig = configContent + mongodbFrontend;
         await fs.writeFile(this.hostConfigPath, updatedConfig, "utf8");
-        logger.info(
-          "Added MongoDB frontend with TLS/SSL and SNI support to HAProxy configuration"
-        );
-      } else if (!configContent.includes("bind *:27017 ssl crt")) {
-        // Frontend exists but without SSL, update it
-        const frontendRegex =
-          /frontend\s+mongodb_frontend\s*\n([\s\S]*?)(?=\n\s*\n|\n\s*#|\n\s*frontend|\s*$)/;
-        const frontendMatch = configContent.match(frontendRegex);
-
-        if (frontendMatch) {
-          // Replace non-SSL bind line with SSL version
-          const updatedFrontend = frontendMatch[0].replace(
-            /bind\s+\*:27017(\s|$)/,
-            "bind *:27017 ssl crt /etc/ssl/certs/mongodb.pem$1"
-          );
-
-          // Add SNI extraction if missing
-          let enhancedFrontend = updatedFrontend;
-          if (!updatedFrontend.includes("set-var(txn.agent_id)")) {
-            enhancedFrontend = updatedFrontend.replace(
-              /option\s+tcplog(\s|$)/,
-              "option tcplog$1\n    # Extract the agent ID from the SNI hostname for routing\n    http-request set-var(txn.agent_id) req.ssl_sni,field(1,'.')"
-            );
-          }
-
-          const updatedConfig = configContent.replace(
-            frontendMatch[0],
-            enhancedFrontend
-          );
-          await fs.writeFile(this.hostConfigPath, updatedConfig, "utf8");
-          logger.info(
-            "Updated MongoDB frontend to include TLS/SSL and SNI support"
-          );
-        }
+        logger.info("Added MongoDB frontend to HAProxy configuration (no SSL)");
+      } else {
+        logger.info("MongoDB frontend already exists in the configuration");
       }
 
       // Check if mongodb.pem exists and create a symlink if needed
+      let sslConfigured = false;
       try {
         await fs.access("/etc/ssl/certs/mongodb.pem");
         logger.info("MongoDB certificate exists at /etc/ssl/certs/mongodb.pem");
+        sslConfigured = true;
       } catch (_) {
         // Certificate doesn't exist, attempt to find and link it
         logger.warn(
@@ -910,26 +876,60 @@ backend mongodb_default
             logger.info(
               `Created MongoDB certificate at /etc/ssl/certs/mongodb.pem from ${sourcePem}`
             );
+            sslConfigured = true;
           } else {
-            logger.error("No PEM files found in certificates directory");
+            logger.warn(
+              "No PEM files found in certificates directory, will proceed without SSL"
+            );
           }
         } catch (createErr) {
-          logger.error(
-            `Failed to create MongoDB certificate: ${createErr.message}`
+          logger.warn(`Not using SSL for MongoDB: ${createErr.message}`);
+        }
+      }
+
+      // Only enable SSL if we have the certificate
+      if (sslConfigured && hasMongoDB) {
+        // Frontend exists, potentially update it to use SSL if we have the certificate
+        const frontendRegex =
+          /frontend\s+mongodb_frontend\s*\n([\s\S]*?)(?=\n\s*\n|\n\s*#|\n\s*frontend|\n\s*backend|\s*$)/;
+        const frontendMatch = configContent.match(frontendRegex);
+
+        if (frontendMatch) {
+          // Replace non-SSL bind line with SSL version if certificate exists
+          const updatedFrontend = frontendMatch[0].replace(
+            /bind\s+\*:27017(\s|$)/,
+            "bind *:27017 ssl crt /etc/ssl/certs/mongodb.pem$1"
+          );
+
+          // Add SNI extraction if missing
+          let enhancedFrontend = updatedFrontend;
+          if (!updatedFrontend.includes("set-var(txn.agent_id)")) {
+            enhancedFrontend = updatedFrontend.replace(
+              /option\s+tcplog(\s|$)/,
+              "option tcplog$1\n    # Extract the agent ID from the SNI hostname for routing\n    http-request set-var(txn.agent_id) req.ssl_sni,field(1,'.')"
+            );
+          }
+
+          const updatedConfig = configContent.replace(
+            frontendMatch[0],
+            enhancedFrontend
+          );
+          await fs.writeFile(this.hostConfigPath, updatedConfig, "utf8");
+          logger.info(
+            "Updated MongoDB frontend to include TLS/SSL and SNI support"
           );
         }
       }
 
       // Reload configuration
       await this._reloadHAProxyConfig();
-      logger.info(
-        "HAProxy configuration reloaded with MongoDB TLS/SSL configuration"
-      );
+      logger.info("HAProxy configuration reloaded with MongoDB configuration");
 
       return {
         success: true,
-        message:
-          "MongoDB port has been configured in HAProxy with TLS/SSL and SNI support",
+        message: `MongoDB port has been configured in HAProxy${
+          sslConfigured ? " with TLS/SSL support" : " (no SSL)"
+        }`,
       };
     } catch (error) {
       logger.error(`Failed to ensure MongoDB port: ${error.message}`, {
