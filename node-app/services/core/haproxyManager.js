@@ -21,6 +21,7 @@ class HAProxyManager {
     this.hostConfigPath =
       process.env.HAPROXY_CONFIG_PATH ||
       path.join(process.cwd(), "config", "haproxy", "haproxy.cfg");
+    this.mongoDBServers = [];
   }
 
   /**
@@ -38,7 +39,7 @@ class HAProxyManager {
       // Verify HAProxy is running
       await this._verifyHAProxyRunning();
 
-      // Load existing configuration
+      // Load existing configuration and parse it to find existing servers
       await this._loadConfiguration();
 
       this.initialized = true;
@@ -103,35 +104,58 @@ class HAProxyManager {
    * @param {string} configContent - HAProxy configuration content
    */
   async _parseConfiguration(configContent) {
-    // Clear route cache
+    // Clear route cache and server list
     this.routeCache.clear();
+    this.mongoDBServers = [];
 
     try {
-      // Extract mongodb backend information
-      const backendRegex = /backend\s+mongodb-backend-dyn\s*{[\s\S]*?}/g;
+      // Extract mongodb backend information and server entries
+      // Use a regex to find the mongodb_default backend and its server entries
+      const backendRegex =
+        /backend\s+mongodb_default\s*[\s\S]*?(?=\n\s*\n|\n\s*#|\n\s*backend|\s*$)/;
       const backendMatch = configContent.match(backendRegex);
 
       if (backendMatch) {
-        // Extract server lines
-        const serverRegex = /server\s+mongodb-agent\s+([^\s]+)\s+/g;
+        // Extract server lines - looking for mongodb-agent-XXXX pattern
+        const serverRegex =
+          /server\s+(mongodb-agent-[\w-]+)\s+([^:\s]+):(\d+)/g;
         let serverMatch;
 
         while ((serverMatch = serverRegex.exec(backendMatch[0])) !== null) {
-          const targetAddress = serverMatch[1];
+          const [, serverName, targetHost, targetPort] = serverMatch;
 
-          // Add to route cache
-          this.routeCache.set("tcp:mongodb", {
-            name: "mongodb-backend-dyn",
-            targetAddress,
-            lastUpdated: new Date().toISOString(),
-          });
+          // Try to extract the agent ID from the server name
+          const agentIdMatch = serverName.match(/mongodb-agent-([\w-]+)/);
+          const agentId = agentIdMatch ? agentIdMatch[1] : null;
 
-          logger.info(`Found MongoDB backend with target: ${targetAddress}`);
+          if (agentId) {
+            // Add to MongoDB servers list
+            this.mongoDBServers.push({
+              name: serverName,
+              agentId,
+              address: targetHost,
+              port: parseInt(targetPort, 10),
+              lastUpdated: new Date().toISOString(),
+            });
+
+            // Also add to route cache for backward compatibility
+            this.routeCache.set(`mongo:${agentId}`, {
+              name: serverName,
+              agentId,
+              targetHost,
+              targetPort: parseInt(targetPort, 10),
+              lastUpdated: new Date().toISOString(),
+            });
+
+            logger.info(
+              `Found MongoDB server: ${serverName} (${targetHost}:${targetPort})`
+            );
+          }
         }
       }
 
       logger.info(
-        `Loaded ${this.routeCache.size} routes from HAProxy configuration`
+        `Loaded ${this.mongoDBServers.length} MongoDB servers from HAProxy configuration`
       );
       return true;
     } catch (err) {
@@ -141,11 +165,12 @@ class HAProxyManager {
   }
 
   /**
-   * Update HAProxy MongoDB backend server
+   * Update HAProxy MongoDB backend server using the improved template-based system
    *
    * @param {string} agentId - The agent ID
    * @param {string} targetHost - Target host
    * @param {number} targetPort - Target port (default: 27017)
+   * @returns {Promise<Object>} Result of the operation
    */
   async updateMongoDBBackend(agentId, targetHost, targetPort = 27017) {
     logger.info(
@@ -157,6 +182,149 @@ class HAProxyManager {
       await this.initialize();
     }
 
+    try {
+      // Validations
+      if (!agentId) {
+        throw new Error("Agent ID is required");
+      }
+
+      if (!targetHost) {
+        throw new Error("Target host is required");
+      }
+
+      // Update the MongoDB server list
+      const existingServerIndex = this.mongoDBServers.findIndex(
+        (server) => server.agentId === agentId
+      );
+
+      if (existingServerIndex !== -1) {
+        // Update existing server
+        this.mongoDBServers[existingServerIndex] = {
+          name: `mongodb-agent-${agentId}`,
+          agentId,
+          address: targetHost,
+          port: targetPort,
+          lastUpdated: new Date().toISOString(),
+        };
+      } else {
+        // Add new server
+        this.mongoDBServers.push({
+          name: `mongodb-agent-${agentId}`,
+          agentId,
+          address: targetHost,
+          port: targetPort,
+          lastUpdated: new Date().toISOString(),
+        });
+      }
+
+      // Check for SSL certificate availability
+      let useSsl = false;
+      let sslCertPath = null;
+
+      try {
+        // Check if mongodb.pem exists
+        await fs.access("/etc/ssl/certs/mongodb.pem");
+        useSsl = true;
+        sslCertPath = "/etc/ssl/certs/mongodb.pem";
+        logger.info("MongoDB SSL certificate found, enabling SSL");
+      } catch (certErr) {
+        // Check if we have a server.pem we can use
+        try {
+          const serverPemPath = path.join(
+            process.cwd(),
+            "config",
+            "certs",
+            "agents",
+            agentId,
+            "server.pem"
+          );
+
+          await fs.access(serverPemPath);
+
+          // Copy the server.pem to the expected location
+          const destPath = "/etc/ssl/certs/mongodb.pem";
+          await fs.mkdir(path.dirname(destPath), { recursive: true });
+          await fs.copyFile(serverPemPath, destPath);
+
+          useSsl = true;
+          sslCertPath = destPath;
+          logger.info(
+            `Copied agent certificate ${serverPemPath} to ${destPath}, enabling SSL`
+          );
+        } catch (certErr2) {
+          logger.warn(
+            `No valid SSL certificate found, disabling SSL: ${certErr2.message}`
+          );
+          useSsl = false;
+        }
+      }
+
+      // Generate configuration data
+      const configData = {
+        statsPassword: "admin_password", // Should come from a secure config
+        includeHttp: true,
+        includeMongoDB: true,
+        useSsl,
+        sslCertPath,
+        mongoDBServers: this.mongoDBServers,
+      };
+
+      // Use the template-based config manager to update the config
+      if (this.configManager) {
+        await this.configManager.saveConfig(configData);
+        await this.configManager.applyConfig();
+
+        logger.info(
+          `MongoDB backend for agent ${agentId} updated successfully with template-based config`
+        );
+
+        // Update route cache for backward compatibility
+        this.routeCache.set(`mongo:${agentId}`, {
+          name: `mongodb-agent-${agentId}`,
+          agentId,
+          targetHost,
+          targetPort,
+          lastUpdated: new Date().toISOString(),
+        });
+
+        return {
+          success: true,
+          message: `MongoDB backend for agent ${agentId} updated successfully`,
+          useSsl,
+          agentId,
+          targetHost,
+          targetPort,
+        };
+      } else {
+        // Fall back to manual config file updates if configManager not available
+        logger.warn(
+          "HAProxy config manager not available, using direct file modification"
+        );
+        return this._updateConfigFileDirectly(
+          agentId,
+          targetHost,
+          targetPort,
+          useSsl
+        );
+      }
+    } catch (err) {
+      logger.error(`Failed to update MongoDB backend: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+      });
+
+      return {
+        success: false,
+        error: `Failed to update MongoDB backend: ${err.message}`,
+      };
+    }
+  }
+
+  /**
+   * Fallback method to update HAProxy config file directly if configManager is not available
+   * @private
+   */
+  async _updateConfigFileDirectly(agentId, targetHost, targetPort, useSsl) {
     try {
       // Build the target address
       const targetAddress = `${targetHost}:${targetPort}`;
@@ -176,42 +344,58 @@ class HAProxyManager {
         /backend\s+mongodb_default\s*\n([\s\S]*?)(?=\n\s*\n|\n\s*#|\n\s*backend|\s*$)/;
       const backendMatch = configContent.match(backendRegex);
 
-      if (!backendMatch) {
-        logger.error(
-          "mongodb_default backend not found in HAProxy configuration"
+      // Update the configuration based on what we found
+      let updatedConfig;
+
+      if (backendMatch) {
+        logger.info("Found existing mongodb_default backend section");
+
+        // Check if the server line already exists for this agent
+        const serverRegex = new RegExp(
+          `server\\s+mongodb-agent-${agentId}\\s+[^\\n]+`,
+          "g"
         );
 
-        // Structure that will contain the sections of the configuration
-        const sections = {
-          mongodb_frontend: null,
-          mongodb_backend: null,
-          rest: configContent,
-        };
-
-        // Check if mongodb_frontend already exists
-        const frontendRegex =
-          /frontend\s+mongodb_frontend\s*\n([\s\S]*?)(?=\n\s*\n|\n\s*#|\n\s*frontend|\n\s*backend|\s*$)/;
-        const frontendMatch = configContent.match(frontendRegex);
-
-        if (frontendMatch) {
-          logger.info("Found existing mongodb_frontend section");
-          sections.mongodb_frontend = frontendMatch[0];
-          // Remove the frontend from the rest of the config
-          sections.rest = sections.rest.replace(frontendMatch[0], "");
+        if (serverRegex.test(backendMatch[0])) {
+          // Server line exists, update it
+          updatedConfig = configContent.replace(serverRegex, serverLine);
+          logger.info(`Updated existing server line for agent ${agentId}`);
         } else {
-          logger.info("No mongodb_frontend section found, will create one");
-          sections.mongodb_frontend = `
+          // Server line doesn't exist, add it to the backend
+          const updatedBackend = backendMatch[0] + "\n" + serverLine;
+          updatedConfig = configContent.replace(
+            backendMatch[0],
+            updatedBackend
+          );
+          logger.info(`Added new server line for agent ${agentId}`);
+        }
+      } else {
+        logger.info("mongodb_default backend not found, creating it");
+
+        // Create sections that need to be added or updated
+        const mongoFrontend = `
 # MongoDB Frontend
 frontend mongodb_frontend
-    bind *:27017
+    ${
+      useSsl
+        ? "bind *:27017 ssl crt /etc/ssl/certs/mongodb.pem"
+        : "bind *:27017"
+    }
     mode tcp
     option tcplog
+    ${
+      useSsl
+        ? "# Extract the agent ID from the SNI hostname for routing\n    http-request set-var(txn.agent_id) req.ssl_sni,field(1,'.')"
+        : "# SSL disabled"
+    }
+    
+    # Add enhanced logging for debugging
+    log-format "%ci:%cp [%t] %ft %b/%s %Tw/%Tc/%Tt %B %ts %ac/%fc/%bc/%sc/%rc %sq/%bq"
+    
     default_backend mongodb_default
 `;
-        }
 
-        // Create the mongodb_default backend section
-        sections.mongodb_backend = `
+        const mongoBackend = `
 # MongoDB Backend
 backend mongodb_default
     mode tcp
@@ -219,179 +403,73 @@ backend mongodb_default
 ${serverLine}
 `;
 
-        // Assemble the updated configuration ensuring sections are in the right order
-        // This prevents server lines from being placed outside sections
-        const updatedConfig =
-          sections.rest.trim() +
-          "\n\n" +
-          sections.mongodb_frontend.trim() +
-          "\n\n" +
-          sections.mongodb_backend.trim();
-
-        // Write the updated configuration
-        await fs.writeFile(this.hostConfigPath, updatedConfig, "utf8");
-        logger.info(
-          "Created new mongodb_default backend in HAProxy configuration"
-        );
-
-        // Update route cache
-        this.routeCache.set(`tcp:${agentId}`, {
-          name: "mongodb_default",
-          agentId,
-          targetAddress,
-          lastUpdated: new Date().toISOString(),
-        });
-
-        // Reload HAProxy configuration
-        await this._reloadHAProxyConfig();
-        logger.info(
-          "HAProxy configuration with new backend reloaded successfully"
-        );
-
-        return {
-          success: true,
-          agentId,
-          targetAddress,
-          message: `Created new HAProxy mongodb_default backend for agent: ${agentId}`,
-        };
+        // Append to the configuration
+        updatedConfig =
+          configContent + "\n" + mongoFrontend + "\n" + mongoBackend;
       }
 
-      // Extract the content of the mongodb_default backend
-      const backendContent = backendMatch[0];
-      logger.info(`Found mongodb_default backend: ${backendContent.trim()}`);
-
-      // Check if this agent already has a server line
-      const agentServerRegex = new RegExp(
-        `server\\s+mongodb-agent-${agentId}\\s+.*`,
-        "m"
-      );
-      const existingServerLine = backendContent.match(agentServerRegex);
-
-      let updatedConfig;
-      if (existingServerLine) {
-        // Replace the existing server line directly in the backend section
-        const updatedBackend = backendContent.replace(
-          agentServerRegex,
-          serverLine
-        );
-        updatedConfig = configContent.replace(backendContent, updatedBackend);
-        logger.info(`Replaced existing server line for agent ${agentId}`);
-      } else {
-        // Add a new server line to the backend section, ensuring it stays within the section
-        // Find the last line of the backend section
-        const lines = backendContent.trim().split("\n");
-
-        // Insert the new server line before the last line if it's a comment, otherwise append it
-        if (
-          lines.length > 0 &&
-          lines[lines.length - 1].trim().startsWith("#")
-        ) {
-          lines.splice(lines.length - 1, 0, serverLine);
-        } else {
-          lines.push(serverLine);
-        }
-
-        const updatedBackend = lines.join("\n");
-        updatedConfig = configContent.replace(backendContent, updatedBackend);
-        logger.info(`Added new server line for agent ${agentId}`);
-      }
-
-      // Validate the configuration to ensure we haven't broken it
-      this._validateConfiguration(updatedConfig);
-
-      // Write updated configuration
+      // Write the updated configuration
       await fs.writeFile(this.hostConfigPath, updatedConfig, "utf8");
-      logger.info(
-        `Updated HAProxy configuration written to ${this.hostConfigPath}`
-      );
+      logger.info(`Updated HAProxy configuration for agent ${agentId}`);
 
       // Update route cache
-      this.routeCache.set(`tcp:${agentId}`, {
-        name: "mongodb_default",
+      this.routeCache.set(`mongo:${agentId}`, {
+        name: `mongodb-agent-${agentId}`,
         agentId,
-        targetAddress,
+        targetHost,
+        targetPort,
         lastUpdated: new Date().toISOString(),
       });
-      logger.info(`Added route to cache for agentId: ${agentId}`);
+
+      // Also add to MongoDB servers list
+      const existingServerIndex = this.mongoDBServers.findIndex(
+        (server) => server.agentId === agentId
+      );
+
+      if (existingServerIndex !== -1) {
+        this.mongoDBServers[existingServerIndex] = {
+          name: `mongodb-agent-${agentId}`,
+          agentId,
+          address: targetHost,
+          port: targetPort,
+          lastUpdated: new Date().toISOString(),
+        };
+      } else {
+        this.mongoDBServers.push({
+          name: `mongodb-agent-${agentId}`,
+          agentId,
+          address: targetHost,
+          port: targetPort,
+          lastUpdated: new Date().toISOString(),
+        });
+      }
 
       // Reload HAProxy configuration
       await this._reloadHAProxyConfig();
-      logger.info("HAProxy configuration reloaded successfully");
+      logger.info(`HAProxy configuration reloaded for agent ${agentId}`);
 
       return {
         success: true,
+        message: `MongoDB backend for agent ${agentId} updated successfully`,
+        useSsl,
         agentId,
-        targetAddress,
-        message: `HAProxy configuration updated for agentId: ${agentId}`,
+        targetHost,
+        targetPort,
       };
     } catch (err) {
-      logger.error(`Failed to update MongoDB backend: ${err.message}`, {
-        error: err.message,
-        stack: err.stack,
-      });
-
+      logger.error(`Failed to update config file directly: ${err.message}`);
       return {
         success: false,
-        error: err.message,
+        error: `Failed to update config file directly: ${err.message}`,
       };
     }
   }
 
   /**
-   * Validate HAProxy configuration for common errors
-   * @param {string} config - Configuration to validate
-   * @private
-   */
-  _validateConfiguration(config) {
-    logger.info("Validating HAProxy configuration");
-
-    // Check for server directives outside backend sections
-    const serverOutsideBackendRegex =
-      /(^|\n)(\s*)server\s+(?!(.*\n\s*backend))/;
-    if (serverOutsideBackendRegex.test(config)) {
-      const match = config.match(serverOutsideBackendRegex);
-      const errorLine = match ? match[0] : "unknown line";
-      const error = `Found server directive outside of backend section: ${errorLine}`;
-      logger.error(error);
-      throw new Error(error);
-    }
-
-    // Check for duplicate frontend names
-    const frontendNames = new Map();
-    const frontendRegex = /frontend\s+(\S+)/g;
-    let match;
-    while ((match = frontendRegex.exec(config)) !== null) {
-      const name = match[1];
-      if (frontendNames.has(name)) {
-        const error = `Duplicate frontend name found: ${name}`;
-        logger.error(error);
-        throw new Error(error);
-      }
-      frontendNames.set(name, true);
-    }
-
-    // Check for duplicate backend names
-    const backendNames = new Map();
-    const backendRegex = /backend\s+(\S+)/g;
-    while ((match = backendRegex.exec(config)) !== null) {
-      const name = match[1];
-      if (backendNames.has(name)) {
-        const error = `Duplicate backend name found: ${name}`;
-        logger.error(error);
-        throw new Error(error);
-      }
-      backendNames.set(name, true);
-    }
-
-    logger.info("HAProxy configuration validation passed");
-    return true;
-  }
-
-  /**
-   * Remove MongoDB backend for an agent
+   * Remove a MongoDB backend server
    *
    * @param {string} agentId - The agent ID
-   * @returns {Promise<Object>} Result object
+   * @returns {Promise<Object>} Result
    */
   async removeMongoDBBackend(agentId) {
     logger.info(`Removing MongoDB backend for agentId: ${agentId}`);
@@ -401,28 +479,72 @@ ${serverLine}
     }
 
     try {
-      // We don't actually remove the server line from HAProxy config
-      // since we use a dynamic backend approach with agent_id variable.
-      // We just remove the route from our cache.
+      // First, check if the server exists
+      const existingServer = this.mongoDBServers.find(
+        (server) => server.agentId === agentId
+      );
 
-      // Check if route exists
-      if (!this.routeCache.has(`tcp:${agentId}`)) {
+      if (!existingServer) {
+        logger.warn(
+          `MongoDB server for agent ${agentId} not found, nothing to remove`
+        );
         return {
-          success: false,
-          error: `MongoDB backend for agentId ${agentId} not found`,
+          success: true,
+          message: `MongoDB server for agent ${agentId} not found, nothing to remove`,
         };
       }
 
-      // Remove route from cache
-      this.routeCache.delete(`tcp:${agentId}`);
+      // Remove the server from our cached list
+      this.mongoDBServers = this.mongoDBServers.filter(
+        (server) => server.agentId !== agentId
+      );
 
-      // No need to reload HAProxy since the config didn't change
-      // The SNI routing will simply not match for this agent ID anymore
+      // Remove from route cache
+      this.routeCache.delete(`mongo:${agentId}`);
 
-      return {
-        success: true,
-        message: `MongoDB backend for agentId ${agentId} removed successfully`,
-      };
+      // Use the template-based config manager to update the config
+      if (this.configManager) {
+        // Check if SSL cert exists
+        let useSsl = false;
+        let sslCertPath = null;
+
+        try {
+          await fs.access("/etc/ssl/certs/mongodb.pem");
+          useSsl = true;
+          sslCertPath = "/etc/ssl/certs/mongodb.pem";
+        } catch (certErr) {
+          // No SSL certificate
+          logger.debug("SSL certificate not found, disabling SSL");
+        }
+
+        // Generate configuration data - includeMongoDB is false if no servers
+        const configData = {
+          statsPassword: "admin_password",
+          includeHttp: true,
+          includeMongoDB: this.mongoDBServers.length > 0,
+          useSsl,
+          sslCertPath,
+          mongoDBServers: this.mongoDBServers,
+        };
+
+        await this.configManager.saveConfig(configData);
+        await this.configManager.applyConfig();
+
+        logger.info(
+          `MongoDB backend for agent ${agentId} removed successfully with template-based config`
+        );
+
+        return {
+          success: true,
+          message: `MongoDB backend for agent ${agentId} removed successfully`,
+        };
+      } else {
+        // Fall back to manual config file updates if configManager not available
+        logger.warn(
+          "HAProxy config manager not available, using direct file modification"
+        );
+        return this._removeServerDirectly(agentId);
+      }
     } catch (err) {
       logger.error(`Failed to remove MongoDB backend: ${err.message}`, {
         error: err.message,
@@ -431,312 +553,143 @@ ${serverLine}
 
       return {
         success: false,
-        error: err.message,
+        error: `Failed to remove MongoDB backend: ${err.message}`,
+      };
+    }
+  }
+
+  /**
+   * Fallback method to remove server directly from config file if configManager is not available
+   * @private
+   */
+  async _removeServerDirectly(agentId) {
+    try {
+      // Read current configuration
+      const configContent = await fs.readFile(this.hostConfigPath, "utf8");
+
+      // Create a regex to match the server line for this agent
+      const serverLineRegex = new RegExp(
+        `\\s*server\\s+mongodb-agent-${agentId}\\s+[^\\n]+\\n?`,
+        "g"
+      );
+
+      // Remove the server line
+      const updatedConfig = configContent.replace(serverLineRegex, "");
+
+      // Write the updated configuration
+      await fs.writeFile(this.hostConfigPath, updatedConfig, "utf8");
+      logger.info(
+        `Removed server line for agent ${agentId} from HAProxy config`
+      );
+
+      // Check if the mongodb_default backend is now empty and remove the frontend if needed
+      const backendRegex =
+        /backend\s+mongodb_default\s*\n([\s\S]*?)(?=\n\s*\n|\n\s*#|\n\s*backend|\s*$)/;
+      const backendMatch = updatedConfig.match(backendRegex);
+
+      if (backendMatch && !backendMatch[1].includes("server ")) {
+        logger.info(
+          "MongoDB backend is empty, removing it in a future update if needed"
+        );
+        // We could remove the mongodb frontend and backend sections here, but it's safer
+        // to keep them and just have an empty backend
+      }
+
+      // Reload HAProxy configuration
+      await this._reloadHAProxyConfig();
+      logger.info(
+        `HAProxy configuration reloaded after removing agent ${agentId}`
+      );
+
+      return {
+        success: true,
+        message: `MongoDB backend for agent ${agentId} removed successfully`,
+      };
+    } catch (err) {
+      logger.error(`Failed to remove server directly: ${err.message}`);
+      return {
+        success: false,
+        error: `Failed to remove server directly: ${err.message}`,
       };
     }
   }
 
   /**
    * Reload HAProxy configuration
+   * @private
    */
   async _reloadHAProxyConfig() {
     try {
-      // Reload HAProxy configuration with SIGUSR2 signal
-      const { stdout } = await execAsync(
-        `docker kill --signal=SIGUSR2 ${this.haproxyContainer}`
+      logger.info("Reloading HAProxy configuration");
+
+      // Verify configuration before reloading
+      const { stderr } = await execAsync(
+        `docker exec ${this.haproxyContainer} haproxy -c -f ${this.haproxyConfigPath}`
       );
-      logger.info(`HAProxy configuration reloaded: ${stdout}`);
-      return true;
+
+      if (stderr && stderr.includes("error")) {
+        logger.error(`HAProxy configuration is invalid: ${stderr}`);
+        throw new Error(`Invalid HAProxy configuration: ${stderr}`);
+      }
+
+      // Soft reload HAProxy
+      await execAsync(`docker kill -s HUP ${this.haproxyContainer}`);
+      logger.info("HAProxy configuration reloaded successfully");
+
+      return {
+        success: true,
+        message: "HAProxy configuration reloaded successfully",
+      };
     } catch (err) {
       logger.error(`Failed to reload HAProxy configuration: ${err.message}`);
-      throw err;
+
+      // Try to recover by restarting HAProxy - more disruptive but can sometimes recover
+      try {
+        logger.warn(
+          "Attempting to restart HAProxy container as a recovery action"
+        );
+        await execAsync(`docker restart ${this.haproxyContainer}`);
+        logger.info("HAProxy container restarted successfully");
+
+        return {
+          success: true,
+          message: "HAProxy configuration reloaded via container restart",
+        };
+      } catch (restartErr) {
+        logger.error(
+          `Failed to restart HAProxy container: ${restartErr.message}`
+        );
+        return {
+          success: false,
+          error: `Failed to reload HAProxy configuration: ${err.message}. Restart also failed: ${restartErr.message}`,
+        };
+      }
     }
   }
 
   /**
-   * Get route information
-   *
-   * @param {string} agentId - The agent ID
+   * Get route info for an agent
+   * @param {string} agentId - Agent ID
    */
   getRouteInfo(agentId) {
-    return this.routeCache.get(`tcp:${agentId}`);
+    return this.routeCache.get(`mongo:${agentId}`);
   }
 
   /**
    * List all routes
    */
   listRoutes() {
-    return Array.from(this.routeCache.entries()).map(([key, route]) => ({
+    return Array.from(this.routeCache.entries()).map(([key, value]) => ({
       key,
-      ...route,
+      ...value,
     }));
   }
 
   /**
-   * Update HAProxy Redis backend server
-   *
-   * @param {string} agentId - The agent ID
-   * @param {string} targetHost - Target host
-   * @param {number} targetPort - Target port (default: 6379)
+   * List all MongoDB servers
    */
-  async updateRedisBackend(agentId, targetHost, targetPort = 6379) {
-    logger.info(
-      `Updating Redis backend for agentId: ${agentId}, target: ${targetHost}:${targetPort}`
-    );
-
-    if (!this.initialized) {
-      logger.info("HAProxy manager not initialized, initializing now...");
-      await this.initialize();
-    }
-
-    try {
-      // Build the target address
-      const targetAddress = `${targetHost}:${targetPort}`;
-      logger.info(`Using target address: ${targetAddress}`);
-
-      // Read current configuration
-      const configContent = await fs.readFile(this.hostConfigPath, "utf8");
-      logger.info(`Read HAProxy configuration from ${this.hostConfigPath}`);
-
-      // Build the server line for this agent
-      const serverLine = `    server redis-agent-${agentId} ${targetAddress} check`;
-      logger.info(`Generated server line: ${serverLine}`);
-
-      // Try to find the redis_default backend section
-      const backendRegex =
-        /backend\s+redis_default\s*\n([\s\S]*?)(?=\n\s*\n|\n\s*#|\n\s*backend|\s*$)/;
-      const backendMatch = configContent.match(backendRegex);
-
-      let updatedConfig;
-
-      if (!backendMatch) {
-        logger.info("redis_default backend not found, creating it");
-        // Create the redis_default backend if it doesn't exist
-        const newBackend = `\n# Redis Backend for ${agentId}\nbackend redis_default\n    mode tcp\n${serverLine}\n`;
-        updatedConfig = configContent + newBackend;
-
-        // Also need to ensure we have a frontend for Redis
-        if (!configContent.includes("frontend redis-in")) {
-          logger.info("Creating Redis frontend section");
-          const redisFrontend =
-            "\n# Redis Frontend\nfrontend redis-in\n    bind *:6379\n    mode tcp\n    default_backend redis_default\n";
-          updatedConfig = updatedConfig + redisFrontend;
-        }
-      } else {
-        logger.info("Found redis_default backend, updating it");
-        // Check if this agent already has a server line
-        const agentServerRegex = new RegExp(
-          `server\\s+redis-agent-${agentId}\\s+[^\\s]+\\s+check`,
-          "g"
-        );
-        const agentMatch = backendMatch[1].match(agentServerRegex);
-
-        if (agentMatch) {
-          // Update existing server line
-          logger.info(`Updating existing server line for agent ${agentId}`);
-          updatedConfig = configContent.replace(agentServerRegex, serverLine);
-        } else {
-          // Add server line to existing backend
-          logger.info(`Adding new server line for agent ${agentId}`);
-          const updatedBackend = backendMatch[0] + `\n${serverLine}`;
-          updatedConfig = configContent.replace(
-            backendMatch[0],
-            updatedBackend
-          );
-        }
-      }
-
-      // Write updated configuration
-      await fs.writeFile(this.hostConfigPath, updatedConfig, "utf8");
-      logger.info(
-        `Updated HAProxy configuration with Redis backend for ${agentId}`
-      );
-
-      // Reload HAProxy configuration
-      await this._reloadHAProxyConfig();
-
-      // Update route cache
-      this.routeCache.set(`tcp:redis:${agentId}`, {
-        name: "redis_default",
-        agentId,
-        targetAddress,
-        lastUpdated: new Date().toISOString(),
-      });
-
-      return {
-        success: true,
-        message: `Redis backend updated for agent ${agentId}`,
-      };
-    } catch (error) {
-      logger.error(`Failed to update Redis backend: ${error.message}`, {
-        error: error.message,
-        stack: error.stack,
-      });
-      return {
-        success: false,
-        error: `Failed to update Redis backend: ${error.message}`,
-      };
-    }
-  }
-
-  /**
-   * Remove Redis backend server for specific agent
-   *
-   * @param {string} agentId - The agent ID to remove
-   * @returns {Promise<Object>} - Result
-   */
-  async removeRedisBackend(agentId) {
-    logger.info(`Removing Redis backend for agentId: ${agentId}`);
-
-    if (!this.initialized) {
-      logger.info("HAProxy manager not initialized, initializing now...");
-      await this.initialize();
-    }
-
-    try {
-      // Read current configuration
-      const configContent = await fs.readFile(this.hostConfigPath, "utf8");
-
-      // Find the server line for this agent
-      const serverRegex = new RegExp(
-        `\\s*server\\s+redis-agent-${agentId}\\s+[^\\n]+\\n`,
-        "g"
-      );
-
-      // Check if the pattern exists in the configuration
-      if (!serverRegex.test(configContent)) {
-        logger.info(`No Redis backend found for agent ${agentId}`);
-        return {
-          success: true,
-          message: `No Redis backend found for agent ${agentId}`,
-        };
-      }
-
-      // Remove the server line
-      const updatedConfig = configContent.replace(serverRegex, "\n");
-
-      // Write updated configuration
-      await fs.writeFile(this.hostConfigPath, updatedConfig, "utf8");
-      logger.info(
-        `Removed Redis backend for agent ${agentId} from HAProxy configuration`
-      );
-
-      // Reload HAProxy configuration
-      await this._reloadHAProxyConfig();
-
-      // Update route cache
-      this.routeCache.delete(`tcp:redis:${agentId}`);
-
-      return {
-        success: true,
-        message: `Redis backend removed for agent ${agentId}`,
-      };
-    } catch (error) {
-      logger.error(`Failed to remove Redis backend: ${error.message}`, {
-        error: error.message,
-        stack: error.stack,
-      });
-      return {
-        success: false,
-        error: `Failed to remove Redis backend: ${error.message}`,
-      };
-    }
-  }
-
-  /**
-   * Check if Redis port is configured in HAProxy
-   * @returns {Promise<Object>} - Result
-   */
-  async checkRedisPort() {
-    logger.info("Checking Redis port configuration");
-
-    if (!this.initialized) {
-      await this.initialize();
-    }
-
-    try {
-      // Read current configuration
-      const configContent = await fs.readFile(this.hostConfigPath, "utf8");
-
-      // Check if Redis frontend exists
-      const redisFrontendExists = configContent.includes("frontend redis-in");
-
-      return {
-        success: redisFrontendExists,
-        message: redisFrontendExists
-          ? "Redis port is configured in HAProxy"
-          : "Redis port is not configured in HAProxy",
-      };
-    } catch (error) {
-      logger.error(`Failed to check Redis port: ${error.message}`, {
-        error: error.message,
-        stack: error.stack,
-      });
-      return {
-        success: false,
-        error: `Failed to check Redis port: ${error.message}`,
-      };
-    }
-  }
-
-  /**
-   * Ensure Redis port is configured in HAProxy
-   * @returns {Promise<Object>} - Result
-   */
-  async ensureRedisPort() {
-    logger.info("Ensuring Redis port is configured");
-
-    if (!this.initialized) {
-      await this.initialize();
-    }
-
-    try {
-      // Check current configuration
-      const checkResult = await this.checkRedisPort();
-
-      if (checkResult.success) {
-        logger.info("Redis port already configured in HAProxy");
-        return checkResult;
-      }
-
-      // Read current configuration
-      const configContent = await fs.readFile(this.hostConfigPath, "utf8");
-
-      // Add Redis frontend and backend
-      const redisConfig = `
-# Redis Frontend
-frontend redis-in
-    bind *:6379
-    mode tcp
-    default_backend redis_default
-
-# Redis Backend
-backend redis_default
-    mode tcp
-`;
-
-      // Update configuration
-      const updatedConfig = configContent + redisConfig;
-      await fs.writeFile(this.hostConfigPath, updatedConfig, "utf8");
-
-      // Reload HAProxy configuration
-      await this._reloadHAProxyConfig();
-
-      logger.info("Redis port configured successfully");
-      return {
-        success: true,
-        message: "Redis port configured successfully in HAProxy",
-      };
-    } catch (error) {
-      logger.error(`Failed to ensure Redis port: ${error.message}`, {
-        error: error.message,
-        stack: error.stack,
-      });
-      return {
-        success: false,
-        error: `Failed to ensure Redis port: ${error.message}`,
-      };
-    }
+  listMongoDBServers() {
+    return this.mongoDBServers;
   }
 
   /**
@@ -806,14 +759,67 @@ backend redis_default
         };
       }
 
-      // Read current configuration
-      const configContent = await fs.readFile(this.hostConfigPath, "utf8");
+      // Use the template-based config manager if available
+      if (this.configManager) {
+        // Check if SSL cert exists
+        let useSsl = false;
+        let sslCertPath = null;
 
-      // Check if it already contains a mongodb_frontend section
-      const hasMongoDB = configContent.includes("frontend mongodb_frontend");
+        try {
+          await fs.access("/etc/ssl/certs/mongodb.pem");
+          useSsl = true;
+          sslCertPath = "/etc/ssl/certs/mongodb.pem";
+          logger.info("MongoDB SSL certificate found, enabling SSL");
+        } catch (certErr) {
+          // No SSL certificate
+          logger.warn("MongoDB SSL certificate not found, disabling SSL");
+        }
 
-      // Create MongoDB frontend without TLS/SSL initially (safer default)
-      const mongodbFrontend = `
+        // Generate configuration data with empty MongoDB servers list
+        const configData = {
+          statsPassword: "admin_password",
+          includeHttp: true,
+          includeMongoDB: true,
+          useSsl,
+          sslCertPath,
+          mongoDBServers: this.mongoDBServers,
+        };
+
+        await this.configManager.saveConfig(configData);
+        await this.configManager.applyConfig();
+
+        logger.info(
+          "MongoDB port configured successfully with template-based config"
+        );
+
+        return {
+          success: true,
+          message: `MongoDB port has been configured in HAProxy${
+            useSsl ? " with TLS/SSL support" : " (no SSL)"
+          }`,
+        };
+      } else {
+        // Fall back to the direct file update method
+        logger.warn(
+          "HAProxy config manager not available, using direct file modification"
+        );
+
+        // Read current configuration
+        const configContent = await fs.readFile(this.hostConfigPath, "utf8");
+
+        // Check if it already contains a mongodb_frontend section
+        const hasMongoDB = configContent.includes("frontend mongodb_frontend");
+
+        if (hasMongoDB) {
+          logger.info("MongoDB frontend already exists in the configuration");
+          return {
+            success: true,
+            message: "MongoDB frontend already exists",
+          };
+        }
+
+        // Create MongoDB frontend without TLS/SSL initially (safer default)
+        const mongodbFrontend = `
 # MongoDB Frontend
 frontend mongodb_frontend
     bind *:27017
@@ -827,110 +833,21 @@ backend mongodb_default
     balance roundrobin
 `;
 
-      if (!hasMongoDB) {
         const updatedConfig = configContent + mongodbFrontend;
         await fs.writeFile(this.hostConfigPath, updatedConfig, "utf8");
         logger.info("Added MongoDB frontend to HAProxy configuration (no SSL)");
-      } else {
-        logger.info("MongoDB frontend already exists in the configuration");
-      }
 
-      // Check if mongodb.pem exists and create a symlink if needed
-      let sslConfigured = false;
-      try {
-        await fs.access("/etc/ssl/certs/mongodb.pem");
-        logger.info("MongoDB certificate exists at /etc/ssl/certs/mongodb.pem");
-        sslConfigured = true;
-      } catch (_) {
-        // Certificate doesn't exist, attempt to find and link it
-        logger.warn(
-          "MongoDB certificate not found at /etc/ssl/certs/mongodb.pem"
+        // Reload configuration
+        await this._reloadHAProxyConfig();
+        logger.info(
+          "HAProxy configuration reloaded with MongoDB configuration"
         );
 
-        try {
-          // Check if we have certificates in our config/certs directory
-          const certsDir = path.join(
-            path.dirname(this.hostConfigPath),
-            "..",
-            "certs"
-          );
-
-          // Look for certificate files
-          const files = await fs.readdir(certsDir);
-          const pemFiles = files.filter((file) => file.endsWith(".pem"));
-
-          if (pemFiles.length > 0) {
-            const sourcePem = path.join(certsDir, pemFiles[0]);
-
-            // Create destination directory if needed
-            try {
-              await fs.mkdir("/etc/ssl/certs", { recursive: true });
-            } catch (_) {
-              // Directory might already exist
-            }
-
-            // Copy certificate to HAProxy location
-            await fs.copyFile(sourcePem, "/etc/ssl/certs/mongodb.pem");
-            await fs.chmod("/etc/ssl/certs/mongodb.pem", 0o644);
-
-            logger.info(
-              `Created MongoDB certificate at /etc/ssl/certs/mongodb.pem from ${sourcePem}`
-            );
-            sslConfigured = true;
-          } else {
-            logger.warn(
-              "No PEM files found in certificates directory, will proceed without SSL"
-            );
-          }
-        } catch (createErr) {
-          logger.warn(`Not using SSL for MongoDB: ${createErr.message}`);
-        }
+        return {
+          success: true,
+          message: "MongoDB port has been configured in HAProxy (no SSL)",
+        };
       }
-
-      // Only enable SSL if we have the certificate
-      if (sslConfigured && hasMongoDB) {
-        // Frontend exists, potentially update it to use SSL if we have the certificate
-        const frontendRegex =
-          /frontend\s+mongodb_frontend\s*\n([\s\S]*?)(?=\n\s*\n|\n\s*#|\n\s*frontend|\n\s*backend|\s*$)/;
-        const frontendMatch = configContent.match(frontendRegex);
-
-        if (frontendMatch) {
-          // Replace non-SSL bind line with SSL version if certificate exists
-          const updatedFrontend = frontendMatch[0].replace(
-            /bind\s+\*:27017(\s|$)/,
-            "bind *:27017 ssl crt /etc/ssl/certs/mongodb.pem$1"
-          );
-
-          // Add SNI extraction if missing
-          let enhancedFrontend = updatedFrontend;
-          if (!updatedFrontend.includes("set-var(txn.agent_id)")) {
-            enhancedFrontend = updatedFrontend.replace(
-              /option\s+tcplog(\s|$)/,
-              "option tcplog$1\n    # Extract the agent ID from the SNI hostname for routing\n    http-request set-var(txn.agent_id) req.ssl_sni,field(1,'.')"
-            );
-          }
-
-          const updatedConfig = configContent.replace(
-            frontendMatch[0],
-            enhancedFrontend
-          );
-          await fs.writeFile(this.hostConfigPath, updatedConfig, "utf8");
-          logger.info(
-            "Updated MongoDB frontend to include TLS/SSL and SNI support"
-          );
-        }
-      }
-
-      // Reload configuration
-      await this._reloadHAProxyConfig();
-      logger.info("HAProxy configuration reloaded with MongoDB configuration");
-
-      return {
-        success: true,
-        message: `MongoDB port has been configured in HAProxy${
-          sslConfigured ? " with TLS/SSL support" : " (no SSL)"
-        }`,
-      };
     } catch (error) {
       logger.error(`Failed to ensure MongoDB port: ${error.message}`, {
         error: error.message,

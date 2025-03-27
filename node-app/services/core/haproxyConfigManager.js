@@ -7,20 +7,26 @@
 
 const fs = require("fs").promises;
 const path = require("path");
-const YAML = require("yaml");
 const logger = require("../../utils/logger").getLogger("haproxyConfigManager");
 const { AppError } = require("../../utils/errorHandler");
 const pathManager = require("../../utils/pathManager");
+const { execAsync } = require("../../utils/exec");
+const Mustache = require("mustache");
 
 class HAProxyConfigManager {
   constructor() {
     this.initialized = false;
     this.configPath = null;
     this.backupDir = null;
+    this.templatePath = null;
     this.haproxyContainer = process.env.HAPROXY_CONTAINER || "haproxy";
     this.configCache = null;
     this.lastBackupPath = null;
     this._initializing = false;
+    this.retry = {
+      maxAttempts: 3,
+      delay: 1000, // ms
+    };
   }
 
   /**
@@ -44,21 +50,43 @@ class HAProxyConfigManager {
       // Set paths from path manager
       this.configPath = pathManager.getPath("haproxyConfig");
       this.backupDir = pathManager.getPath("configBackups");
+      this.templatePath = pathManager.getPath(
+        "haproxyTemplates",
+        "templates/haproxy"
+      );
 
       // Ensure backup directory exists
       await fs.mkdir(this.backupDir, { recursive: true });
+
+      // Ensure template directory exists
+      await fs.mkdir(this.templatePath, { recursive: true });
+
+      // Initialize templates if they don't exist
+      await this._ensureTemplatesExist();
 
       // Initial load of config without recursively calling initialize
       try {
         logger.debug(`Loading HAProxy config from ${this.configPath}`);
         const content = await fs.readFile(this.configPath, "utf8");
-        this.configCache = YAML.parse(content);
-      } catch (err) {
+        this.configCache = content;
+      } catch (loadErr) {
         logger.warn(
-          `Could not load HAProxy config: ${err.message}. Creating default.`
+          `Could not load HAProxy config: ${loadErr.message}. Creating default.`
         );
         // Create a default config if loading fails
-        this.configCache = this._createDefaultConfig();
+        this.configCache = await this._generateDefaultConfig();
+        // Write it to disk
+        await fs.writeFile(this.configPath, this.configCache, "utf8");
+      }
+
+      // Validate the config
+      const validation = await this.validateConfigFile(this.configPath);
+      if (!validation.valid) {
+        logger.warn(
+          `Existing HAProxy config is invalid: ${validation.error}. Creating default.`
+        );
+        this.configCache = await this._generateDefaultConfig();
+        await fs.writeFile(this.configPath, this.configCache, "utf8");
       }
 
       this.initialized = true;
@@ -79,6 +107,142 @@ class HAProxyConfigManager {
   }
 
   /**
+   * Ensure all necessary template files exist
+   */
+  async _ensureTemplatesExist() {
+    const templateFiles = [
+      "base.cfg.mustache",
+      "frontend_http.cfg.mustache",
+      "backend_http.cfg.mustache",
+      "frontend_mongodb.cfg.mustache",
+      "backend_mongodb.cfg.mustache",
+      "server_entry.cfg.mustache",
+      "stats.cfg.mustache",
+    ];
+
+    for (const file of templateFiles) {
+      const filePath = path.join(this.templatePath, file);
+      try {
+        await fs.access(filePath);
+      } catch (fileErr) {
+        // File doesn't exist, create default template
+        await this._createDefaultTemplate(file);
+      }
+    }
+  }
+
+  /**
+   * Create a default template file
+   * @param {string} fileName - Template file name
+   */
+  async _createDefaultTemplate(fileName) {
+    const filePath = path.join(this.templatePath, fileName);
+    let content = "";
+
+    switch (fileName) {
+      case "base.cfg.mustache":
+        content = `# HAProxy Configuration for CloudLunacy Front Server
+global
+    log stdout format raw local0 info
+    log stderr format raw local1 notice
+    stats socket /tmp/haproxy.sock mode 660 level admin expose-fd listeners
+    stats timeout 30s
+    user haproxy
+    group haproxy
+    daemon
+    maxconn 20000
+    
+    # Enable runtime API
+    stats socket ipv4@127.0.0.1:9999 level admin
+    stats timeout 2m
+
+defaults
+    log global
+    mode http
+    option httplog
+    option dontlognull
+    timeout connect 5000ms
+    timeout client 50000ms
+    timeout server 50000ms
+
+{{{stats}}}
+
+{{{frontends}}}
+
+{{{backends}}}
+`;
+        break;
+      case "frontend_http.cfg.mustache":
+        content = `# Frontend for HTTP traffic
+frontend http-in
+    bind *:80
+    mode http
+    option forwardfor
+    default_backend node-app-backend
+`;
+        break;
+      case "backend_http.cfg.mustache":
+        content = `# Backend for Node.js app
+backend node-app-backend
+    mode http
+    option httpchk GET /health
+    http-check expect status 200
+    server node_app node-app:3005 check inter 5s rise 2 fall 3
+`;
+        break;
+      case "frontend_mongodb.cfg.mustache":
+        content = `# MongoDB Frontend with TLS and SNI support
+frontend mongodb_frontend
+{{#useSsl}}
+    bind *:27017 ssl crt {{{sslCertPath}}}
+    # Extract the agent ID from the SNI hostname for routing
+    http-request set-var(txn.agent_id) req.ssl_sni,field(1,'.')
+{{/useSsl}}
+{{^useSsl}}
+    bind *:27017
+    # SSL temporarily disabled
+{{/useSsl}}
+    mode tcp
+    option tcplog
+    
+    # Add enhanced logging for debugging
+    log-format "%ci:%cp [%t] %ft %b/%s %Tw/%Tc/%Tt %B %ts %ac/%fc/%bc/%sc/%rc %sq/%bq"
+    
+    default_backend mongodb_default
+`;
+        break;
+      case "backend_mongodb.cfg.mustache":
+        content = `# MongoDB Backend
+backend mongodb_default
+    mode tcp
+    balance roundrobin
+{{#servers}}
+    {{{.}}}
+{{/servers}}
+`;
+        break;
+      case "server_entry.cfg.mustache":
+        content = `server {{name}} {{address}}:{{port}} check`;
+        break;
+      case "stats.cfg.mustache":
+        content = `# Stats page
+frontend stats
+    bind *:8081
+    stats enable
+    stats uri /stats
+    stats refresh 10s
+    stats auth admin:{{statsPassword}}
+    stats admin if TRUE
+`;
+        break;
+    }
+
+    // Create the template file
+    await fs.writeFile(filePath, content, "utf8");
+    logger.info(`Created default template: ${filePath}`);
+  }
+
+  /**
    * Load HAProxy configuration
    */
   async loadConfig() {
@@ -91,11 +255,8 @@ class HAProxyConfigManager {
     try {
       logger.debug(`Loading HAProxy config from ${this.configPath}`);
       const content = await fs.readFile(this.configPath, "utf8");
-
-      // Parse the config - assuming YAML, but could be adapted for other formats
-      this.configCache = YAML.parse(content);
-
-      return this.configCache;
+      this.configCache = content;
+      return content;
     } catch (err) {
       logger.error(`Failed to load HAProxy config: ${err.message}`);
       throw new AppError(`Failed to load HAProxy config: ${err.message}`, 500);
@@ -104,34 +265,43 @@ class HAProxyConfigManager {
 
   /**
    * Save HAProxy configuration with validation and backup
-   * @param {Object} config - Configuration object to save
+   * @param {Object} configData - Configuration data object
    */
-  async saveConfig(config) {
+  async saveConfig(configData) {
     if (!this.initialized) {
       await this.initialize();
     }
 
     try {
+      // Generate config from templates using the data
+      const config = await this._generateConfigFromTemplates(configData);
+
+      // Create temporary file for validation
+      const tempPath = path.join(this.backupDir, "temp_config.cfg");
+      await fs.writeFile(tempPath, config, "utf8");
+
       // Validate configuration before saving
-      const validationResult = this.validateConfig(config);
+      const validationResult = await this.validateConfigFile(tempPath);
       if (!validationResult.valid) {
         logger.error(
           `Invalid HAProxy configuration: ${validationResult.error}`
         );
+        // Clean up temp file
+        await fs.unlink(tempPath);
         throw new AppError(
           `Invalid HAProxy configuration: ${validationResult.error}`,
           400
         );
       }
 
+      // Clean up temp file
+      await fs.unlink(tempPath);
+
       // Create backup of current config
       await this.backupConfig();
 
-      // Convert to YAML
-      const content = YAML.stringify(config);
-
       // Write to file
-      await fs.writeFile(this.configPath, content, "utf8");
+      await fs.writeFile(this.configPath, config, "utf8");
 
       // Update cache
       this.configCache = config;
@@ -148,6 +318,108 @@ class HAProxyConfigManager {
   }
 
   /**
+   * Generate configuration from templates
+   * @param {Object} data - Configuration data
+   * @returns {Promise<string>} Generated configuration
+   */
+  async _generateConfigFromTemplates(data) {
+    // Load template files
+    const baseTemplate = await fs.readFile(
+      path.join(this.templatePath, "base.cfg.mustache"),
+      "utf8"
+    );
+
+    const statsTemplate = await fs.readFile(
+      path.join(this.templatePath, "stats.cfg.mustache"),
+      "utf8"
+    );
+
+    // Render stats
+    const statsData = {
+      statsPassword: data.statsPassword || "admin_password",
+    };
+    const statsContent = Mustache.render(statsTemplate, statsData);
+
+    // Process frontends
+    let frontends = "";
+
+    // Add HTTP frontend
+    if (data.includeHttp !== false) {
+      const httpFrontendTemplate = await fs.readFile(
+        path.join(this.templatePath, "frontend_http.cfg.mustache"),
+        "utf8"
+      );
+      frontends += Mustache.render(httpFrontendTemplate, data) + "\n";
+    }
+
+    // Add MongoDB frontend if requested
+    if (data.includeMongoDB === true) {
+      const mongoFrontendTemplate = await fs.readFile(
+        path.join(this.templatePath, "frontend_mongodb.cfg.mustache"),
+        "utf8"
+      );
+
+      const mongoFrontendData = {
+        useSsl: data.useSsl || false,
+        sslCertPath: data.sslCertPath || "/etc/ssl/certs/mongodb.pem",
+      };
+
+      frontends +=
+        Mustache.render(mongoFrontendTemplate, mongoFrontendData) + "\n";
+    }
+
+    // Process backends
+    let backends = "";
+
+    // Add HTTP backend
+    if (data.includeHttp !== false) {
+      const httpBackendTemplate = await fs.readFile(
+        path.join(this.templatePath, "backend_http.cfg.mustache"),
+        "utf8"
+      );
+      backends += Mustache.render(httpBackendTemplate, data) + "\n";
+    }
+
+    // Add MongoDB backend if requested
+    if (data.includeMongoDB === true) {
+      const mongoBackendTemplate = await fs.readFile(
+        path.join(this.templatePath, "backend_mongodb.cfg.mustache"),
+        "utf8"
+      );
+
+      // Process MongoDB servers
+      const serverEntryTemplate = await fs.readFile(
+        path.join(this.templatePath, "server_entry.cfg.mustache"),
+        "utf8"
+      );
+
+      const serverEntries = [];
+      if (data.mongoDBServers && Array.isArray(data.mongoDBServers)) {
+        for (const server of data.mongoDBServers) {
+          const serverEntry = Mustache.render(serverEntryTemplate, server);
+          serverEntries.push(serverEntry);
+        }
+      }
+
+      const mongoBackendData = {
+        servers: serverEntries,
+      };
+
+      backends +=
+        Mustache.render(mongoBackendTemplate, mongoBackendData) + "\n";
+    }
+
+    // Render the full config
+    const fullConfigData = {
+      stats: statsContent,
+      frontends: frontends,
+      backends: backends,
+    };
+
+    return Mustache.render(baseTemplate, fullConfigData);
+  }
+
+  /**
    * Create a backup of the current configuration
    */
   async backupConfig() {
@@ -156,7 +428,7 @@ class HAProxyConfigManager {
       const timestamp = new Date().toISOString().replace(/:/g, "-");
       const backupPath = path.join(
         this.backupDir,
-        `haproxy-config-${timestamp}.yaml`
+        `haproxy-config-${timestamp}.cfg`
       );
 
       // Copy current config to backup
@@ -191,8 +463,8 @@ class HAProxyConfigManager {
       // Reload config
       await this.loadConfig();
 
-      // Apply the configuration
-      await this.applyConfig();
+      // Apply the configuration with retries
+      await this._applyConfigWithRetries();
 
       logger.info("Rollback completed successfully");
       return true;
@@ -203,12 +475,12 @@ class HAProxyConfigManager {
   }
 
   /**
-   * Apply the configuration to HAProxy
+   * Apply the configuration to HAProxy with retries
    */
-  async applyConfig() {
+  async _applyConfigWithRetries(attempts = 0) {
     try {
       // Validate first
-      const validationResult = await this.validateConfigFile();
+      const validationResult = await this.validateConfigFile(this.configPath);
       if (!validationResult.valid) {
         logger.error(
           `Invalid HAProxy configuration, cannot apply: ${validationResult.error}`
@@ -225,438 +497,276 @@ class HAProxyConfigManager {
       logger.info("HAProxy configuration applied successfully");
       return true;
     } catch (err) {
-      logger.error(`Failed to apply HAProxy configuration: ${err.message}`);
+      if (attempts < this.retry.maxAttempts) {
+        logger.warn(
+          `Failed to apply HAProxy configuration, retrying (${attempts + 1}/${
+            this.retry.maxAttempts
+          }): ${err.message}`
+        );
+
+        // Wait before retrying
+        await new Promise((resolve) => setTimeout(resolve, this.retry.delay));
+
+        // Retry with incremented attempts
+        return this._applyConfigWithRetries(attempts + 1);
+      }
+
+      logger.error(
+        `Failed to apply HAProxy configuration after ${this.retry.maxAttempts} attempts: ${err.message}`
+      );
       throw new AppError(`Failed to apply configuration: ${err.message}`, 500);
     }
   }
 
   /**
-   * Validate HAProxy configuration object
-   * @param {Object} config - Configuration object to validate
+   * Apply the configuration to HAProxy
+   */
+  async applyConfig() {
+    return this._applyConfigWithRetries();
+  }
+
+  /**
+   * Validate HAProxy configuration file
+   * @param {string} configPath - Path to configuration file to validate
    * @returns {Object} Validation result { valid: boolean, error: string }
    */
-  validateConfig(config) {
+  async validateConfigFile(configPath) {
     try {
-      // Check for required sections
-      if (!config.global) {
-        return { valid: false, error: "Missing global section" };
-      }
-
-      if (!config.defaults) {
-        return { valid: false, error: "Missing defaults section" };
-      }
-
-      if (!config.frontends || Object.keys(config.frontends).length === 0) {
-        return { valid: false, error: "No frontends defined" };
-      }
-
-      // Check HTTP and TCP frontends
-      const httpFrontend = config.frontends["https-in"];
-      if (!httpFrontend) {
-        return { valid: false, error: "Missing https-in frontend" };
-      }
-
-      const tcpFrontend = config.frontends["tcp-in"];
-      if (!tcpFrontend) {
-        return { valid: false, error: "Missing tcp-in frontend" };
-      }
-
-      // Check for specific requirements
-      // Add more validation rules as needed
-
-      return { valid: true };
-    } catch (err) {
-      logger.error(`Config validation error: ${err.message}`);
-      return { valid: false, error: err.message };
-    }
-  }
-
-  /**
-   * Validate HAProxy configuration file using HAProxy
-   * @returns {Promise<Object>} Validation result { valid: boolean, error: string }
-   */
-  async validateConfigFile() {
-    try {
-      // Use the HAProxy binary to check configuration
-      const { execAsync } = require("../../utils/exec");
-      const _result = await execAsync(
-        `docker exec ${this.haproxyContainer} haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg`
+      // Use HAProxy's built-in config check function
+      const { stdout, stderr } = await execAsync(
+        `docker exec ${this.haproxyContainer} haproxy -c -f ${configPath}`
       );
 
-      return { valid: true };
+      // Check for validation messages in stderr/stdout
+      if (
+        stderr.includes("Configuration file is valid") ||
+        stdout.includes("Configuration file is valid")
+      ) {
+        return { valid: true };
+      } else {
+        // Extract error message
+        const errorMatch = (stderr || stdout).match(/\[\w+\]\s+(.+)/);
+        const errorMsg = errorMatch
+          ? errorMatch[1]
+          : "Unknown validation error";
+        return { valid: false, error: errorMsg };
+      }
     } catch (err) {
-      logger.error(`HAProxy configuration validation failed: ${err.message}`);
-      return { valid: false, error: err.message };
+      // Extract error message from command output if possible
+      let errorMsg = err.message;
+      if (err.stderr) {
+        const errorMatch = err.stderr.match(/\[\w+\]\s+(.+)/);
+        errorMsg = errorMatch ? errorMatch[1] : err.stderr;
+      }
+      return { valid: false, error: errorMsg };
     }
   }
 
   /**
-   * Reload HAProxy configuration
-   * @private
+   * Reload HAProxy with new configuration
    */
   async _reloadHAProxy() {
     try {
-      const { execAsync } = require("../../utils/exec");
+      logger.info("Reloading HAProxy configuration");
 
-      // Soft reload HAProxy if possible
-      const _softReloadOutput = await execAsync(
-        `docker exec ${this.haproxyContainer} haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg && ` +
-          `docker kill -s HUP ${this.haproxyContainer}`
+      // First validate config
+      const { stdout, stderr } = await execAsync(
+        `docker exec ${this.haproxyContainer} haproxy -c -f ${this.haproxyConfigPath}`
       );
 
-      logger.info("HAProxy soft reload completed successfully");
+      if (stderr.includes("error") || stdout.includes("error")) {
+        throw new Error(`Invalid HAProxy configuration: ${stderr || stdout}`);
+      }
+
+      // Then reload
+      await execAsync(`docker kill -s HUP ${this.haproxyContainer}`);
+
+      logger.info("HAProxy configuration reloaded successfully");
       return true;
     } catch (err) {
-      logger.error(`HAProxy soft reload failed: ${err.message}`);
-
-      // Try hard restart if soft reload fails
-      try {
-        logger.warn("Attempting hard restart of HAProxy");
-        const { execAsync } = require("../../utils/exec");
-        await execAsync(`docker restart ${this.haproxyContainer}`);
-
-        logger.info("HAProxy hard restart completed successfully");
-        return true;
-      } catch (restartErr) {
-        logger.error(`HAProxy hard restart failed: ${restartErr.message}`);
-        throw new AppError(
-          `Failed to reload HAProxy: ${restartErr.message}`,
-          500
-        );
-      }
+      logger.error(`Failed to reload HAProxy: ${err.message}`);
+      throw err;
     }
   }
 
   /**
-   * Check if HAProxy is running and responsive
-   * @returns {Promise<Object>} Health check result { healthy: boolean, message: string, details: Object }
+   * Generate default HAProxy configuration as string
+   * @returns {Promise<string>} Default configuration
+   */
+  async _generateDefaultConfig() {
+    // Use the template system to generate a default config
+    const defaultData = {
+      statsPassword: "admin_password",
+      includeHttp: true,
+      includeMongoDB: false, // Don't include MongoDB by default
+      useSsl: false,
+    };
+
+    return this._generateConfigFromTemplates(defaultData);
+  }
+
+  /**
+   * Add a MongoDB server to the configuration
+   * @param {string} agentId - Agent ID
+   * @param {string} address - Server address
+   * @param {number} port - Server port
+   * @returns {Promise<boolean>} Success
+   */
+  async addMongoDBServer(agentId, address, port) {
+    try {
+      // Load current config
+      await this.loadConfig();
+
+      // Get the MongoDB servers from the current config
+      // This is a simplified approach - in a real system you'd want to
+      // parse the existing config or maintain server state in a database
+      const mongoServer = {
+        name: `mongodb-agent-${agentId}`,
+        address: address,
+        port: port,
+      };
+
+      // Existing MongoDB servers (would need to parse from config or from DB)
+      const mongoDBServers = [];
+
+      // Check if this server already exists, and update it if so
+      const existingServerIndex = mongoDBServers.findIndex(
+        (s) => s.name === mongoServer.name
+      );
+      if (existingServerIndex !== -1) {
+        mongoDBServers[existingServerIndex] = mongoServer;
+      } else {
+        mongoDBServers.push(mongoServer);
+      }
+
+      // Generate new config
+      const configData = {
+        statsPassword: "admin_password",
+        includeHttp: true,
+        includeMongoDB: true,
+        useSsl: false, // Set based on SSL certificate availability
+        mongoDBServers,
+      };
+
+      // Check if SSL cert exists
+      try {
+        await fs.access("/etc/ssl/certs/mongodb.pem");
+        configData.useSsl = true;
+        configData.sslCertPath = "/etc/ssl/certs/mongodb.pem";
+      } catch (certErr) {
+        logger.warn("MongoDB SSL certificate not found, disabling SSL");
+      }
+
+      // Save and apply the new config
+      await this.saveConfig(configData);
+      await this.applyConfig();
+
+      return true;
+    } catch (err) {
+      logger.error(`Failed to add MongoDB server: ${err.message}`);
+      throw new AppError(`Failed to add MongoDB server: ${err.message}`, 500);
+    }
+  }
+
+  /**
+   * Remove a MongoDB server from the configuration
+   * @param {string} agentId - Agent ID
+   * @returns {Promise<boolean>} Success
+   */
+  async removeMongoDBServer(agentId) {
+    try {
+      // Load current config
+      await this.loadConfig();
+
+      // Existing MongoDB servers (would need to parse from config or from DB)
+      const mongoDBServers = [];
+
+      // Filter out the server to remove
+      const updatedServers = mongoDBServers.filter(
+        (s) => s.name !== `mongodb-agent-${agentId}`
+      );
+
+      // Generate new config
+      const configData = {
+        statsPassword: "admin_password",
+        includeHttp: true,
+        includeMongoDB: updatedServers.length > 0, // Only include MongoDB section if we have servers
+        useSsl: false,
+        mongoDBServers: updatedServers,
+      };
+
+      // Check if SSL cert exists
+      try {
+        await fs.access("/etc/ssl/certs/mongodb.pem");
+        configData.useSsl = true;
+        configData.sslCertPath = "/etc/ssl/certs/mongodb.pem";
+      } catch (certErr) {
+        // No SSL certificate available
+        logger.debug("No SSL certificate found during server removal");
+      }
+
+      // Save and apply the new config
+      await this.saveConfig(configData);
+      await this.applyConfig();
+
+      return true;
+    } catch (err) {
+      logger.error(`Failed to remove MongoDB server: ${err.message}`);
+      throw new AppError(
+        `Failed to remove MongoDB server: ${err.message}`,
+        500
+      );
+    }
+  }
+
+  /**
+   * Check for HAProxy health status
+   * @returns {Promise<Object>} Health status
    */
   async checkHealth() {
     try {
-      const { execAsync } = require("../../utils/exec");
-      const healthDetails = {
-        configValid: false,
-        containerRunning: false,
-        statsPageAccessible: false,
-        certsValid: false,
-        tcpPortsListening: false,
-      };
+      // Check if HAProxy is running
+      const { stdout } = await execAsync(
+        `docker ps -q -f name=${this.haproxyContainer}`
+      );
 
-      // 1. Check if container is running
-      try {
-        const statusOutput = await execAsync(
-          `docker inspect -f '{{.State.Running}}' ${this.haproxyContainer}`
-        );
-        healthDetails.containerRunning = statusOutput.trim() === "true";
-
-        if (!healthDetails.containerRunning) {
-          return {
-            healthy: false,
-            message: "HAProxy container is not running",
-            details: healthDetails,
-          };
-        }
-      } catch (err) {
-        logger.warn(`HAProxy container check failed: ${err.message}`);
+      if (!stdout.trim()) {
         return {
           healthy: false,
-          message: `HAProxy container not found or not accessible: ${err.message}`,
-          details: healthDetails,
+          status: "not_running",
+          message: "HAProxy container is not running",
         };
       }
 
-      // 2. Check configuration validity
+      // Check if HAProxy is accepting connections
       try {
         await execAsync(
-          `docker exec ${this.haproxyContainer} haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg`
+          `docker exec ${this.haproxyContainer} bash -c "echo 'show info' | socat stdio /tmp/haproxy.sock"`
         );
-        healthDetails.configValid = true;
-      } catch (err) {
-        logger.error(`HAProxy configuration is invalid: ${err.message}`);
+
+        return {
+          healthy: true,
+          status: "running",
+          message: "HAProxy is running and responding",
+        };
+      } catch (socketErr) {
         return {
           healthy: false,
-          message: `HAProxy configuration is invalid: ${err.message}`,
-          details: healthDetails,
+          status: "not_responding",
+          message:
+            "HAProxy container is running but not responding to socket commands",
+          error: socketErr.message,
         };
       }
-
-      // 3. Check if stats page is accessible (port 8081)
-      try {
-        const { default: axios } = await import("axios");
-        await axios.get("http://localhost:8081/stats", {
-          timeout: 2000,
-          validateStatus: () => true, // Accept any status code
-        });
-        healthDetails.statsPageAccessible = true;
-      } catch (err) {
-        logger.warn(`HAProxy stats page not accessible: ${err.message}`);
-        // This is not critical, continue with checks
-      }
-
-      // 4. Check if TLS certificates are valid and not expired
-      try {
-        const _fs = require("fs").promises;
-        const certPath =
-          process.env.CERTS_PATH || "/app/config/certs/default.crt";
-        const { execAsync } = require("../../utils/exec");
-
-        const certInfo = await execAsync(
-          `openssl x509 -in ${certPath} -text -noout | grep "Not After"`
-        );
-
-        if (certInfo) {
-          const expiryMatch = certInfo.match(/Not After\s*:\s*(.+)/);
-          if (expiryMatch && expiryMatch[1]) {
-            const expiryDate = new Date(expiryMatch[1]);
-            const now = new Date();
-
-            // Check if certificate is valid for at least 7 more days
-            const sevenDaysInMs = 7 * 24 * 60 * 60 * 1000;
-            healthDetails.certsValid = expiryDate - now > sevenDaysInMs;
-
-            if (!healthDetails.certsValid) {
-              logger.warn(
-                `HAProxy TLS certificate will expire soon: ${expiryMatch[1]}`
-              );
-            }
-          }
-        }
-      } catch (err) {
-        logger.warn(`Could not check TLS certificates: ${err.message}`);
-        // Not critical for health check
-      }
-
-      // 5. Check if required TCP ports are listening
-      try {
-        const portsToCheck = ["80", "443", "27017"];
-        const netstat = await execAsync(
-          `docker exec ${
-            this.haproxyContainer
-          } netstat -tuln | grep -E '${portsToCheck.join("|")}'`
-        );
-
-        const listeningPorts = portsToCheck.filter((port) =>
-          netstat.includes(`:${port}`)
-        );
-        healthDetails.tcpPortsListening =
-          listeningPorts.length === portsToCheck.length;
-
-        if (!healthDetails.tcpPortsListening) {
-          const missingPorts = portsToCheck.filter(
-            (port) => !netstat.includes(`:${port}`)
-          );
-          logger.warn(
-            `HAProxy not listening on ports: ${missingPorts.join(", ")}`
-          );
-        }
-      } catch (err) {
-        logger.warn(`Could not check TCP ports: ${err.message}`);
-        // Not critical for overall health
-      }
-
-      // Determine overall health
-      const isHealthy =
-        healthDetails.containerRunning && healthDetails.configValid;
-
-      return {
-        healthy: isHealthy,
-        message: isHealthy ? "HAProxy is healthy" : "HAProxy has issues",
-        details: healthDetails,
-      };
     } catch (err) {
-      logger.error(`HAProxy health check failed: ${err.message}`);
+      logger.error(`Failed to check HAProxy health: ${err.message}`);
       return {
         healthy: false,
-        message: `HAProxy health check failed: ${err.message}`,
-        details: { error: err.message },
+        status: "check_failed",
+        message: `Failed to check HAProxy health: ${err.message}`,
+        error: err.message,
       };
     }
-  }
-
-  /**
-   * Add a backend to the configuration
-   * @param {string} name - Backend name
-   * @param {Object} options - Backend options
-   */
-  async addBackend(name, options) {
-    if (!this.initialized) {
-      await this.initialize();
-    }
-
-    try {
-      // Reload config to ensure we have the latest
-      const config = await this.loadConfig();
-
-      // Add or update backend
-      config.backends = config.backends || {};
-      config.backends[name] = options;
-
-      // Save the updated configuration
-      await this.saveConfig(config);
-
-      logger.info(`Backend '${name}' added to HAProxy configuration`);
-      return true;
-    } catch (err) {
-      logger.error(`Failed to add backend '${name}': ${err.message}`);
-      throw err;
-    }
-  }
-
-  /**
-   * Add a frontend rule
-   * @param {string} frontendName - Frontend name
-   * @param {string} backendName - Backend to use
-   * @param {string} condition - ACL condition
-   * @param {string} aclName - ACL name
-   */
-  async addFrontendRule(frontendName, backendName, condition, aclName) {
-    if (!this.initialized) {
-      await this.initialize();
-    }
-
-    try {
-      // Reload config to ensure we have the latest
-      const config = await this.loadConfig();
-
-      // Ensure frontend exists
-      if (!config.frontends || !config.frontends[frontendName]) {
-        throw new AppError(`Frontend '${frontendName}' does not exist`, 400);
-      }
-
-      const frontend = config.frontends[frontendName];
-
-      // Add or update ACL
-      frontend.acls = frontend.acls || [];
-
-      // Remove existing ACL if present
-      frontend.acls = frontend.acls.filter((acl) => acl.name !== aclName);
-
-      // Add new ACL
-      frontend.acls.push({
-        name: aclName,
-        condition: condition,
-      });
-
-      // Add use_backend rule
-      frontend.useBackends = frontend.useBackends || [];
-
-      // Remove existing rule if present
-      frontend.useBackends = frontend.useBackends.filter(
-        (ub) => ub.backend !== backendName
-      );
-
-      // Add new rule
-      frontend.useBackends.push({
-        backend: backendName,
-        condition: `if ${aclName}`,
-      });
-
-      // Save the updated configuration
-      await this.saveConfig(config);
-
-      logger.info(
-        `Frontend rule added to '${frontendName}' for backend '${backendName}'`
-      );
-      return true;
-    } catch (err) {
-      logger.error(`Failed to add frontend rule: ${err.message}`);
-      throw err;
-    }
-  }
-
-  /**
-   * Remove a backend and any related frontend rules
-   * @param {string} backendName - Backend to remove
-   */
-  async removeBackend(backendName) {
-    if (!this.initialized) {
-      await this.initialize();
-    }
-
-    try {
-      // Reload config to ensure we have the latest
-      const config = await this.loadConfig();
-
-      // Check if backend exists
-      if (!config.backends || !config.backends[backendName]) {
-        logger.warn(
-          `Backend '${backendName}' does not exist, nothing to remove`
-        );
-        return false;
-      }
-
-      // Remove the backend
-      delete config.backends[backendName];
-
-      // Remove any frontend rules that reference this backend
-      if (config.frontends) {
-        for (const frontendName in config.frontends) {
-          const frontend = config.frontends[frontendName];
-
-          if (frontend.useBackends) {
-            frontend.useBackends = frontend.useBackends.filter(
-              (ub) => ub.backend !== backendName
-            );
-          }
-        }
-      }
-
-      // Save the updated configuration
-      await this.saveConfig(config);
-
-      logger.info(
-        `Backend '${backendName}' removed from HAProxy configuration`
-      );
-      return true;
-    } catch (err) {
-      logger.error(`Failed to remove backend '${backendName}': ${err.message}`);
-      throw err;
-    }
-  }
-
-  /**
-   * Create a default HAProxy configuration
-   * @returns {Object} Default configuration object
-   * @private
-   */
-  _createDefaultConfig() {
-    logger.info("Creating default HAProxy configuration");
-    return {
-      global: {
-        maxconn: 4096,
-        user: "haproxy",
-        group: "haproxy",
-        daemon: true,
-        stats: {
-          socket:
-            "/var/run/haproxy.sock mode 660 level admin expose-fd listeners",
-          timeout: "30s",
-        },
-      },
-      defaults: {
-        log: "global",
-        mode: "http",
-        option: ["httplog", "dontlognull"],
-        timeout: {
-          connect: "5000ms",
-          client: "50000ms",
-          server: "50000ms",
-        },
-      },
-      frontends: {
-        "http-in": {
-          bind: "*:80",
-          mode: "http",
-          default_backend: "node-app-backend",
-        },
-      },
-      backends: {
-        "node-app-backend": {
-          mode: "http",
-          server: "node-app node-app:3005 check",
-        },
-      },
-    };
   }
 }
 
