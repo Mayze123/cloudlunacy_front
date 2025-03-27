@@ -633,6 +633,123 @@ backend redis_default
       };
     }
   }
+
+  /**
+   * Check if MongoDB port is configured in HAProxy
+   * @returns {Promise<Object>} Result of the check
+   */
+  async checkMongoDBPort() {
+    logger.info("Checking MongoDB port configuration");
+
+    if (!this.initialized) {
+      await this.initialize();
+    }
+
+    try {
+      // Check if the MongoDB backend exists
+      const { stdout } = await execAsync(
+        `docker exec ${this.haproxyContainer} grep -E "\\s*frontend\\s+mongodb_frontend" ${this.haproxyConfigPath}`
+      );
+
+      const isConfigured = !!stdout.trim();
+
+      logger.info(
+        `MongoDB port configuration check result: ${
+          isConfigured ? "Configured" : "Not configured"
+        }`
+      );
+
+      return {
+        success: isConfigured,
+        message: isConfigured
+          ? "MongoDB port is configured"
+          : "MongoDB port is not configured",
+      };
+    } catch (error) {
+      logger.error(`Failed to check MongoDB port: ${error.message}`, {
+        error: error.message,
+        stack: error.stack,
+      });
+
+      return {
+        success: false,
+        error: `Failed to check MongoDB port: ${error.message}`,
+      };
+    }
+  }
+
+  /**
+   * Ensure MongoDB port is configured in HAProxy
+   * @returns {Promise<Object>} Result of the operation
+   */
+  async ensureMongoDBPort() {
+    logger.info("Ensuring MongoDB port is configured in HAProxy");
+
+    if (!this.initialized) {
+      await this.initialize();
+    }
+
+    try {
+      // First check if already configured
+      const checkResult = await this.checkMongoDBPort();
+
+      if (checkResult.success) {
+        logger.info("MongoDB port is already configured in HAProxy");
+        return {
+          success: true,
+          message: "MongoDB port is already configured",
+        };
+      }
+
+      // Read current configuration
+      const configContent = await fs.readFile(this.hostConfigPath, "utf8");
+
+      // Create MongoDB frontend if it doesn't exist
+      const mongodbFrontend = `
+# MongoDB Frontend
+frontend mongodb_frontend
+    bind *:27017
+    mode tcp
+    option tcplog
+    default_backend mongodb_default
+
+# MongoDB Backend
+backend mongodb_default
+    mode tcp
+    balance roundrobin
+`;
+
+      // Check if it already contains a mongodb_frontend section
+      if (!configContent.includes("frontend mongodb_frontend")) {
+        const updatedConfig = configContent + mongodbFrontend;
+        await fs.writeFile(this.hostConfigPath, updatedConfig, "utf8");
+        logger.info(
+          "Added MongoDB frontend and backend to HAProxy configuration"
+        );
+      }
+
+      // Reload configuration
+      await this._reloadHAProxyConfig();
+      logger.info(
+        "HAProxy configuration reloaded with MongoDB port configuration"
+      );
+
+      return {
+        success: true,
+        message: "MongoDB port has been configured in HAProxy",
+      };
+    } catch (error) {
+      logger.error(`Failed to ensure MongoDB port: ${error.message}`, {
+        error: error.message,
+        stack: error.stack,
+      });
+
+      return {
+        success: false,
+        error: `Failed to ensure MongoDB port: ${error.message}`,
+      };
+    }
+  }
 }
 
 module.exports = HAProxyManager;
