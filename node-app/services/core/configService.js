@@ -225,11 +225,16 @@ backend mongodb_default
     mode tcp
     server mongodb1 127.0.0.1:27018 check
 
-# Frontend for MongoDB traffic
+# Frontend for MongoDB traffic with TLS/SSL and SNI support
 frontend mongodb-in
-    bind *:27017
+    bind *:27017 ssl crt /etc/ssl/certs/mongodb.pem
     mode tcp
     option tcplog
+    
+    # Extract the agent ID from the SNI hostname for routing
+    http-request set-var(txn.agent_id) req.ssl_sni,field(1,".")
+    
+    # Use the agent ID to route traffic based on SNI
     default_backend mongodb_default`;
   }
 

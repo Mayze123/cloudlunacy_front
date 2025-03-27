@@ -704,13 +704,20 @@ backend redis_default
       // Read current configuration
       const configContent = await fs.readFile(this.hostConfigPath, "utf8");
 
-      // Create MongoDB frontend if it doesn't exist
+      // Create MongoDB frontend with TLS/SSL and SNI support
       const mongodbFrontend = `
-# MongoDB Frontend
+# MongoDB Frontend with TLS and SNI support
 frontend mongodb_frontend
-    bind *:27017
+    bind *:27017 ssl crt /etc/ssl/certs/mongodb.pem
     mode tcp
     option tcplog
+    
+    # Extract the agent ID from the SNI hostname for routing
+    http-request set-var(txn.agent_id) req.ssl_sni,field(1,'.')
+    
+    # Add enhanced logging for SNI debugging
+    log-format %ci:%cp\\ [%t]\\ %ft\\ %b/%s\\ %Tw/%Tc/%Tt\\ %B\\ %ts\\ %ac/%fc/%bc/%sc/%rc\\ %sq/%bq\\ SNI=%[ssl_fc_sni]
+    
     default_backend mongodb_default
 
 # MongoDB Backend
@@ -724,19 +731,100 @@ backend mongodb_default
         const updatedConfig = configContent + mongodbFrontend;
         await fs.writeFile(this.hostConfigPath, updatedConfig, "utf8");
         logger.info(
-          "Added MongoDB frontend and backend to HAProxy configuration"
+          "Added MongoDB frontend with TLS/SSL and SNI support to HAProxy configuration"
         );
+      } else if (!configContent.includes("bind *:27017 ssl crt")) {
+        // Frontend exists but without SSL, update it
+        const frontendRegex =
+          /frontend\s+mongodb_frontend\s*\n([\s\S]*?)(?=\n\s*\n|\n\s*#|\n\s*frontend|\s*$)/;
+        const frontendMatch = configContent.match(frontendRegex);
+
+        if (frontendMatch) {
+          // Replace non-SSL bind line with SSL version
+          const updatedFrontend = frontendMatch[0].replace(
+            /bind\s+\*:27017(\s|$)/,
+            "bind *:27017 ssl crt /etc/ssl/certs/mongodb.pem$1"
+          );
+
+          // Add SNI extraction if missing
+          let enhancedFrontend = updatedFrontend;
+          if (!updatedFrontend.includes("set-var(txn.agent_id)")) {
+            enhancedFrontend = updatedFrontend.replace(
+              /option\s+tcplog(\s|$)/,
+              "option tcplog$1\n    # Extract the agent ID from the SNI hostname for routing\n    http-request set-var(txn.agent_id) req.ssl_sni,field(1,'.')"
+            );
+          }
+
+          const updatedConfig = configContent.replace(
+            frontendMatch[0],
+            enhancedFrontend
+          );
+          await fs.writeFile(this.hostConfigPath, updatedConfig, "utf8");
+          logger.info(
+            "Updated MongoDB frontend to include TLS/SSL and SNI support"
+          );
+        }
+      }
+
+      // Check if mongodb.pem exists and create a symlink if needed
+      try {
+        await fs.access("/etc/ssl/certs/mongodb.pem");
+        logger.info("MongoDB certificate exists at /etc/ssl/certs/mongodb.pem");
+      } catch (_certErr) {
+        // Certificate doesn't exist, attempt to find and link it
+        logger.warn(
+          "MongoDB certificate not found at /etc/ssl/certs/mongodb.pem"
+        );
+
+        try {
+          // Check if we have certificates in our config/certs directory
+          const certsDir = path.join(
+            path.dirname(this.hostConfigPath),
+            "..",
+            "certs"
+          );
+
+          // Look for certificate files
+          const files = await fs.readdir(certsDir);
+          const pemFiles = files.filter((file) => file.endsWith(".pem"));
+
+          if (pemFiles.length > 0) {
+            const sourcePem = path.join(certsDir, pemFiles[0]);
+
+            // Create destination directory if needed
+            try {
+              await fs.mkdir("/etc/ssl/certs", { recursive: true });
+            } catch (_mkdirErr) {
+              // Directory might already exist
+            }
+
+            // Copy certificate to HAProxy location
+            await fs.copyFile(sourcePem, "/etc/ssl/certs/mongodb.pem");
+            await fs.chmod("/etc/ssl/certs/mongodb.pem", 0o644);
+
+            logger.info(
+              `Created MongoDB certificate at /etc/ssl/certs/mongodb.pem from ${sourcePem}`
+            );
+          } else {
+            logger.error("No PEM files found in certificates directory");
+          }
+        } catch (createErr) {
+          logger.error(
+            `Failed to create MongoDB certificate: ${createErr.message}`
+          );
+        }
       }
 
       // Reload configuration
       await this._reloadHAProxyConfig();
       logger.info(
-        "HAProxy configuration reloaded with MongoDB port configuration"
+        "HAProxy configuration reloaded with MongoDB TLS/SSL configuration"
       );
 
       return {
         success: true,
-        message: "MongoDB port has been configured in HAProxy",
+        message:
+          "MongoDB port has been configured in HAProxy with TLS/SSL and SNI support",
       };
     } catch (error) {
       logger.error(`Failed to ensure MongoDB port: ${error.message}`, {
