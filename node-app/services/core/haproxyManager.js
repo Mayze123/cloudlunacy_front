@@ -181,15 +181,54 @@ class HAProxyManager {
           "mongodb_default backend not found in HAProxy configuration"
         );
 
-        // Dump the config for debugging
-        logger.debug(
-          `HAProxy config content: ${configContent.substring(0, 500)}...`
-        );
+        // Structure that will contain the sections of the configuration
+        const sections = {
+          mongodb_frontend: null,
+          mongodb_backend: null,
+          rest: configContent,
+        };
 
-        // Create the mongodb_default backend if it doesn't exist
-        const newBackend = `\n# MongoDB Backend for ${agentId}\nbackend mongodb_default\n    mode tcp\n${serverLine}\n`;
-        const updatedConfig = configContent + newBackend;
+        // Check if mongodb_frontend already exists
+        const frontendRegex =
+          /frontend\s+mongodb_frontend\s*\n([\s\S]*?)(?=\n\s*\n|\n\s*#|\n\s*frontend|\n\s*backend|\s*$)/;
+        const frontendMatch = configContent.match(frontendRegex);
 
+        if (frontendMatch) {
+          logger.info("Found existing mongodb_frontend section");
+          sections.mongodb_frontend = frontendMatch[0];
+          // Remove the frontend from the rest of the config
+          sections.rest = sections.rest.replace(frontendMatch[0], "");
+        } else {
+          logger.info("No mongodb_frontend section found, will create one");
+          sections.mongodb_frontend = `
+# MongoDB Frontend
+frontend mongodb_frontend
+    bind *:27017
+    mode tcp
+    option tcplog
+    default_backend mongodb_default
+`;
+        }
+
+        // Create the mongodb_default backend section
+        sections.mongodb_backend = `
+# MongoDB Backend
+backend mongodb_default
+    mode tcp
+    balance roundrobin
+${serverLine}
+`;
+
+        // Assemble the updated configuration ensuring sections are in the right order
+        // This prevents server lines from being placed outside sections
+        const updatedConfig =
+          sections.rest.trim() +
+          "\n\n" +
+          sections.mongodb_frontend.trim() +
+          "\n\n" +
+          sections.mongodb_backend.trim();
+
+        // Write the updated configuration
         await fs.writeFile(this.hostConfigPath, updatedConfig, "utf8");
         logger.info(
           "Created new mongodb_default backend in HAProxy configuration"
@@ -230,19 +269,35 @@ class HAProxyManager {
 
       let updatedConfig;
       if (existingServerLine) {
-        // Replace the existing server line
-        updatedConfig = configContent.replace(agentServerRegex, serverLine);
+        // Replace the existing server line directly in the backend section
+        const updatedBackend = backendContent.replace(
+          agentServerRegex,
+          serverLine
+        );
+        updatedConfig = configContent.replace(backendContent, updatedBackend);
         logger.info(`Replaced existing server line for agent ${agentId}`);
       } else {
-        // Add a new server line to the backend section
-        const lastLine = backendContent.trim().split("\n").pop();
-        const updatedBackend = backendContent.replace(
-          lastLine,
-          `${lastLine}\n${serverLine}`
-        );
+        // Add a new server line to the backend section, ensuring it stays within the section
+        // Find the last line of the backend section
+        const lines = backendContent.trim().split("\n");
+
+        // Insert the new server line before the last line if it's a comment, otherwise append it
+        if (
+          lines.length > 0 &&
+          lines[lines.length - 1].trim().startsWith("#")
+        ) {
+          lines.splice(lines.length - 1, 0, serverLine);
+        } else {
+          lines.push(serverLine);
+        }
+
+        const updatedBackend = lines.join("\n");
         updatedConfig = configContent.replace(backendContent, updatedBackend);
         logger.info(`Added new server line for agent ${agentId}`);
       }
+
+      // Validate the configuration to ensure we haven't broken it
+      this._validateConfiguration(updatedConfig);
 
       // Write updated configuration
       await fs.writeFile(this.hostConfigPath, updatedConfig, "utf8");
@@ -280,6 +335,56 @@ class HAProxyManager {
         error: err.message,
       };
     }
+  }
+
+  /**
+   * Validate HAProxy configuration for common errors
+   * @param {string} config - Configuration to validate
+   * @private
+   */
+  _validateConfiguration(config) {
+    logger.info("Validating HAProxy configuration");
+
+    // Check for server directives outside backend sections
+    const serverOutsideBackendRegex =
+      /(^|\n)(\s*)server\s+(?!(.*\n\s*backend))/;
+    if (serverOutsideBackendRegex.test(config)) {
+      const match = config.match(serverOutsideBackendRegex);
+      const errorLine = match ? match[0] : "unknown line";
+      const error = `Found server directive outside of backend section: ${errorLine}`;
+      logger.error(error);
+      throw new Error(error);
+    }
+
+    // Check for duplicate frontend names
+    const frontendNames = new Map();
+    const frontendRegex = /frontend\s+(\S+)/g;
+    let match;
+    while ((match = frontendRegex.exec(config)) !== null) {
+      const name = match[1];
+      if (frontendNames.has(name)) {
+        const error = `Duplicate frontend name found: ${name}`;
+        logger.error(error);
+        throw new Error(error);
+      }
+      frontendNames.set(name, true);
+    }
+
+    // Check for duplicate backend names
+    const backendNames = new Map();
+    const backendRegex = /backend\s+(\S+)/g;
+    while ((match = backendRegex.exec(config)) !== null) {
+      const name = match[1];
+      if (backendNames.has(name)) {
+        const error = `Duplicate backend name found: ${name}`;
+        logger.error(error);
+        throw new Error(error);
+      }
+      backendNames.set(name, true);
+    }
+
+    logger.info("HAProxy configuration validation passed");
+    return true;
   }
 
   /**
@@ -770,7 +875,7 @@ backend mongodb_default
       try {
         await fs.access("/etc/ssl/certs/mongodb.pem");
         logger.info("MongoDB certificate exists at /etc/ssl/certs/mongodb.pem");
-      } catch (_certErr) {
+      } catch (_) {
         // Certificate doesn't exist, attempt to find and link it
         logger.warn(
           "MongoDB certificate not found at /etc/ssl/certs/mongodb.pem"
@@ -794,7 +899,7 @@ backend mongodb_default
             // Create destination directory if needed
             try {
               await fs.mkdir("/etc/ssl/certs", { recursive: true });
-            } catch (_mkdirErr) {
+            } catch (_) {
               // Directory might already exist
             }
 

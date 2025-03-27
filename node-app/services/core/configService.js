@@ -283,13 +283,28 @@ frontend mongodb-in
 
       let updatedConfig;
       if (!backendMatch) {
-        // Backend doesn't exist, add it
-        const newBackend = `\n# MongoDB Backend for ${agentId}\nbackend mongodb_default\n    mode tcp\n${serverLine}\n`;
-        updatedConfig = this.configs.haproxy + newBackend;
+        // Backend doesn't exist, need to create structured sections
+        const sections = {
+          frontend: `
+# Frontend for MongoDB traffic
+frontend mongodb-in
+    bind *:27017
+    mode tcp
+    option tcplog
+    default_backend mongodb_default`,
+          backend: `
+# MongoDB Backend for ${agentId}
+backend mongodb_default
+    mode tcp
+${serverLine}`,
+        };
 
-        // Also add the frontend if it doesn't exist
+        // Check if mongodb frontend already exists to avoid duplicates
         if (!this.configs.haproxy.includes("frontend mongodb-in")) {
-          updatedConfig += `\n# Frontend for MongoDB traffic\nfrontend mongodb-in\n    bind *:27017\n    mode tcp\n    option tcplog\n    default_backend mongodb_default\n`;
+          updatedConfig = `${this.configs.haproxy}\n${sections.frontend}\n${sections.backend}\n`;
+        } else {
+          // Frontend exists but backend doesn't - unusual situation
+          updatedConfig = `${this.configs.haproxy}\n${sections.backend}\n`;
         }
       } else {
         // Backend exists, check if this agent already has a server line
@@ -307,17 +322,29 @@ frontend mongodb-in
           );
         } else {
           // Add new server line to existing backend
-          const lastLine = backendMatch[0].trim().split("\n").pop();
-          const updatedBackend = backendMatch[0].replace(
-            lastLine,
-            `${lastLine}\n${serverLine}`
-          );
+          const lines = backendMatch[0].trim().split("\n");
+
+          // Insert the new server line in a safe position
+          // If the last line is a comment, insert before it
+          if (
+            lines.length > 0 &&
+            lines[lines.length - 1].trim().startsWith("#")
+          ) {
+            lines.splice(lines.length - 1, 0, serverLine);
+          } else {
+            lines.push(serverLine);
+          }
+
+          const updatedBackend = lines.join("\n");
           updatedConfig = this.configs.haproxy.replace(
             backendMatch[0],
             updatedBackend
           );
         }
       }
+
+      // Validate the configuration before saving
+      this._validateHAProxyConfig(updatedConfig);
 
       // Update the configuration and save
       this.configs.haproxy = updatedConfig;
@@ -329,6 +356,49 @@ frontend mongodb-in
       logger.error(`Failed to update MongoDB backend: ${err.message}`);
       return false;
     }
+  }
+
+  /**
+   * Validate HAProxy configuration for common errors
+   * @param {string} config - The configuration to validate
+   * @returns {boolean} True if valid, throws error otherwise
+   * @private
+   */
+  _validateHAProxyConfig(config) {
+    // Check for server directives outside backend sections
+    const serverDirectiveRegex = /^(?!\s*backend).*?\s+server\s+\S+/m;
+    if (serverDirectiveRegex.test(config)) {
+      throw new Error("Server directive found outside of backend section");
+    }
+
+    // Check for duplicate sections
+    const sections = {
+      frontend: new Map(),
+      backend: new Map(),
+    };
+
+    // Check frontends
+    const frontendRegex = /frontend\s+(\S+)/g;
+    let match;
+    while ((match = frontendRegex.exec(config)) !== null) {
+      const name = match[1];
+      if (sections.frontend.has(name)) {
+        throw new Error(`Duplicate frontend section found: ${name}`);
+      }
+      sections.frontend.set(name, true);
+    }
+
+    // Check backends
+    const backendRegex = /backend\s+(\S+)/g;
+    while ((match = backendRegex.exec(config)) !== null) {
+      const name = match[1];
+      if (sections.backend.has(name)) {
+        throw new Error(`Duplicate backend section found: ${name}`);
+      }
+      sections.backend.set(name, true);
+    }
+
+    return true;
   }
 
   /**
