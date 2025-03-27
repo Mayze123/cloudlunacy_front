@@ -14,13 +14,15 @@ const RoutingService = require("./routingService");
 const CertificateService = require("./certificateService");
 const DatabaseFactory = require("./databases/databaseFactory");
 const HAProxyManager = require("./haproxyManager");
+const HAProxyConfigManager = require("./haproxyConfigManager");
 const AgentService = require("./agentService");
 
 // Create instances of all services
 const configService = new ConfigService();
 const routingService = new RoutingService();
 const certificateService = new CertificateService(configService);
-const haproxyManager = new HAProxyManager(configService);
+const haproxyConfigManager = new HAProxyConfigManager();
+const haproxyManager = new HAProxyManager(haproxyConfigManager);
 
 // Initialize database factory with routing service and HAProxy manager
 // This avoids circular dependency issues
@@ -38,6 +40,7 @@ module.exports = {
   configService,
   routingService,
   certificateService,
+  haproxyConfigManager,
   haproxyManager,
   agentService,
 
@@ -65,6 +68,14 @@ module.exports = {
       if (!configInitialized) {
         logger.error("Failed to initialize config service");
         return false;
+      }
+
+      // Initialize HAProxy config manager
+      const haproxyConfigInitialized = await haproxyConfigManager.initialize();
+      if (!haproxyConfigInitialized) {
+        logger.error("Failed to initialize HAProxy config manager");
+        // Continue anyway as this is not critical
+        logger.warn("Continuing without HAProxy config manager");
       }
 
       // Initialize routing service

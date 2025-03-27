@@ -23,6 +23,8 @@ const { AppError, asyncHandler } = require("../../utils/errorHandler");
  * }
  */
 exports.addSubdomain = asyncHandler(async (req, res) => {
+  logger.info("Adding MongoDB subdomain");
+
   const {
     subdomain,
     targetIp,
