@@ -6,6 +6,7 @@ const logger = require("../../utils/logger").getLogger("certificateController");
 const coreServices = require("../../services/core");
 const { asyncHandler, AppError } = require("../../utils/errorHandler");
 const pathManager = require("../../utils/pathManager");
+const { execSync } = require("child_process");
 
 // Path to MongoDB CA certificate
 const MONGO_CA_PATH =
@@ -181,4 +182,129 @@ exports.issueLetsEncryptCert = asyncHandler(async (req, res) => {
     wildcard: result.wildcard,
     renewed: result.renewed !== false,
   });
+});
+
+/**
+ * Regenerate agent certificate and update HAProxy configuration
+ * This endpoint can be used to fix TLS certificate issues
+ *
+ * POST /api/certificates/agent/:agentId/regenerate
+ */
+exports.regenerateAgentCertificate = asyncHandler(async (req, res) => {
+  const { agentId } = req.params;
+  const { targetIp } = req.body;
+
+  logger.info(
+    `Regenerating certificates for agent ${agentId}${
+      targetIp ? ` with IP ${targetIp}` : ""
+    }`
+  );
+
+  // Check authorization
+  if (
+    !(
+      req.user &&
+      (req.user.role === "admin" ||
+        (req.user.role === "agent" && req.user.agentId === agentId))
+    )
+  ) {
+    throw new AppError("Unauthorized to regenerate these certificates", 403);
+  }
+
+  // Initialize certificate service if needed
+  if (!coreServices.certificateService) {
+    throw new AppError("Certificate service not available", 500);
+  }
+
+  if (!coreServices.certificateService.initialized) {
+    logger.info("Initializing certificate service");
+    await coreServices.certificateService.initialize();
+  }
+
+  try {
+    // Regenerate the certificates
+    const certResult =
+      await coreServices.certificateService.generateAgentCertificate(
+        agentId,
+        targetIp
+      );
+
+    if (!certResult.success) {
+      throw new AppError(
+        `Failed to regenerate certificates: ${certResult.error}`,
+        500
+      );
+    }
+
+    // Check if HAProxy template-based configuration is available
+    let haproxyUpdated = false;
+    if (coreServices.haproxyConfigManager) {
+      try {
+        // Ensure HAProxy configuration is up to date using the template system
+        const configData = {
+          statsPassword: "admin_password",
+          includeHttp: true,
+          includeMongoDB: true,
+          useSsl: true,
+          sslCertPath: "/etc/ssl/certs/mongodb.pem",
+          mongoDBServers: coreServices.haproxyManager?.mongoDBServers || [],
+        };
+
+        await coreServices.haproxyConfigManager.saveConfig(configData);
+        await coreServices.haproxyConfigManager.applyConfig();
+
+        logger.info("HAProxy configuration updated using template system");
+        haproxyUpdated = true;
+      } catch (configError) {
+        logger.error(
+          `Template-based HAProxy config update failed: ${configError.message}`
+        );
+      }
+    }
+
+    // Fall back to HAProxy manager if template system failed
+    if (!haproxyUpdated && coreServices.haproxyManager) {
+      try {
+        // Update HAProxy configuration using the HAProxy manager
+        await coreServices.haproxyManager.updateMongoDBBackend(
+          agentId,
+          targetIp || "127.0.0.1",
+          27017
+        );
+
+        // Try to reload HAProxy using Docker command as a fallback
+        try {
+          execSync(
+            "docker exec haproxy-dev haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg"
+          );
+          execSync("docker exec haproxy-dev service haproxy reload");
+          logger.info(
+            "HAProxy configuration verified and reloaded using Docker commands"
+          );
+          haproxyUpdated = true;
+        } catch (reloadErr) {
+          logger.error(
+            `Failed to reload HAProxy using Docker: ${reloadErr.message}`
+          );
+        }
+      } catch (managerError) {
+        logger.error(`HAProxy manager update failed: ${managerError.message}`);
+      }
+    }
+
+    // Return success response
+    return res.status(200).json({
+      success: true,
+      message: `Certificates for agent ${agentId} regenerated successfully`,
+      agentId,
+      haproxyUpdated,
+      certificatesGenerated: true,
+    });
+  } catch (error) {
+    logger.error(`Certificate regeneration error: ${error.message}`);
+    throw new AppError(
+      `Failed to regenerate certificates: ${error.message}`,
+      500
+    );
+  }
 });

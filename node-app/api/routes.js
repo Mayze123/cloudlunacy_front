@@ -119,6 +119,14 @@ router.get(
   certificateController.getAgentCertificates
 );
 
+// Regenerate agent certificates and fix HAProxy config
+router.post(
+  "/certificates/agent/:agentId/regenerate",
+  authMiddleware.requireAuth,
+  authMiddleware.requireAgentAccess(),
+  certificateController.regenerateAgentCertificate
+);
+
 // Let's Encrypt certificate issuance/renewal (admin only)
 router.post(
   "/certificates/letsencrypt",

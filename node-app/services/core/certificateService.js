@@ -66,7 +66,7 @@ class CertificateService {
       await fs.access(this.caKeyPath);
       logger.info("CA certificate and key found");
       return true;
-    } catch (err) {
+    } catch (_accessErr) {
       logger.info("CA certificate or key not found, will generate new ones");
       return false;
     }
@@ -96,6 +96,129 @@ class CertificateService {
     } catch (err) {
       logger.error(`Failed to generate CA: ${err.message}`);
       throw err;
+    }
+  }
+
+  /**
+   * Create combined PEM file and update HAProxy configuration using template system
+   * @param {string} agentId - The agent ID
+   * @param {string} targetIp - Target IP address
+   * @param {string} serverCertPath - Path to server certificate
+   * @param {string} serverKeyPath - Path to server key
+   * @returns {Promise<Object>} Result of the operation
+   */
+  async createPemAndUpdateHAProxy(
+    agentId,
+    targetIp,
+    serverCertPath,
+    serverKeyPath
+  ) {
+    try {
+      // Get paths
+      const certDir = path.join(this.certsDir, "agents", agentId);
+      const serverPemPath = path.join(certDir, "server.pem");
+
+      // Read certificate and key
+      const serverCert = await fs.readFile(serverCertPath, "utf8");
+      const serverKey = await fs.readFile(serverKeyPath, "utf8");
+
+      // Create combined PEM file
+      const pemBundle = serverCert + serverKey;
+      await fs.writeFile(serverPemPath, pemBundle);
+      await fs.chmod(serverPemPath, 0o600);
+
+      logger.info(`Created combined PEM certificate at ${serverPemPath}`);
+
+      // Copy to system location if possible
+      let sslConfigured = false;
+      try {
+        // Use standard system location
+        const haproxyDir = "/etc/ssl/certs";
+        const haproxyPem = path.join(haproxyDir, "mongodb.pem");
+
+        // Create directory if it doesn't exist
+        await fs.mkdir(haproxyDir, { recursive: true });
+
+        // Copy PEM file to HAProxy location
+        await fs.copyFile(serverPemPath, haproxyPem);
+        await fs.chmod(haproxyPem, 0o600);
+
+        logger.info(
+          `Copied PEM certificate to HAProxy location at ${haproxyPem}`
+        );
+        sslConfigured = true;
+      } catch (copyErr) {
+        logger.warn(
+          `Failed to copy certificate to system location: ${copyErr.message}`
+        );
+        // Non-critical error, continue with local PEM file
+      }
+
+      // Update HAProxy configuration through template system
+      if (this.configManager && this.configManager.haproxyManager) {
+        // The HAProxy manager will check for certificate existence and enable SSL if found
+        const result =
+          await this.configManager.haproxyManager.updateMongoDBBackend(
+            agentId,
+            targetIp,
+            27017
+          );
+
+        if (result.success) {
+          logger.info(
+            `Updated HAProxy configuration for agent ${agentId} using template system`
+          );
+
+          // If we have direct access to the HAProxy config manager, ensure mongodb port is configured
+          if (this.configManager.haproxyManager.configManager) {
+            try {
+              // This uses the template-based configuration system
+              const configData = {
+                statsPassword: "admin_password",
+                includeHttp: true,
+                includeMongoDB: true,
+                useSsl: sslConfigured,
+                sslCertPath: "/etc/ssl/certs/mongodb.pem",
+                mongoDBServers:
+                  this.configManager.haproxyManager.mongoDBServers || [],
+              };
+
+              await this.configManager.haproxyManager.configManager.saveConfig(
+                configData
+              );
+              await this.configManager.haproxyManager.configManager.applyConfig();
+
+              logger.info("Updated HAProxy config through template system");
+            } catch (configErr) {
+              logger.warn(
+                `Failed to update HAProxy config through template system: ${configErr.message}`
+              );
+            }
+          }
+        } else {
+          logger.warn(
+            `Failed to update HAProxy configuration: ${
+              result.error || "Unknown error"
+            }`
+          );
+        }
+      } else {
+        logger.warn(
+          "HAProxy manager not available in config manager, SSL configuration may be incomplete"
+        );
+      }
+
+      return {
+        success: true,
+        pemPath: serverPemPath,
+        sslConfigured,
+      };
+    } catch (err) {
+      logger.error(`Failed to create PEM and update HAProxy: ${err.message}`);
+      return {
+        success: false,
+        error: err.message,
+      };
     }
   }
 
@@ -171,6 +294,14 @@ ${altNames}
       // Set proper permissions
       await fs.chmod(serverKeyPath, 0o600);
       await fs.chmod(serverCertPath, 0o644);
+
+      // Create PEM file and update HAProxy configuration
+      await this.createPemAndUpdateHAProxy(
+        agentId,
+        targetIp,
+        serverCertPath,
+        serverKeyPath
+      );
 
       // Read the generated files
       const caCert = await fs.readFile(this.caCertPath, "utf8");
@@ -271,13 +402,15 @@ ${altNames}
   // Add a method to verify certificate validity
   async verifyCertificate(certPath) {
     try {
-      const { stdout } = await execAsync(
+      const _result = await execAsync(
         `openssl x509 -in ${certPath} -text -noout`
       );
       logger.info(`Certificate at ${certPath} is valid`);
       return true;
-    } catch (err) {
-      logger.error(`Certificate at ${certPath} is invalid: ${err.message}`);
+    } catch (verifyErr) {
+      logger.error(
+        `Certificate at ${certPath} is invalid: ${verifyErr.message}`
+      );
       return false;
     }
   }
@@ -303,7 +436,7 @@ ${altNames}
       try {
         await fs.access(serverKeyPath);
         await fs.access(serverCertPath);
-      } catch (err) {
+      } catch (_accessErr) {
         // If certificates don't exist, generate them
         logger.info(
           `Certificates for agent ${agentId} not found, generating new ones`
