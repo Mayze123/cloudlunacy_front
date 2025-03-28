@@ -21,6 +21,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./config/haproxy:/usr/local/etc/haproxy
       - ./config/certs:/etc/ssl/certs
+      - ./config/certs/private:/etc/ssl/private
       - /var/log/haproxy:/var/log/haproxy
     env_file:
       - ./.env
@@ -30,8 +31,16 @@ services:
       - CF_API_KEY=${CF_API_KEY}
       - CLOUDFLARE_DNS_API_TOKEN=${CF_DNS_API_TOKEN}
       - CF_ZONE_API_TOKEN=${CF_ZONE_API_TOKEN}
+    entrypoint: /usr/local/etc/haproxy/docker-entrypoint-wrapper.sh
     healthcheck:
-      test: ["CMD", "haproxy", "-c", "-f", "/usr/local/etc/haproxy/haproxy.cfg"]
+      test:
+        [
+          "CMD",
+          "haproxy",
+          "-c",
+          "-f",
+          "/usr/local/etc/haproxy/haproxy-final.cfg",
+        ]
       interval: 10s
       timeout: 5s
       retries: 3
