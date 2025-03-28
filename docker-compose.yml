@@ -33,14 +33,7 @@ services:
       - CF_ZONE_API_TOKEN=${CF_ZONE_API_TOKEN}
     entrypoint: /usr/local/etc/haproxy/docker-entrypoint-wrapper.sh
     healthcheck:
-      test:
-        [
-          "CMD",
-          "haproxy",
-          "-c",
-          "-f",
-          "/usr/local/etc/haproxy/haproxy-final.cfg",
-        ]
+      test: ["CMD", "haproxy", "-c", "-f", "/tmp/haproxy-final.cfg"]
       interval: 10s
       timeout: 5s
       retries: 3
