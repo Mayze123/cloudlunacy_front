@@ -14,6 +14,12 @@ dataplaneapi:
     - log_to: stdout
       log_level: info
 
+  # Both reload and restart commands must be specified for custom reload strategy
   resources:
     reload_delay: 5
     reload_cmd: "kill -SIGUSR2 1"
+    restart_cmd: "/usr/sbin/haproxy -f /usr/local/etc/haproxy/haproxy.cfg -p /var/run/haproxy.pid -sf $(cat /var/run/haproxy.pid)"
+
+  # Path to store transaction data
+  transaction:
+    transaction_dir: /tmp/haproxy-dataplaneapi

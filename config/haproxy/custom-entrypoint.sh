@@ -32,4 +32,5 @@ sleep 2
 
 # Start HAProxy
 echo "Starting HAProxy..."
-exec docker-entrypoint.sh "$@" 
+# Run HAProxy directly as there's no docker-entrypoint.sh in this image
+exec /usr/sbin/haproxy -f /usr/local/etc/haproxy/haproxy.cfg -db "$@" 

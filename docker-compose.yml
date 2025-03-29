@@ -10,7 +10,6 @@ services:
     security_opt:
       - no-new-privileges:true
     entrypoint: ["/usr/local/etc/haproxy/custom-entrypoint.sh"]
-    command: ["haproxy", "-f", "/usr/local/etc/haproxy/haproxy.cfg"]
     ports:
       - "80:80"
       - "443:443"
