@@ -1,5 +1,5 @@
 /**
- * CloudLunacy Front Server
+ * CloudLunacy Front Server - Streamlined Version
  *
  * Main entry point for the front server, focused on the core proxy functionality
  * to route traffic to agent VPSs using subdomains.
@@ -15,11 +15,11 @@ const pathManager = require("./utils/pathManager");
 const { errorMiddleware } = require("./utils/errorHandler");
 const appLogger = logger.getLogger("server");
 
-// Import core services
-const coreServices = require("./services/core");
+// Import streamlined core services
+const coreServices = require("./services/core/streamlinedIndex");
 
-// Import API routes
-const apiRoutes = require("./api/routes");
+// Import simplified API routes
+const apiRoutes = require("./api/simplifiedRoutes");
 
 // Setup express app
 const app = express();

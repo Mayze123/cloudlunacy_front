@@ -1,5 +1,5 @@
 /**
- * API Routes
+ * Simplified API Routes
  *
  * Reorganized API routes with more logical grouping and consistent patterns.
  * Focuses on the core proxy functionality while keeping essential supporting endpoints.

@@ -1,7 +1,7 @@
 /**
- * Core Services Module
+ * Streamlined Core Services Module
  *
- * Consolidated version of the core services using the HAProxy Data Plane API.
+ * A simplified and consolidated version of the core services using the new architecture.
  * Focuses on the primary goal of proxying traffic to agent VPSs using subdomains.
  */
 
@@ -10,11 +10,9 @@ const ProxyService = require("./proxyService");
 const AgentService = require("./agentService");
 const ConfigService = require("./configService");
 const HAProxyService = require("./haproxyService");
-const CertificateService = require("./certificateService");
 
 // Create instances of core services
-const certificateService = new CertificateService();
-const haproxyService = new HAProxyService(certificateService);
+const haproxyService = new HAProxyService();
 const proxyService = new ProxyService();
 const configService = new ConfigService();
 
@@ -28,7 +26,6 @@ module.exports = {
   agentService,
   configService,
   haproxyService,
-  certificateService,
 
   /**
    * Initialize all core services
@@ -46,28 +43,21 @@ module.exports = {
         return false;
       }
 
-      // 2. Initialize certificate service for SSL/TLS
-      const certificateInitialized = await certificateService.initialize();
-      if (!certificateInitialized) {
-        logger.error("Failed to initialize certificate service");
-        return false;
-      }
-
-      // 3. Initialize HAProxy service
+      // 2. Initialize HAProxy service
       const haproxyInitialized = await haproxyService.initialize();
       if (!haproxyInitialized) {
         logger.error("Failed to initialize HAProxy service");
         return false;
       }
 
-      // 4. Initialize proxy service
+      // 3. Initialize proxy service
       const proxyInitialized = await proxyService.initialize();
       if (!proxyInitialized) {
         logger.error("Failed to initialize proxy service");
         return false;
       }
 
-      // 5. Initialize agent service
+      // 4. Initialize agent service
       const agentInitialized = await agentService.initialize();
       if (!agentInitialized) {
         logger.error("Failed to initialize agent service");

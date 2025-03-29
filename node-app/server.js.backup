@@ -1,8 +1,9 @@
+// server.js
 /**
  * CloudLunacy Front Server
  *
- * Main entry point for the front server, focused on the core proxy functionality
- * to route traffic to agent VPSs using subdomains.
+ * Main entry point for the front server application.
+ * Handles routing, agent registration, and MongoDB connections.
  */
 
 require("dotenv").config();
@@ -19,7 +20,7 @@ const appLogger = logger.getLogger("server");
 const coreServices = require("./services/core");
 
 // Import API routes
-const apiRoutes = require("./api/routes");
+const routes = require("./api/routes");
 
 // Setup express app
 const app = express();
@@ -39,7 +40,7 @@ app.get("/health", (req, res) => {
 });
 
 // API routes
-app.use("/api", apiRoutes);
+app.use("/api", routes);
 
 // Error handler middleware
 app.use(errorMiddleware);
@@ -100,10 +101,17 @@ function performGracefulShutdown(server) {
       appLogger.info("HTTP server closed successfully.");
     }
 
-    // Perform additional cleanup
+    // Additional cleanup operations here if needed
     try {
+      // Cleanup any remaining resources
       appLogger.info("Cleaning up resources...");
-      // No specific cleanup needed with the new architecture
+
+      // Example: Close database connections if they exist
+      if (coreServices && coreServices.mongodbService) {
+        appLogger.info("Closing MongoDB connections...");
+        // Add actual cleanup code here
+      }
+
       appLogger.info("Cleanup completed.");
     } catch (cleanupErr) {
       appLogger.error("Error during cleanup:", {
@@ -153,20 +161,21 @@ async function startServer() {
       process.env.HEALTH_CHECK_INTERVAL || "900000",
       10
     ); // Default: 15 minutes
-
     setInterval(async () => {
       try {
         appLogger.debug("Running periodic health check");
 
-        // Check that the proxy service is healthy
-        const proxyHealth = await coreServices.proxyService.checkHealth();
-
-        if (!proxyHealth.success || proxyHealth.status !== "healthy") {
-          appLogger.warn("Proxy service is unhealthy, attempting repair");
-          await coreServices.proxyService.repair();
-          appLogger.info("Proxy service repair attempt completed");
+        // Ensure MongoDB port is available
+        const mongoConfigOk =
+          await coreServices.mongodbService.checkMongoDBPort();
+        if (!mongoConfigOk) {
+          appLogger.warn(
+            "MongoDB port not available, attempting to configure it"
+          );
+          await coreServices.mongodbService.ensureMongoDBPort();
+          appLogger.info("MongoDB port configuration complete");
         } else {
-          appLogger.info("Proxy service is healthy");
+          appLogger.info("MongoDB port already available");
         }
 
         appLogger.debug("Health check completed");

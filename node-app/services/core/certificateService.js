@@ -1,7 +1,7 @@
 /**
  * Certificate Service
  *
- * Handles certificate generation, storage, and distribution for MongoDB TLS
+ * Handles certificate generation, storage, and distribution using HAProxy Data Plane API
  */
 
 const fs = require("fs").promises;
@@ -11,15 +11,21 @@ const logger = require("../../utils/logger").getLogger("certificateService");
 const { promisify } = require("util");
 const execAsync = promisify(execSync);
 const pathManager = require("../../utils/pathManager");
+const axios = require("axios");
+const { AppError } = require("../../utils/errorHandler");
 
 class CertificateService {
-  constructor(configManager) {
-    this.configManager = configManager;
+  constructor() {
     this.initialized = false;
     this.certsDir = null;
     this.caCertPath = null;
     this.caKeyPath = null;
     this.mongoDomain = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
+
+    // Data Plane API configuration
+    this.apiBaseUrl = process.env.HAPROXY_API_URL || "http://localhost:5555/v2";
+    this.apiUsername = process.env.HAPROXY_API_USER || "admin";
+    this.apiPassword = process.env.HAPROXY_API_PASS || "admin";
   }
 
   /**
@@ -55,6 +61,51 @@ class CertificateService {
       });
       return false;
     }
+  }
+
+  /**
+   * Create axios instance with auth for Data Plane API
+   * @returns {Object} Configured axios instance
+   */
+  _getApiClient() {
+    return axios.create({
+      baseURL: this.apiBaseUrl,
+      auth: {
+        username: this.apiUsername,
+        password: this.apiPassword,
+      },
+      timeout: 10000,
+    });
+  }
+
+  /**
+   * Ensure certificates directory exists
+   */
+  async _ensureCertsDir() {
+    try {
+      // Create certificates directory
+      await fs.mkdir(this.certsDir, { recursive: true });
+
+      // Create agents subdirectory
+      await fs.mkdir(path.join(this.certsDir, "agents"), { recursive: true });
+
+      logger.info(`Certificates directory created at ${this.certsDir}`);
+      return true;
+    } catch (err) {
+      logger.error(`Failed to create certificates directory: ${err.message}`);
+      throw err;
+    }
+  }
+
+  /**
+   * Ensure CA certificate exists
+   */
+  async _ensureCA() {
+    const caExists = await this.checkCAExists();
+    if (!caExists) {
+      await this.generateCA();
+    }
+    return true;
   }
 
   /**
@@ -100,225 +151,94 @@ class CertificateService {
   }
 
   /**
-   * Create certificate files for HAProxy 2.8 and update HAProxy configuration
-   * @param {string} agentId - The agent ID
+   * Create certificate for an agent and update HAProxy via Data Plane API
+   * @param {string} agentId - Agent ID
    * @param {string} targetIp - Target IP address
-   * @param {string} serverCertPath - Path to server certificate
-   * @param {string} serverKeyPath - Path to server key
-   * @returns {Promise<Object>} Result of the operation
+   * @returns {Promise<Object>} Result with certificate paths
    */
-  async createPemAndUpdateHAProxy(
-    agentId,
-    targetIp,
-    serverCertPath,
-    serverKeyPath
-  ) {
-    try {
-      // Get paths
-      const certDir = path.join(this.certsDir, "agents", agentId);
-      const serverPemPath = path.join(certDir, "server.pem");
-
-      // Read certificate and key
-      const serverCert = await fs.readFile(serverCertPath, "utf8");
-      const serverKey = await fs.readFile(serverKeyPath, "utf8");
-
-      // Create combined PEM file (for backward compatibility)
-      const pemBundle = serverCert + serverKey;
-      await fs.writeFile(serverPemPath, pemBundle);
-      await fs.chmod(serverPemPath, 0o600);
-
-      logger.info(`Created combined PEM certificate at ${serverPemPath}`);
-
-      // Copy to system location with separate cert and key files for HAProxy 2.8
-      let sslConfigured = false;
-      try {
-        // Create directories if they don't exist
-        await fs.mkdir("/etc/ssl/certs", { recursive: true });
-        await fs.mkdir("/etc/ssl/private", { recursive: true });
-
-        // Copy certificate and key to separate files
-        await fs.copyFile(serverCertPath, "/etc/ssl/certs/mongodb.crt");
-        await fs.copyFile(serverKeyPath, "/etc/ssl/private/mongodb.key");
-        await fs.chmod("/etc/ssl/certs/mongodb.crt", 0o644);
-        await fs.chmod("/etc/ssl/private/mongodb.key", 0o600);
-
-        logger.info(`Copied certificate and key to HAProxy locations`);
-        sslConfigured = true;
-      } catch (copyErr) {
-        logger.warn(
-          `Failed to copy certificate to system location: ${copyErr.message}`
-        );
-        // Non-critical error, continue with local PEM file
-      }
-
-      // Update HAProxy configuration through template system
-      if (this.configManager && this.configManager.haproxyManager) {
-        // The HAProxy manager will check for certificate existence and enable SSL if found
-        const result =
-          await this.configManager.haproxyManager.updateMongoDBBackend(
-            agentId,
-            targetIp,
-            27017
-          );
-
-        if (result.success) {
-          logger.info(
-            `Updated HAProxy configuration for agent ${agentId} using template system`
-          );
-
-          // If we have direct access to the HAProxy config manager, ensure mongodb port is configured
-          if (this.configManager.haproxyManager.configManager) {
-            try {
-              // This uses the template-based configuration system
-              const configData = {
-                statsPassword: "admin_password",
-                includeHttp: true,
-                includeMongoDB: true,
-                useSsl: sslConfigured,
-                sslCertPath: "/etc/ssl/certs/mongodb.crt",
-                sslKeyPath: "/etc/ssl/private/mongodb.key",
-                mongoDBServers:
-                  this.configManager.haproxyManager.mongoDBServers || [],
-              };
-
-              await this.configManager.haproxyManager.configManager.saveConfig(
-                configData
-              );
-              await this.configManager.haproxyManager.configManager.applyConfig();
-
-              logger.info("Updated HAProxy config through template system");
-            } catch (configErr) {
-              logger.warn(
-                `Failed to update HAProxy config through template system: ${configErr.message}`
-              );
-            }
-          }
-        } else {
-          logger.warn(
-            `Failed to update HAProxy configuration: ${
-              result.error || "Unknown error"
-            }`
-          );
-        }
-      } else {
-        logger.warn(
-          "HAProxy manager not available in config manager, SSL configuration may be incomplete"
-        );
-      }
-
-      return {
-        success: true,
-        pemPath: serverPemPath,
-        sslConfigured,
-      };
-    } catch (err) {
-      logger.error(
-        `Failed to create certificates and update HAProxy: ${err.message}`
-      );
-      return {
-        success: false,
-        error: err.message,
-      };
-    }
-  }
-
-  /**
-   * Generate agent certificate
-   * @param {string} agentId - The agent ID
-   * @param {string} targetIp - The target IP address
-   */
-  async generateAgentCertificate(agentId, targetIp = null) {
+  async createCertificateForAgent(agentId, targetIp) {
     try {
       if (!this.initialized) {
         await this.initialize();
       }
 
-      logger.info(`Generating certificate for agent ${agentId}`);
+      logger.info(`Creating certificate for agent ${agentId}`);
 
-      const certDir = path.join(this.certsDir, "agents", agentId);
-      await fs.mkdir(certDir, { recursive: true });
+      // Create agent directory
+      const agentCertDir = path.join(this.certsDir, "agents", agentId);
+      await fs.mkdir(agentCertDir, { recursive: true });
 
-      const serverKeyPath = path.join(certDir, "server.key");
-      const serverCsrPath = path.join(certDir, "server.csr");
-      const serverCertPath = path.join(certDir, "server.crt");
-      const configPath = path.join(certDir, "openssl.cnf");
+      // Define paths
+      const keyPath = path.join(agentCertDir, "server.key");
+      const csrPath = path.join(agentCertDir, "server.csr");
+      const certPath = path.join(agentCertDir, "server.crt");
+      const pemPath = path.join(agentCertDir, "server.pem");
+      const configPath = path.join(agentCertDir, "openssl.cnf");
+      const mongoSubdomain = `${agentId}.${this.mongoDomain}`;
 
-      // Create OpenSSL config with proper SAN
-      const domain = `${agentId}.${this.mongoDomain}`;
-
-      // Build the alt_names section with the target IP if provided
-      let altNames = `
-[alt_names]
-DNS.1 = ${domain}
-DNS.2 = *.${domain}
-DNS.3 = localhost
-IP.1 = 127.0.0.1
-`;
-
-      // Add the target IP if provided
-      if (targetIp && targetIp !== "127.0.0.1") {
-        altNames += `IP.2 = ${targetIp}\n`;
-        logger.info(`Including target IP ${targetIp} in certificate SAN`);
-      }
-
-      await fs.writeFile(
-        configPath,
-        `
+      // Create OpenSSL configuration
+      const opensslConfig = `
 [req]
 distinguished_name = req_distinguished_name
 req_extensions = v3_req
 prompt = no
 
 [req_distinguished_name]
-CN = ${domain}
+CN = ${mongoSubdomain}
 
 [v3_req]
+keyUsage = keyEncipherment, dataEncipherment
+extendedKeyUsage = serverAuth
 subjectAltName = @alt_names
-${altNames}
-      `
-      );
 
-      // Generate server key
-      execSync(`openssl genrsa -out ${serverKeyPath} 2048`);
+[alt_names]
+DNS.1 = ${mongoSubdomain}
+DNS.2 = *.${mongoSubdomain}
+DNS.3 = ${targetIp}
+IP.1 = ${targetIp}
+`;
 
-      // Generate CSR with config
+      // Write OpenSSL configuration
+      await fs.writeFile(configPath, opensslConfig);
+
+      // Generate private key
+      execSync(`openssl genrsa -out ${keyPath} 2048`);
+
+      // Generate CSR
       execSync(
-        `openssl req -new -key ${serverKeyPath} -out ${serverCsrPath} -config ${configPath}`
+        `openssl req -new -key ${keyPath} -out ${csrPath} -config ${configPath}`
       );
 
-      // Sign the certificate with our CA
+      // Sign certificate with CA
       execSync(
-        `openssl x509 -req -in ${serverCsrPath} -CA ${this.caCertPath} -CAkey ${this.caKeyPath} -CAcreateserial -out ${serverCertPath} -days 825 -extensions v3_req -extfile ${configPath}`
+        `openssl x509 -req -in ${csrPath} -CA ${this.caCertPath} -CAkey ${this.caKeyPath} -CAcreateserial -out ${certPath} -days 365 -extensions v3_req -extfile ${configPath}`
       );
 
-      // Set proper permissions
-      await fs.chmod(serverKeyPath, 0o600);
-      await fs.chmod(serverCertPath, 0o644);
+      // Create combined PEM file for HAProxy
+      const certContent = await fs.readFile(certPath, "utf8");
+      const keyContent = await fs.readFile(keyPath, "utf8");
+      const pemContent = certContent + keyContent;
+      await fs.writeFile(pemPath, pemContent);
 
-      // Create PEM file and update HAProxy configuration
-      await this.createPemAndUpdateHAProxy(
-        agentId,
-        targetIp,
-        serverCertPath,
-        serverKeyPath
-      );
+      // Set permissions
+      await fs.chmod(keyPath, 0o600);
+      await fs.chmod(certPath, 0o644);
+      await fs.chmod(pemPath, 0o600);
 
-      // Read the generated files
-      const caCert = await fs.readFile(this.caCertPath, "utf8");
-      const serverKey = await fs.readFile(serverKeyPath, "utf8");
-      const serverCert = await fs.readFile(serverCertPath, "utf8");
+      // Copy certificates to HAProxy certificate directory
+      await this.updateHAProxyCertificates(agentId, certPath, keyPath, pemPath);
 
-      logger.info(`Certificate for agent ${agentId} generated successfully`);
-
+      logger.info(`Certificate created for agent ${agentId}`);
       return {
         success: true,
-        caCert,
-        serverKey,
-        serverCert,
+        keyPath,
+        certPath,
+        pemPath,
+        caPath: this.caCertPath,
       };
     } catch (err) {
       logger.error(
-        `Failed to generate certificate for agent ${agentId}: ${err.message}`
+        `Failed to create certificate for agent ${agentId}: ${err.message}`
       );
       return {
         success: false,
@@ -328,150 +248,274 @@ ${altNames}
   }
 
   /**
-   * Get CA certificate
-   */
-  async getCA() {
-    try {
-      if (!this.initialized) {
-        await this.initialize();
-      }
-
-      const caCert = await fs.readFile(this.caCertPath, "utf8");
-      return {
-        success: true,
-        caCert,
-      };
-    } catch (err) {
-      logger.error(`Failed to get CA certificate: ${err.message}`);
-      return {
-        success: false,
-        error: err.message,
-      };
-    }
-  }
-
-  /**
-   * Ensure certificates directory exists
-   *
-   * @private
-   */
-  async _ensureCertsDir() {
-    try {
-      logger.info(`Ensuring certificates directory exists at ${this.certsDir}`);
-
-      // Create certificates directory if it doesn't exist
-      await pathManager.ensureDirectories([
-        this.certsDir,
-        pathManager.getPath("certsAgents"),
-      ]);
-
-      logger.info("Certificates directory structure created");
-      return true;
-    } catch (err) {
-      logger.error(`Failed to create certificates directory: ${err.message}`);
-      throw err;
-    }
-  }
-
-  /**
-   * Ensure CA certificate exists
-   *
-   * @private
-   */
-  async _ensureCA() {
-    try {
-      logger.info("Checking if CA certificate exists");
-
-      // Check if CA certificate and key exist
-      const caExists = await this.checkCAExists();
-
-      if (!caExists) {
-        logger.info("CA certificate not found, generating new one");
-        await this.generateCA();
-      } else {
-        logger.info("CA certificate already exists");
-      }
-
-      return true;
-    } catch (err) {
-      logger.error(`Failed to ensure CA certificate: ${err.message}`);
-      throw err;
-    }
-  }
-
-  // Add a method to verify certificate validity
-  async verifyCertificate(certPath) {
-    try {
-      const _result = await execAsync(
-        `openssl x509 -in ${certPath} -text -noout`
-      );
-      logger.info(`Certificate at ${certPath} is valid`);
-      return true;
-    } catch (verifyErr) {
-      logger.error(
-        `Certificate at ${certPath} is invalid: ${verifyErr.message}`
-      );
-      return false;
-    }
-  }
-
-  /**
-   * Get agent certificates
+   * Update HAProxy certificates through Data Plane API
    * @param {string} agentId - Agent ID
-   * @returns {Promise<Object>} Certificate data
+   * @param {string} certPath - Path to server certificate
+   * @param {string} keyPath - Path to server key
+   * @param {string} pemPath - Path to combined PEM file
+   * @returns {Promise<Object>} Result of the operation
    */
-  async getAgentCertificates(agentId) {
+  async updateHAProxyCertificates(agentId, certPath, keyPath, pemPath) {
     try {
-      if (!this.initialized) {
-        await this.initialize();
-      }
+      logger.info(`Updating HAProxy certificates for agent ${agentId}`);
 
-      logger.info(`Getting certificates for agent ${agentId}`);
+      // Copy files to system locations for HAProxy
+      const haproxyCertsDir = "/etc/ssl/certs";
+      const haproxyPrivateDir = "/etc/ssl/private";
 
-      const certDir = path.join(this.certsDir, "agents", agentId);
-      const serverKeyPath = path.join(certDir, "server.key");
-      const serverCertPath = path.join(certDir, "server.crt");
-
-      // Check if certificates exist
       try {
-        await fs.access(serverKeyPath);
-        await fs.access(serverCertPath);
-      } catch (_accessErr) {
-        // If certificates don't exist, generate them
+        // Create directories if they don't exist
+        await fs.mkdir(haproxyCertsDir, { recursive: true });
+        await fs.mkdir(haproxyPrivateDir, { recursive: true });
+
+        // Copy certificate and key
+        const certsFilename = `${agentId}-mongodb.crt`;
+        const keyFilename = `${agentId}-mongodb.key`;
+        const pemFilename = `${agentId}-mongodb.pem`;
+
+        const targetCertPath = path.join(haproxyCertsDir, certsFilename);
+        const targetKeyPath = path.join(haproxyPrivateDir, keyFilename);
+        const targetPemPath = path.join(haproxyPrivateDir, pemFilename);
+
+        await fs.copyFile(certPath, targetCertPath);
+        await fs.copyFile(keyPath, targetKeyPath);
+        await fs.copyFile(pemPath, targetPemPath);
+
+        await fs.chmod(targetCertPath, 0o644);
+        await fs.chmod(targetKeyPath, 0o600);
+        await fs.chmod(targetPemPath, 0o600);
+
         logger.info(
-          `Certificates for agent ${agentId} not found, generating new ones`
+          `Copied certificates to HAProxy directories for agent ${agentId}`
         );
-        const genResult = await this.generateAgentCertificate(agentId);
-        if (!genResult.success) {
-          throw new Error(
-            `Failed to generate certificates: ${genResult.error}`
+
+        // Update HAProxy configuration via Data Plane API
+        return this.updateHAProxyTlsConfig(agentId, targetPemPath);
+      } catch (copyErr) {
+        logger.warn(
+          `Failed to copy certificates to system locations: ${copyErr.message}`
+        );
+        // Even if copying to system locations fails, try to update HAProxy via the API
+        return this.updateHAProxyTlsConfig(agentId, pemPath);
+      }
+    } catch (err) {
+      logger.error(`Failed to update HAProxy certificates: ${err.message}`);
+      throw err;
+    }
+  }
+
+  /**
+   * Update HAProxy TLS configuration via Data Plane API
+   * @param {string} agentId - Agent ID
+   * @param {string} pemPath - Path to PEM file
+   * @returns {Promise<Object>} Result of the operation
+   */
+  async updateHAProxyTlsConfig(agentId, pemPath) {
+    try {
+      const client = this._getApiClient();
+
+      // Start a transaction
+      const transactionResponse = await client.post(
+        "/services/haproxy/transactions"
+      );
+      const transactionId = transactionResponse.data.id;
+
+      logger.info(
+        `Started HAProxy transaction ${transactionId} for TLS config update`
+      );
+
+      // Update MongoDB backend SSL configuration
+      try {
+        // Create or update SSL certificate store for MongoDB
+        const certStoreName = `mongodb_${agentId}_certs`;
+
+        // Check if certificate store exists
+        let certStoreExists = false;
+        try {
+          await client.get(
+            `/services/haproxy/configuration/certificate_stores/${certStoreName}?transaction_id=${transactionId}`
+          );
+          certStoreExists = true;
+        } catch (err) {
+          // Certificate store doesn't exist
+          certStoreExists = false;
+        }
+
+        // Create or update certificate store
+        if (certStoreExists) {
+          await client.put(
+            `/services/haproxy/configuration/certificate_stores/${certStoreName}?transaction_id=${transactionId}`,
+            {
+              crt_list: pemPath,
+            }
+          );
+        } else {
+          await client.post(
+            `/services/haproxy/configuration/certificate_stores?transaction_id=${transactionId}`,
+            {
+              name: certStoreName,
+              crt_list: pemPath,
+            }
           );
         }
-        // Return generated certificates
+
+        // Set SSL configuration on the backend for the agent
+        const backendName = `${agentId}-mongodb-backend`;
+
+        // Check if backend exists
+        let backendExists = false;
+        try {
+          await client.get(
+            `/services/haproxy/configuration/backends/${backendName}?transaction_id=${transactionId}`
+          );
+          backendExists = true;
+        } catch (err) {
+          // Backend doesn't exist yet
+          backendExists = false;
+        }
+
+        // Update backend SSL configuration
+        if (backendExists) {
+          await client.put(
+            `/services/haproxy/configuration/backends/${backendName}?transaction_id=${transactionId}`,
+            {
+              ssl: {
+                enabled: true,
+                verify: "none",
+                ca_file: this.caCertPath,
+                crt_list: pemPath,
+              },
+            }
+          );
+        }
+
+        // Commit the transaction
+        await client.put(`/services/haproxy/transactions/${transactionId}`);
+        logger.info(
+          `Committed HAProxy transaction ${transactionId} for TLS config update`
+        );
+
         return {
-          caCert: genResult.caCert,
-          serverKey: genResult.serverKey,
-          serverCert: genResult.serverCert,
+          success: true,
+          message: `Updated HAProxy TLS configuration for agent ${agentId}`,
+        };
+      } catch (err) {
+        // Delete the transaction on error
+        try {
+          await client.delete(
+            `/services/haproxy/transactions/${transactionId}`
+          );
+          logger.warn(
+            `Deleted HAProxy transaction ${transactionId} due to error`
+          );
+        } catch (deleteErr) {
+          logger.error(
+            `Failed to delete HAProxy transaction ${transactionId}: ${deleteErr.message}`
+          );
+        }
+
+        throw err;
+      }
+    } catch (err) {
+      logger.error(`Failed to update HAProxy TLS config: ${err.message}`);
+      return {
+        success: false,
+        error: err.message,
+      };
+    }
+  }
+
+  /**
+   * Get certificate information
+   * @param {string} agentId - Agent ID
+   * @returns {Promise<Object>} Certificate information
+   */
+  async getCertificateInfo(agentId) {
+    try {
+      if (!this.initialized) {
+        await this.initialize();
+      }
+
+      const agentCertDir = path.join(this.certsDir, "agents", agentId);
+      const certPath = path.join(agentCertDir, "server.crt");
+
+      // Check if certificate exists
+      try {
+        await fs.access(certPath);
+      } catch (_err) {
+        return {
+          success: false,
+          exists: false,
+          message: `Certificate does not exist for agent ${agentId}`,
         };
       }
 
-      // Read the certificate files
-      const caCert = await fs.readFile(this.caCertPath, "utf8");
-      const serverKey = await fs.readFile(serverKeyPath, "utf8");
-      const serverCert = await fs.readFile(serverCertPath, "utf8");
+      // Get certificate info
+      const certInfo = execSync(
+        `openssl x509 -in ${certPath} -text -noout`
+      ).toString();
 
-      logger.info(`Certificates for agent ${agentId} retrieved successfully`);
+      // Parse expiration date
+      const expiryMatch = certInfo.match(/Not After\s*:\s*(.+)/);
+      const expiry = expiryMatch ? new Date(expiryMatch[1]) : null;
+      const now = new Date();
+      const daysRemaining = expiry
+        ? Math.ceil((expiry - now) / (1000 * 60 * 60 * 24))
+        : 0;
 
       return {
-        caCert,
-        serverKey,
-        serverCert,
+        success: true,
+        exists: true,
+        certPath,
+        caPath: this.caCertPath,
+        expiry: expiry ? expiry.toISOString() : null,
+        daysRemaining,
+        isExpired: daysRemaining <= 0,
+        summary: certInfo,
       };
     } catch (err) {
       logger.error(
-        `Failed to get certificates for agent ${agentId}: ${err.message}`
+        `Failed to get certificate info for agent ${agentId}: ${err.message}`
       );
-      throw err;
+      return {
+        success: false,
+        error: err.message,
+      };
+    }
+  }
+
+  /**
+   * Renew certificate for an agent
+   * @param {string} agentId - Agent ID
+   * @param {string} targetIp - Target IP address
+   * @returns {Promise<Object>} Result with certificate paths
+   */
+  async renewCertificate(agentId, targetIp) {
+    try {
+      if (!this.initialized) {
+        await this.initialize();
+      }
+
+      logger.info(`Renewing certificate for agent ${agentId}`);
+
+      // First, check if certificate exists
+      const certInfo = await this.getCertificateInfo(agentId);
+
+      if (!certInfo.exists) {
+        // If certificate doesn't exist, create a new one
+        return this.createCertificateForAgent(agentId, targetIp);
+      }
+
+      // Create a new certificate
+      return this.createCertificateForAgent(agentId, targetIp);
+    } catch (err) {
+      logger.error(
+        `Failed to renew certificate for agent ${agentId}: ${err.message}`
+      );
+      return {
+        success: false,
+        error: err.message,
+      };
     }
   }
 }
