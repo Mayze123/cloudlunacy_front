@@ -97,7 +97,7 @@ The HAProxy Data Plane API implementation includes:
 
 1. **Docker Configuration**
 
-   - Switched to the official `haproxytech/haproxy-debian-dataplaneapi` image
+   - Switched to the official `haproxytech/haproxy-dataplaneapi` image
    - Exposed port 5555 for the Data Plane API
    - Added a persistent volume for the Data Plane API storage
    - Updated environment variables for API authentication

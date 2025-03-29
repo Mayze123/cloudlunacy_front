@@ -2,7 +2,7 @@ version: "3.8"
 
 services:
   haproxy:
-    image: haproxytech/haproxy-debian-dataplaneapi:latest
+    image: haproxytech/haproxy-dataplaneapi:latest
     container_name: haproxy
     restart: unless-stopped
     security_opt:

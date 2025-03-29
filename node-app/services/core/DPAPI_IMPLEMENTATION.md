@@ -15,7 +15,7 @@ The HAProxy Data Plane API allows for dynamic configuration of HAProxy without r
 ```yaml
 services:
   haproxy:
-    image: haproxytech/haproxy-debian-dataplaneapi:latest
+    image: haproxytech/haproxy-dataplaneapi:latest
     ports:
       - "80:80"
       - "443:443"
