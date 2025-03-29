@@ -2,7 +2,9 @@ version: "3.8"
 
 services:
   haproxy:
-    image: haproxy:2.8-alpine
+    build:
+      context: ./haproxy-dockerfile
+      dockerfile: Dockerfile
     container_name: haproxy
     restart: unless-stopped
     security_opt:
@@ -20,7 +22,6 @@ services:
       - backend
     volumes:
       - ./config/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
-      - ./config/haproxy/docker-entrypoint-wrapper.sh:/docker-entrypoint-wrapper.sh:ro
       - ./config/certs:/etc/ssl/certs:ro
       - ./config/certs:/etc/ssl/private:ro
       - haproxy-data:/etc/haproxy/dataplaneapi
@@ -36,7 +37,6 @@ services:
       - CF_ZONE_API_TOKEN=${CF_ZONE_API_TOKEN}
       - HAPROXY_API_USER=${HAPROXY_API_USER:-admin}
       - HAPROXY_API_PASS=${HAPROXY_API_PASS:-admin}
-    entrypoint: ["/bin/sh", "/docker-entrypoint-wrapper.sh"]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5555/health"]
       interval: 10s
