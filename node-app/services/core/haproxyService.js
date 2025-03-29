@@ -21,7 +21,7 @@ class HAProxyService {
     this.certificateService = certificateService;
 
     // Data Plane API configuration
-    this.apiBaseUrl = process.env.HAPROXY_API_URL || "http://haproxy:5555/v3";
+    this.apiBaseUrl = process.env.HAPROXY_API_URL || "http://haproxy:5555/v2";
     this.apiUsername = process.env.HAPROXY_API_USER || "admin";
     this.apiPassword = process.env.HAPROXY_API_PASS || "admin";
 
@@ -44,6 +44,15 @@ class HAProxyService {
     this.retry = {
       maxAttempts: 3,
       delay: 1000, // ms
+    };
+
+    // Health check interval (5 minutes)
+    this.healthCheckInterval = null;
+    this.healthCheckIntervalMs = 5 * 60 * 1000;
+    this.healthStatus = {
+      lastCheck: null,
+      status: "unknown",
+      details: {},
     };
   }
 
@@ -73,6 +82,9 @@ class HAProxyService {
 
       // Load existing configuration to extract routes
       await this._loadConfiguration();
+
+      // Start periodic health checks
+      this._startHealthChecks();
 
       this.initialized = true;
       this._initializing = false;
@@ -266,11 +278,90 @@ class HAProxyService {
   }
 
   /**
-   * Start a transaction for atomic changes
-   * @returns {string} Transaction ID
+   * Clean up stale transactions
+   * @returns {Promise<boolean>} Success status
+   */
+  async _cleanupStaleTransactions() {
+    try {
+      const client = this._getApiClient();
+
+      // Get all active transactions
+      const response = await client.get("/services/haproxy/transactions");
+      const transactions = response.data.data;
+
+      if (!transactions || transactions.length === 0) {
+        return true;
+      }
+
+      // Check for stale transactions (older than 10 minutes)
+      const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+
+      for (const transaction of transactions) {
+        if (transaction.created_at < tenMinutesAgo) {
+          logger.warn(
+            `Cleaning up stale transaction ${transaction.id} from ${transaction.created_at}`
+          );
+          await client.delete(
+            `/services/haproxy/transactions/${transaction.id}`
+          );
+        }
+      }
+
+      return true;
+    } catch (err) {
+      logger.error(`Failed to clean up stale transactions: ${err.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Backup current HAProxy configuration
+   * @returns {Promise<string>} Backup file path
+   */
+  async _backupConfiguration() {
+    try {
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const backupDir = "/var/lib/haproxy/backups";
+      const backupFileName = `haproxy_config_${timestamp}.cfg`;
+      const backupPath = `${backupDir}/${backupFileName}`;
+
+      // Create backup directory if it doesn't exist
+      await execAsync(
+        `docker exec ${this.haproxyContainer} mkdir -p ${backupDir}`
+      );
+
+      // Copy current config to backup
+      await execAsync(
+        `docker exec ${this.haproxyContainer} cp /usr/local/etc/haproxy/haproxy.cfg ${backupPath}`
+      );
+
+      logger.info(`HAProxy configuration backed up to ${backupPath}`);
+
+      // Prune old backups (keep only the last 10)
+      await execAsync(
+        `docker exec ${this.haproxyContainer} sh -c 'cd ${backupDir} && ls -t | tail -n +11 | xargs -r rm'`
+      );
+
+      return backupPath;
+    } catch (err) {
+      logger.error(`Failed to backup HAProxy configuration: ${err.message}`);
+      // Don't throw, as this is a non-critical operation
+      return null;
+    }
+  }
+
+  /**
+   * Start a new transaction
+   * @returns {Promise<string>} Transaction ID
    */
   async _startTransaction() {
     try {
+      // First cleanup any stale transactions
+      await this._cleanupStaleTransactions();
+
+      // Backup current configuration before making changes
+      await this._backupConfiguration();
+
       const client = this._getApiClient();
       const response = await client.post("/services/haproxy/transactions");
       this.currentTransaction = response.data.data.id;
@@ -307,8 +398,7 @@ class HAProxyService {
    */
   async _abortTransaction() {
     if (!this.currentTransaction) {
-      logger.warn("No active transaction to abort");
-      return;
+      return true;
     }
 
     try {
@@ -316,11 +406,19 @@ class HAProxyService {
       await client.delete(
         `/services/haproxy/transactions/${this.currentTransaction}`
       );
-      logger.debug(`Aborted transaction: ${this.currentTransaction}`);
+      logger.info(`Aborted transaction ${this.currentTransaction}`);
       this.currentTransaction = null;
+      return true;
     } catch (err) {
-      logger.error(`Failed to abort transaction: ${err.message}`);
-      // Don't throw here as this is typically called in error handling paths
+      logger.error(`Failed to abort transaction: ${err.message}`, {
+        transaction: this.currentTransaction,
+        error: err.message,
+      });
+
+      // Force reset the transaction ID even if the API call fails
+      // This prevents getting stuck with a stale transaction reference
+      this.currentTransaction = null;
+      return false;
     }
   }
 
@@ -990,6 +1088,263 @@ class HAProxyService {
 
       logger.error(`Failed to ensure MongoDB port: ${err.message}`);
       return false;
+    }
+  }
+
+  /**
+   * Start periodic health checks
+   * @private
+   */
+  _startHealthChecks() {
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
+    }
+
+    logger.info(
+      `Starting periodic HAProxy health checks every ${
+        this.healthCheckIntervalMs / 1000
+      } seconds`
+    );
+    this.healthCheckInterval = setInterval(async () => {
+      try {
+        await this.performHealthCheck();
+      } catch (err) {
+        logger.error(`Error during HAProxy health check: ${err.message}`);
+      }
+    }, this.healthCheckIntervalMs);
+
+    // Run an initial health check
+    setTimeout(async () => {
+      try {
+        await this.performHealthCheck();
+      } catch (err) {
+        logger.error(
+          `Error during initial HAProxy health check: ${err.message}`
+        );
+      }
+    }, 5000);
+  }
+
+  /**
+   * Perform a health check on HAProxy
+   * @returns {Promise<Object>} Health check results
+   */
+  async performHealthCheck() {
+    logger.debug("Performing HAProxy health check");
+    const startTime = Date.now();
+    const health = {
+      timestamp: new Date().toISOString(),
+      apiConnected: false,
+      containerRunning: false,
+      responseTime: 0,
+      version: null,
+      processes: {
+        running: 0,
+        total: 0,
+      },
+      connections: {
+        current: 0,
+        total: 0,
+        max: 0,
+      },
+      errors: [],
+    };
+
+    try {
+      // 1. Check if container is running
+      try {
+        const containerRunning = await this._verifyHAProxyRunning();
+        health.containerRunning = containerRunning;
+      } catch (err) {
+        health.containerRunning = false;
+        health.errors.push(`Container check failed: ${err.message}`);
+      }
+
+      // 2. Test API connection
+      try {
+        const client = this._getApiClient();
+        const response = await client.get("/services/haproxy/info");
+
+        if (response.status === 200) {
+          health.apiConnected = true;
+          health.version = response.data.version || "unknown";
+
+          // Get process info if available
+          if (response.data.processes) {
+            health.processes.running = response.data.processes.running || 0;
+            health.processes.total = response.data.processes.total || 0;
+          }
+        }
+      } catch (err) {
+        health.apiConnected = false;
+        health.errors.push(`API connection failed: ${err.message}`);
+      }
+
+      // 3. Get connection stats
+      try {
+        const { stdout } = await execAsync(
+          `docker exec ${this.haproxyContainer} sh -c "echo 'show info' | socat unix-connect:/var/run/haproxy.sock stdio" | grep -E 'CurrConns|CumConns|Maxconn'`
+        );
+
+        const connLines = stdout.split("\n");
+        for (const line of connLines) {
+          if (line.includes("CurrConns:")) {
+            health.connections.current = parseInt(
+              line.split(":")[1].trim(),
+              10
+            );
+          } else if (line.includes("CumConns:")) {
+            health.connections.total = parseInt(line.split(":")[1].trim(), 10);
+          } else if (line.includes("Maxconn:")) {
+            health.connections.max = parseInt(line.split(":")[1].trim(), 10);
+          }
+        }
+      } catch (err) {
+        health.errors.push(`Connection stats check failed: ${err.message}`);
+      }
+
+      // Calculate response time
+      health.responseTime = Date.now() - startTime;
+
+      // Update health status
+      this.healthStatus = {
+        lastCheck: health.timestamp,
+        status:
+          health.apiConnected && health.containerRunning
+            ? "healthy"
+            : "unhealthy",
+        details: health,
+      };
+
+      // Log health status
+      if (health.apiConnected && health.containerRunning) {
+        logger.info(
+          `HAProxy health check successful. Response time: ${health.responseTime}ms`
+        );
+      } else {
+        logger.warn(
+          `HAProxy health check detected issues: ${health.errors.join(", ")}`
+        );
+
+        // Send alerts if configured (placeholder for future implementation)
+        // this._sendHealthAlert(health);
+      }
+
+      return health;
+    } catch (err) {
+      logger.error(`HAProxy health check failed: ${err.message}`);
+      this.healthStatus = {
+        lastCheck: new Date().toISOString(),
+        status: "unhealthy",
+        details: { error: err.message },
+      };
+      throw err;
+    }
+  }
+
+  /**
+   * Get HAProxy health status
+   * @returns {Object} Current health status
+   */
+  getHealthStatus() {
+    return { ...this.healthStatus };
+  }
+
+  /**
+   * Get HAProxy stats for monitoring
+   * @returns {Promise<Object>} Statistics data
+   */
+  async getStats() {
+    try {
+      if (!this.initialized) {
+        await this.initialize();
+      }
+
+      const stats = {
+        timestamp: new Date().toISOString(),
+        frontends: [],
+        backends: [],
+        servers: [],
+        summary: {
+          connections: {
+            current: 0,
+            total: 0,
+            rate: 0,
+          },
+          requests: {
+            total: 0,
+            rate: 0,
+          },
+          bytesIn: 0,
+          bytesOut: 0,
+        },
+      };
+
+      // Get stats using Data Plane API
+      try {
+        const client = this._getApiClient();
+        const response = await client.get("/services/haproxy/stats");
+
+        if (response.status === 200 && response.data) {
+          if (Array.isArray(response.data.data)) {
+            // Process and normalize stats
+            for (const item of response.data.data) {
+              // Store by type
+              if (item.type === "frontend") {
+                stats.frontends.push(item);
+                // Add to summary
+                stats.summary.connections.current += parseInt(
+                  item.scur || 0,
+                  10
+                );
+                stats.summary.connections.total += parseInt(item.stot || 0, 10);
+                stats.summary.connections.rate += parseInt(item.rate || 0, 10);
+                stats.summary.bytesIn += parseInt(item.bin || 0, 10);
+                stats.summary.bytesOut += parseInt(item.bout || 0, 10);
+              } else if (item.type === "backend") {
+                stats.backends.push(item);
+                // Sum up request counts
+                stats.summary.requests.total += parseInt(item.req_tot || 0, 10);
+                stats.summary.requests.rate += parseInt(item.req_rate || 0, 10);
+              } else if (item.type === "server") {
+                stats.servers.push(item);
+              }
+            }
+          }
+        }
+      } catch (err) {
+        logger.error(`Failed to fetch HAProxy stats via API: ${err.message}`);
+        // Fall back to socket command
+        const statsData = await this._getStatsFromSocket();
+        if (statsData) {
+          stats.rawStats = statsData;
+        }
+      }
+
+      // Get health status
+      stats.health = this.getHealthStatus();
+
+      return stats;
+    } catch (err) {
+      logger.error(`Failed to get HAProxy stats: ${err.message}`);
+      throw err;
+    }
+  }
+
+  /**
+   * Get stats directly from HAProxy socket (fallback method)
+   * @private
+   * @returns {Promise<string>} Raw stats data
+   */
+  async _getStatsFromSocket() {
+    try {
+      const { stdout } = await execAsync(
+        `docker exec ${this.haproxyContainer} sh -c "echo 'show stat' | socat unix-connect:/var/run/haproxy.sock stdio"`
+      );
+      return stdout;
+    } catch (err) {
+      logger.error(`Failed to get stats from socket: ${err.message}`);
+      return null;
     }
   }
 }

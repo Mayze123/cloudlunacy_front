@@ -3,8 +3,59 @@ set -e
 
 echo "Starting HAProxy with custom configuration..."
 
+# Ensure API transaction directory exists with proper permissions
+mkdir -p /etc/haproxy/dataplaneapi
+chmod 777 /etc/haproxy/dataplaneapi
+
+# Verify SSL certificates 
+verify_certificates() {
+  CERT_DIR="/etc/ssl/certs"
+  KEY_DIR="/etc/ssl/private"
+  
+  echo "Verifying SSL certificates..."
+  
+  # Check if certificate directories exist
+  if [ ! -d "$CERT_DIR" ] || [ ! -d "$KEY_DIR" ]; then
+    echo "Warning: Certificate directories don't exist. Creating them..."
+    mkdir -p "$CERT_DIR" "$KEY_DIR"
+    return 1
+  fi
+  
+  # Check if we have any certificates
+  CERT_COUNT=$(find "$CERT_DIR" -name "*.crt" -o -name "*.pem" | wc -l)
+  KEY_COUNT=$(find "$KEY_DIR" -name "*.key" -o -name "*.pem" | wc -l)
+  
+  if [ "$CERT_COUNT" -eq 0 ] || [ "$KEY_COUNT" -eq 0 ]; then
+    echo "Warning: No certificates found."
+    return 1
+  fi
+  
+  # Verify each certificate
+  for cert in $(find "$CERT_DIR" -name "*.crt" -o -name "*.pem"); do
+    echo "Verifying certificate: $cert"
+    if ! openssl x509 -in "$cert" -noout -text > /dev/null 2>&1; then
+      echo "Error: Invalid certificate: $cert"
+    else
+      EXPIRY=$(openssl x509 -in "$cert" -noout -enddate | cut -d= -f2)
+      echo "Certificate $cert expires on: $EXPIRY"
+    fi
+  done
+  
+  echo "Certificate verification completed."
+  return 0
+}
+
+# Run certificate verification
+verify_certificates
+
 # Copy the original haproxy.cfg to a temporary file
 cp /usr/local/etc/haproxy/haproxy.cfg /tmp/haproxy.cfg
+
+# Backup the original config
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+mkdir -p /var/lib/haproxy/backups
+cp /usr/local/etc/haproxy/haproxy.cfg "/var/lib/haproxy/backups/haproxy_${TIMESTAMP}.cfg"
+echo "Configuration backed up to /var/lib/haproxy/backups/haproxy_${TIMESTAMP}.cfg"
 
 # Append Data Plane API configuration if not already present
 if ! grep -q "userlist dataplaneapi" /tmp/haproxy.cfg; then

@@ -21,7 +21,7 @@ services:
     volumes:
       - ./config/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:rw
       - ./config/haproxy/dataplaneapi.yml:/usr/local/etc/haproxy/dataplaneapi.yml:rw
-      - ./haproxy-dockerfile/custom-entrypoint.sh:/usr/local/etc/haproxy/custom-entrypoint.sh:ro
+      - ./haproxy-dockerfile/custom-entrypoint.sh:/usr/local/bin/custom-entrypoint.sh:ro
       - ./config/haproxy/docker-entrypoint-wrapper.sh:/usr/local/bin/docker-entrypoint-wrapper.sh:ro
       - ./config/certs:/etc/ssl/certs:ro
       - ./config/certs:/etc/ssl/private:ro
@@ -40,7 +40,7 @@ services:
       - HAPROXY_API_USER=${HAPROXY_API_USER:-admin}
       - HAPROXY_API_PASS=${HAPROXY_API_PASS:-admin}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5555/v3/info"]
+      test: ["CMD", "curl", "-f", "http://localhost:5555/v2/info"]
       interval: 10s
       timeout: 5s
       retries: 3
