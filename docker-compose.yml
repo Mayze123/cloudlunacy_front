@@ -5,8 +5,6 @@ services:
     image: haproxytech/haproxy-ubuntu:latest
     container_name: haproxy
     restart: unless-stopped
-    depends_on:
-      - node-app
     security_opt:
       - no-new-privileges:true
     entrypoint: ["/usr/local/etc/haproxy/custom-entrypoint.sh"]
@@ -69,6 +67,9 @@ services:
       dockerfile: Dockerfile
     container_name: cloudlunacy-front
     restart: always
+    depends_on:
+      haproxy:
+        condition: service_healthy
     networks:
       - frontend
       - backend

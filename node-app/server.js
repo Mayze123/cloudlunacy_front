@@ -18,8 +18,8 @@ const appLogger = logger.getLogger("server");
 // Import core services
 const coreServices = require("./services/core");
 
-// Import API routes
-const apiRoutes = require("./api/routes");
+// Import API routes *function*
+const createApiRouter = require("./api/routes");
 
 // Setup express app
 const app = express();
@@ -37,9 +37,6 @@ app.get("/health", (req, res) => {
     timestamp: new Date().toISOString(),
   });
 });
-
-// API routes
-app.use("/api", apiRoutes);
 
 // Error handler middleware
 app.use(errorMiddleware);
@@ -139,6 +136,13 @@ async function startServer() {
       );
       process.exit(1);
     }
+
+    // Create and mount API routes, passing initialized services
+    const apiRouter = createApiRouter(coreServices);
+    app.use("/api", apiRouter);
+
+    // Error handler middleware (should be registered AFTER API routes)
+    app.use(errorMiddleware);
 
     // Start HTTP server
     const server = app.listen(PORT, () => {
