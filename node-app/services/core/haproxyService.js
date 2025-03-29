@@ -21,7 +21,7 @@ class HAProxyService {
     this.certificateService = certificateService;
 
     // Data Plane API configuration
-    this.apiBaseUrl = process.env.HAPROXY_API_URL || "http://haproxy:5555/v2";
+    this.apiBaseUrl = process.env.HAPROXY_API_URL || "http://haproxy:5555/v3";
     this.apiUsername = process.env.HAPROXY_API_USER || "admin";
     this.apiPassword = process.env.HAPROXY_API_PASS || "admin";
 

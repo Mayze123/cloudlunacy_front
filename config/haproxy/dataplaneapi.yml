@@ -1,0 +1,30 @@
+dataplaneapi:
+  host: 0.0.0.0
+  port: 5555
+  # Schemes: http or https (v2 supported both in a list, v3 is a single value)
+  scheme: http
+
+  # HAProxy configuration
+  haproxy:
+    config_file: /usr/local/etc/haproxy/haproxy.cfg
+    haproxy_bin: /usr/local/sbin/haproxy
+
+  # Userlist in the HAProxy configuration where credentials are defined
+  userlist: dataplaneapi
+
+  # Storage for transactions
+  transaction:
+    transaction_dir: /etc/haproxy/dataplaneapi
+
+  # Log configuration
+  log_targets:
+    - log_to: stdout
+      log_level: info
+
+  # Automated reload on config change
+  resources:
+    reload_delay: 5
+    reload_cmd: "kill -SIGUSR2 1"
+
+  # HAProxy API version
+  api_detailed_errors: true

@@ -2,7 +2,7 @@ version: "3.8"
 
 services:
   haproxy:
-    image: haproxytech/haproxy-debian-dataplaneapi:latest
+    image: haproxytech/haproxy-ubuntu:latest
     container_name: haproxy
     restart: unless-stopped
     security_opt:
@@ -19,7 +19,8 @@ services:
       - frontend
       - backend
     volumes:
-      - ./config/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ./config/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:rw
+      - ./config/haproxy/dataplaneapi.yml:/usr/local/etc/haproxy/dataplaneapi.yml:rw
       - ./config/certs:/etc/ssl/certs:ro
       - ./config/certs:/etc/ssl/private:ro
       - haproxy-data:/etc/haproxy/dataplaneapi
@@ -34,12 +35,10 @@ services:
       - CLOUDFLARE_DNS_API_TOKEN=${CF_DNS_API_TOKEN}
       - CF_ZONE_API_TOKEN=${CF_ZONE_API_TOKEN}
       # Data Plane API Configuration
-      - DATAPLANEAPI_USER=${HAPROXY_API_USER:-admin}
-      - DATAPLANEAPI_PASSWORD=${HAPROXY_API_PASS:-admin}
-      - DATAPLANEAPI_PORT=5555
-      - DATAPLANEAPI_SCHEME=http # Use https in actual production
+      - HAPROXY_API_USER=${HAPROXY_API_USER:-admin}
+      - HAPROXY_API_PASS=${HAPROXY_API_PASS:-admin}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5555/v2/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:5555/v3/info"]
       interval: 10s
       timeout: 5s
       retries: 3
