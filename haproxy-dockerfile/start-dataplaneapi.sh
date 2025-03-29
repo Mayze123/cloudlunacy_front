@@ -3,10 +3,12 @@ set -e
 
 # Wait until HAProxy is ready (config file is available)
 CONFIG_FILE="/usr/local/etc/haproxy/haproxy.cfg"
+echo "Waiting for HAProxy config file at $CONFIG_FILE..."
 while [ ! -f "$CONFIG_FILE" ]; do
     echo "Waiting for HAProxy config file..."
     sleep 1
 done
+echo "HAProxy config file found!"
 
 # Environment variables for Data Plane API
 HAPROXY_API_USER=${HAPROXY_API_USER:-admin}
@@ -22,7 +24,7 @@ mkdir -p $DATAPLANE_DIR
 chmod 777 $DATAPLANE_DIR
 
 echo "Starting Data Plane API as ${HAPROXY_API_USER}..."
-exec dataplaneapi --host 0.0.0.0 --port 5555 \
+exec /usr/local/bin/dataplaneapi --host 0.0.0.0 --port 5555 \
     --haproxy-bin /usr/local/sbin/haproxy \
     --config-file "$CONFIG_FILE" \
     --reload-cmd "kill -SIGUSR2 1" \

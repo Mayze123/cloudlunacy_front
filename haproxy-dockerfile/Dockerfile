@@ -10,10 +10,10 @@ RUN apk add --no-cache curl wget ca-certificates tar
 RUN mkdir -p /etc/haproxy/dataplaneapi && \
     chmod 777 /etc/haproxy/dataplaneapi
 
-# Download and install dataplaneapi directly
-RUN wget -qO /usr/local/bin/dataplaneapi https://github.com/haproxytech/dataplaneapi/releases/download/v2.6.0/dataplaneapi_2.6.0_linux_amd64 && \
+# Download and install dataplaneapi directly (using the correct URL format)
+RUN wget -q https://github.com/haproxytech/dataplaneapi/releases/download/v2.6.0/dataplaneapi_2.6.0_Linux_amd64 -O /usr/local/bin/dataplaneapi && \
     chmod +x /usr/local/bin/dataplaneapi && \
-    dataplaneapi -v
+    /usr/local/bin/dataplaneapi -v
 
 # Copy start scripts
 COPY start-dataplaneapi.sh /usr/local/bin/start-dataplaneapi.sh
