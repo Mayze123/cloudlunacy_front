@@ -20,7 +20,7 @@ dataplaneapi:
   # Log configuration
   log_targets:
     - log_to: stdout
-      log_level: debug # Increased to debug level for troubleshooting
+      log_level: info
 
   # API configuration
   resources:
