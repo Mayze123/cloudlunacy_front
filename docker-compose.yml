@@ -21,6 +21,8 @@ services:
     volumes:
       - ./config/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:rw
       - ./config/haproxy/dataplaneapi.yml:/usr/local/etc/haproxy/dataplaneapi.yml:rw
+      - ./haproxy-dockerfile/custom-entrypoint.sh:/usr/local/etc/haproxy/custom-entrypoint.sh:ro
+      - ./config/haproxy/docker-entrypoint-wrapper.sh:/usr/local/bin/docker-entrypoint-wrapper.sh:ro
       - ./config/certs:/etc/ssl/certs:ro
       - ./config/certs:/etc/ssl/private:ro
       - haproxy-data:/etc/haproxy/dataplaneapi
