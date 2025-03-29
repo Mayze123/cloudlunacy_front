@@ -35,5 +35,12 @@ fi
 echo "Starting HAProxy with configuration:"
 head -n 20 /tmp/haproxy.cfg
 
+# Start Data Plane API in the background
+echo "Starting Data Plane API..."
+dataplaneapi -f /usr/local/etc/haproxy/dataplaneapi.yml &
+
+# Wait a moment for the Data Plane API to initialize
+sleep 2
+
 # Run the original HAProxy entrypoint with our config
 exec docker-entrypoint.sh haproxy -f /tmp/haproxy.cfg "$@" 
