@@ -15,7 +15,7 @@ The HAProxy Data Plane API allows for dynamic configuration of HAProxy without r
 ```yaml
 services:
   haproxy:
-    image: haproxytech/haproxy-dataplaneapi:latest
+    image: haproxy:2.8-alpine
     ports:
       - "80:80"
       - "443:443"
@@ -93,7 +93,7 @@ HAPROXY_API_PASS=admin
 
 ### 4. Docker Entrypoint Wrapper
 
-Updated `docker-entrypoint-wrapper.sh` to support the Data Plane API:
+Updated `docker-entrypoint-wrapper.sh` to install and launch the Data Plane API:
 
 ```bash
 #!/bin/sh
@@ -101,12 +101,30 @@ set -e
 
 # ... existing script ...
 
-# Create dataplaneapi directory if it doesn't exist
-mkdir -p /etc/haproxy/dataplaneapi
+# Install dependencies for Alpine Linux
+apk add --no-cache curl wget ca-certificates tar
+
+# Install the Data Plane API
+mkdir -p /tmp/dataplaneapi
+cd /tmp/dataplaneapi
+wget -q https://github.com/haproxytech/dataplaneapi/releases/download/v2.8.0/dataplaneapi_2.8.0_Linux_x86_64.tar.gz
+tar xf dataplaneapi_2.8.0_Linux_x86_64.tar.gz
+cp dataplaneapi /usr/local/bin/
+chmod +x /usr/local/bin/dataplaneapi
 
 # Environment variables for Data Plane API
 export HAPROXY_API_USER=${HAPROXY_API_USER:-admin}
 export HAPROXY_API_PASS=${HAPROXY_API_PASS:-admin}
+
+# Start Data Plane API in the background
+nohup dataplaneapi --host 0.0.0.0 --port 5555 \
+    --haproxy-bin /usr/local/sbin/haproxy \
+    --config-file $FINAL_CONFIG \
+    --reload-cmd "kill -SIGUSR2 1" \
+    --reload-delay 5 \
+    --userlist dataplaneapi \
+    --log-level info \
+    > /var/log/dataplaneapi.log 2>&1 &
 
 # ... rest of script ...
 ```
