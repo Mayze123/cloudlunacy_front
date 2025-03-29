@@ -1,35 +1,19 @@
-# HAProxy Data Plane API v3 Configuration
+# Simple HAProxy Data Plane API configuration
 dataplaneapi:
   host: 0.0.0.0
   port: 5555
-  # API version 3 requires a single scheme value, not a list
   scheme: http
 
-  # HAProxy configuration
   haproxy:
     config_file: /usr/local/etc/haproxy/haproxy.cfg
-    haproxy_bin: /usr/local/sbin/haproxy
+    haproxy_bin: /usr/sbin/haproxy
 
-  # Userlist in the HAProxy configuration where credentials are defined
   userlist: dataplaneapi
 
-  # Transaction storage
-  transaction:
-    transaction_dir: /etc/haproxy/dataplaneapi
-
-  # Log configuration
   log_targets:
     - log_to: stdout
       log_level: info
 
-  # API configuration
   resources:
     reload_delay: 5
     reload_cmd: "kill -SIGUSR2 1"
-
-  # Detailed error reporting
-  api_detailed_errors: true
-
-  # Paths to key HAProxy runtime files
-  status:
-    stats_socket_path: /var/run/haproxy.sock

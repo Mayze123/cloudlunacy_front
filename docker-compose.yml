@@ -9,6 +9,8 @@ services:
       - node-app
     security_opt:
       - no-new-privileges:true
+    entrypoint: ["/usr/local/etc/haproxy/custom-entrypoint.sh"]
+    command: ["haproxy", "-f", "/usr/local/etc/haproxy/haproxy.cfg"]
     ports:
       - "80:80"
       - "443:443"
@@ -21,6 +23,7 @@ services:
     volumes:
       - ./config/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:rw
       - ./config/haproxy/dataplaneapi.yml:/usr/local/etc/haproxy/dataplaneapi.yml:rw
+      - ./config/haproxy/custom-entrypoint.sh:/usr/local/etc/haproxy/custom-entrypoint.sh:rw
       - ./config/certs:/etc/ssl/certs:rw
       - ./config/certs:/etc/ssl/private:rw
       - haproxy-data:/etc/haproxy/dataplaneapi
