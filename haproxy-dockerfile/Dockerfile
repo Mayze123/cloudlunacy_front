@@ -1,5 +1,8 @@
 FROM haproxy:2.8-alpine
 
+# Switch to root user for installations
+USER root
+
 # Install required packages
 RUN apk add --no-cache curl wget ca-certificates tar
 
@@ -19,11 +22,14 @@ RUN mkdir -p /etc/haproxy/dataplaneapi
 COPY start-dataplaneapi.sh /usr/local/bin/start-dataplaneapi.sh
 RUN chmod +x /usr/local/bin/start-dataplaneapi.sh
 
-EXPOSE 80 443 8404 5555 27017
-
 # Custom entrypoint script
 COPY custom-entrypoint.sh /usr/local/bin/custom-entrypoint.sh
 RUN chmod +x /usr/local/bin/custom-entrypoint.sh
+
+EXPOSE 80 443 8404 5555 27017
+
+# Switch back to the haproxy user
+USER haproxy
 
 ENTRYPOINT ["/usr/local/bin/custom-entrypoint.sh"]
 CMD ["haproxy", "-f", "/usr/local/etc/haproxy/haproxy.cfg"] 

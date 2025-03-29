@@ -16,6 +16,11 @@ HAPROXY_API_PASS=${HAPROXY_API_PASS:-admin}
 export HAPROXY_API_USER
 export HAPROXY_API_PASS
 
+# Create a temporary directory for dataplaneapi that the haproxy user can write to
+DATAPLANE_DIR="/tmp/dataplaneapi-data"
+mkdir -p $DATAPLANE_DIR
+chmod 777 $DATAPLANE_DIR
+
 echo "Starting Data Plane API as ${HAPROXY_API_USER}..."
 exec dataplaneapi --host 0.0.0.0 --port 5555 \
     --haproxy-bin /usr/local/sbin/haproxy \
@@ -23,4 +28,6 @@ exec dataplaneapi --host 0.0.0.0 --port 5555 \
     --reload-cmd "kill -SIGUSR2 1" \
     --reload-delay 5 \
     --userlist dataplaneapi \
-    --log-level info 
+    --log-level info \
+    --scheme http \
+    --transaction-dir $DATAPLANE_DIR 
