@@ -23,9 +23,15 @@ This document outlines the refactoring work done to streamline the CloudLunacy F
    - Improved error handling
 
 4. **Certificate Management Integration**
+
    - Updated `CertificateService` to work with HAProxy Data Plane API
    - Integrated certificate management with the HAProxy service
    - Automatic SSL/TLS certificate generation for MongoDB connections
+
+5. **Production-grade HAProxy Data Plane API**
+   - Migrated to the official HAProxy Data Plane API image
+   - Enhanced API security and reliability
+   - Improved configuration management with transactions
 
 ## Implemented File Structure
 
@@ -97,17 +103,16 @@ The HAProxy Data Plane API implementation includes:
 
 1. **Docker Configuration**
 
-   - Using the official `haproxy:2.8-alpine` image with manual Data Plane API installation
+   - Using the official `haproxytech/haproxy-debian-dataplaneapi` image
    - Exposed port 5555 for the Data Plane API
    - Added a persistent volume for the Data Plane API storage
    - Updated environment variables for API authentication
 
 2. **HAProxy Configuration**
 
-   - Updated HAProxy configuration to enable the Data Plane API
-   - Added authentication for API access
-   - Configured transaction support for atomic changes
-   - Set up proper socket access for runtime API
+   - Simplified HAProxy configuration by removing manual Data Plane API setup
+   - Leveraged built-in API features of the official image
+   - Configured proper socket access for runtime API
 
 3. **API Interaction**
    - Implemented transaction-based configuration updates
@@ -124,9 +129,18 @@ The CertificateService now integrates with the HAProxy Data Plane API to:
 3. Provide certificate renewal and management functionality
 4. Support secure connections to MongoDB backends
 
+## Documentation
+
+New documentation has been added to explain the HAProxy Data Plane API implementation:
+
+1. `PRODUCTION_DPAPI.md` - Details about the production implementation
+2. Updated architecture diagrams showing the Data Plane API integration
+3. Troubleshooting guides for common issues
+
 ## Future Improvements
 
 1. Add comprehensive test coverage for the new services
 2. Further improve error handling and logging
 3. Enhance documentation for the API endpoints
 4. Consider breaking out database functionality into a separate microservice
+5. Implement HTTPS for the Data Plane API in production environments

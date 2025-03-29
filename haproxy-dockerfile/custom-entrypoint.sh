@@ -1,15 +1,39 @@
 #!/bin/sh
 set -e
 
-echo "Starting HAProxy Data Plane API service..."
+echo "Starting HAProxy with custom configuration..."
 
-# Start Data Plane API in the background
-/usr/local/bin/start-dataplaneapi.sh &
-DATAPLANEAPI_PID=$!
+# Copy the original haproxy.cfg to a temporary file
+cp /usr/local/etc/haproxy/haproxy.cfg /tmp/haproxy.cfg
 
-# Give a moment for Data Plane API to start initializing
-sleep 2
+# Append Data Plane API configuration if not already present
+if ! grep -q "userlist dataplaneapi" /tmp/haproxy.cfg; then
+    echo "Adding Data Plane API configuration..."
+    cat << EOF >> /tmp/haproxy.cfg
 
-echo "Running HAProxy with standard entrypoint..."
-# Run the original HAProxy entrypoint with all arguments
-exec docker-entrypoint.sh "$@" 
+# Data Plane API User List
+userlist dataplaneapi
+    user ${HAPROXY_API_USER:-admin} insecure-password ${HAPROXY_API_PASS:-admin}
+
+# Data Plane API Frontend
+frontend dataplane_api
+    bind *:5555
+    stats enable
+    stats uri /stats
+    stats refresh 10s
+    option httplog
+    log global
+    acl authenticated http_auth(dataplaneapi)
+    http-request auth realm dataplane_api if !authenticated
+    http-request use-service prometheus-exporter if { path /metrics }
+    http-request use-service haproxy.http-errors status:500,429,503 if { path /health }
+    http-request use-service haproxy.http-errors status:200 if { path_beg /v1 } authenticated
+    http-request use-service haproxy.http-errors status:200 if { path_beg /v2 } authenticated
+EOF
+fi
+
+echo "Starting HAProxy with configuration:"
+head -n 20 /tmp/haproxy.cfg
+
+# Run the original HAProxy entrypoint with our config
+exec docker-entrypoint.sh haproxy -f /tmp/haproxy.cfg "$@" 

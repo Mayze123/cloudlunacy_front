@@ -21,7 +21,7 @@ class HAProxyService {
     this.certificateService = certificateService;
 
     // Data Plane API configuration
-    this.apiBaseUrl = process.env.HAPROXY_API_URL || "http://localhost:5555/v2";
+    this.apiBaseUrl = process.env.HAPROXY_API_URL || "http://haproxy:5555/v2";
     this.apiUsername = process.env.HAPROXY_API_USER || "admin";
     this.apiPassword = process.env.HAPROXY_API_PASS || "admin";
 
@@ -99,28 +99,38 @@ class HAProxyService {
         username: this.apiUsername,
         password: this.apiPassword,
       },
-      timeout: 10000,
+      timeout: 15000, // Increased timeout for production load
+      headers: {
+        "Content-Type": "application/json",
+      },
     });
   }
 
   /**
-   * Test connection to Data Plane API
+   * Test the connection to HAProxy Data Plane API
+   * @returns {Promise<boolean>} Connection test result
    */
   async _testApiConnection() {
     try {
       const client = this._getApiClient();
       const response = await client.get("/services/haproxy/info");
-      logger.info(
-        `Connected to HAProxy Data Plane API: version ${response.data.version}`
-      );
-      return true;
+
+      if (response.status === 200) {
+        logger.info("Successfully connected to HAProxy Data Plane API");
+        logger.debug(`HAProxy version: ${response.data.version}`);
+        return true;
+      }
+
+      return false;
     } catch (err) {
       logger.error(
-        `Failed to connect to HAProxy Data Plane API: ${err.message}`
+        `Failed to connect to HAProxy Data Plane API: ${err.message}`,
+        {
+          error: err.message,
+          stack: err.stack,
+        }
       );
-      throw new Error(
-        `Cannot connect to HAProxy Data Plane API: ${err.message}`
-      );
+      return false;
     }
   }
 
