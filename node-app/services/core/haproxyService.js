@@ -7,10 +7,9 @@
  * - MongoDB and Redis server management
  */
 
-const axios = require("axios");
 const logger = require("../../utils/logger").getLogger("haproxyService");
 const { AppError } = require("../../utils/errorHandler");
-const pathManager = require("../../utils/pathManager");
+const axios = require("axios");
 const { execAsync } = require("../../utils/exec");
 const { withRetry } = require("../../utils/retryHandler");
 
@@ -51,27 +50,53 @@ class HAProxyService {
    * Initialize the HAProxy service
    */
   async initialize() {
-    // Prevent re-initialization and circular dependencies
-    if (this.initialized || this._initializing) {
-      return this.initialized;
+    if (this.initialized) {
+      return true;
+    }
+
+    if (this._initializing) {
+      logger.info("HAProxy service initialization already in progress");
+      return false;
     }
 
     this._initializing = true;
-    logger.info("Initializing HAProxy service with Data Plane API");
+    logger.info("Initializing HAProxy service");
 
     try {
-      // Initialize path manager if needed
-      if (!pathManager.initialized) {
-        await pathManager.initialize();
+      // Try to connect to HAProxy Data Plane API with retry
+      const maxRetries = 5;
+      const retryDelay = 5000; // 5 seconds
+      let connected = false;
+      let retryCount = 0;
+
+      while (!connected && retryCount < maxRetries) {
+        try {
+          logger.info(
+            `Attempting to connect to HAProxy Data Plane API (attempt ${
+              retryCount + 1
+            }/${maxRetries})`
+          );
+          await this._testApiConnection();
+          connected = true;
+          logger.info("Successfully connected to HAProxy Data Plane API");
+        } catch (err) {
+          retryCount++;
+          if (retryCount >= maxRetries) {
+            throw err; // Re-throw after all retries
+          }
+          logger.warn(
+            `Failed to connect to HAProxy Data Plane API, retrying in ${
+              retryDelay / 1000
+            } seconds...`
+          );
+          await new Promise((resolve) => setTimeout(resolve, retryDelay));
+        }
       }
 
       // Verify HAProxy is running
       await this._verifyHAProxyRunning();
 
-      // Test API connection
-      await this._testApiConnection();
-
-      // Load existing configuration to extract routes
+      // Load HAProxy configuration
       await this._loadConfiguration();
 
       this.initialized = true;
