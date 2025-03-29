@@ -9,6 +9,13 @@ FINAL_CONFIG="/tmp/haproxy-final.cfg"
 CERT_FILE="/etc/ssl/certs/mongodb.crt"
 KEY_FILE="/etc/ssl/private/mongodb.key"
 
+# Create dataplaneapi directory if it doesn't exist
+mkdir -p /etc/haproxy/dataplaneapi
+
+# Environment variables for Data Plane API
+export HAPROXY_API_USER=${HAPROXY_API_USER:-admin}
+export HAPROXY_API_PASS=${HAPROXY_API_PASS:-admin}
+
 # Check if both certificate and key exist
 if [ -f "$CERT_FILE" ] && [ -f "$KEY_FILE" ]; then
     echo "MongoDB SSL certificates found. Configuring HAProxy with SSL support."

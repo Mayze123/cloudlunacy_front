@@ -2,9 +2,9 @@ version: "3.8"
 
 services:
   haproxy:
-    image: haproxy:2.8-alpine
+    image: haproxytech/haproxy-debian-dataplaneapi:latest
     container_name: haproxy
-    restart: always
+    restart: unless-stopped
     security_opt:
       - no-new-privileges:true
     depends_on:
@@ -14,14 +14,17 @@ services:
       - "443:443"
       - "8081:8081"
       - "27017:27017"
+      - "5555:5555" # Data Plane API port
     networks:
-      - haproxy-network
-      - cloudlunacy-network
+      - frontend
+      - backend
     volumes:
+      - ./config/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ./config/haproxy/docker-entrypoint-wrapper.sh:/docker-entrypoint-wrapper.sh:ro
+      - ./config/certs:/etc/ssl/certs:ro
+      - ./config/certs:/etc/ssl/private:ro
+      - haproxy-data:/etc/haproxy/dataplaneapi
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./config/haproxy:/usr/local/etc/haproxy
-      - ./config/certs:/etc/ssl/certs
-      - ./config/certs/private:/etc/ssl/private
       - /var/log/haproxy:/var/log/haproxy
     env_file:
       - ./.env
@@ -31,20 +34,21 @@ services:
       - CF_API_KEY=${CF_API_KEY}
       - CLOUDFLARE_DNS_API_TOKEN=${CF_DNS_API_TOKEN}
       - CF_ZONE_API_TOKEN=${CF_ZONE_API_TOKEN}
-    entrypoint: /usr/local/etc/haproxy/docker-entrypoint-wrapper.sh
+      - HAPROXY_API_USER=${HAPROXY_API_USER:-admin}
+      - HAPROXY_API_PASS=${HAPROXY_API_PASS:-admin}
+    entrypoint: ["/bin/sh", "/docker-entrypoint-wrapper.sh"]
     healthcheck:
-      test: ["CMD", "haproxy", "-c", "-f", "/tmp/haproxy-final.cfg"]
+      test: ["CMD", "curl", "-f", "http://localhost:5555/health"]
       interval: 10s
       timeout: 5s
       retries: 3
-      start_period: 30s
 
   certbot:
     image: certbot/certbot:latest
     container_name: certbot
     networks:
-      - haproxy-network
-      - cloudlunacy-network
+      - frontend
+      - backend
     volumes:
       - ./config/certs:/etc/letsencrypt
       - ./config/certbot/www:/var/www/certbot
@@ -63,8 +67,8 @@ services:
     container_name: cloudlunacy-front
     restart: always
     networks:
-      - haproxy-network
-      - cloudlunacy-network
+      - frontend
+      - backend
     ports:
       - "${NODE_PORT:-3005}:3005"
     volumes:
@@ -80,6 +84,9 @@ services:
       - MONGO_DOMAIN=${MONGO_DOMAIN:-mongodb.cloudlunacy.uk}
       - APP_DOMAIN=${APP_DOMAIN:-apps.cloudlunacy.uk}
       - HAPROXY_CONTAINER=haproxy
+      - HAPROXY_API_URL=http://haproxy:5555/v2
+      - HAPROXY_API_USER=${HAPROXY_API_USER:-admin}
+      - HAPROXY_API_PASS=${HAPROXY_API_PASS:-admin}
       - NODE_ENV=production
       - NODE_DEBUG=
     healthcheck:
@@ -89,9 +96,15 @@ services:
       retries: 3
       start_period: 10s
 
+volumes:
+  node-data:
+  certbot-data:
+  haproxy-data:
+
 networks:
-  haproxy-network:
+  frontend:
     name: haproxy-network
     external: true
-  cloudlunacy-network:
+  backend:
+    name: cloudlunacy-network
     external: true

@@ -91,6 +91,30 @@ The new HAProxyService now uses the HAProxy Data Plane API for all operations, m
 3. More secure by using proper API authentication
 4. Better able to handle configuration changes atomically
 
+### Implementation Details
+
+The HAProxy Data Plane API implementation includes:
+
+1. **Docker Configuration**
+
+   - Switched to the official `haproxytech/haproxy-debian-dataplaneapi` image
+   - Exposed port 5555 for the Data Plane API
+   - Added a persistent volume for the Data Plane API storage
+   - Updated environment variables for API authentication
+
+2. **HAProxy Configuration**
+
+   - Updated HAProxy configuration to enable the Data Plane API
+   - Added authentication for API access
+   - Configured transaction support for atomic changes
+   - Set up proper socket access for runtime API
+
+3. **API Interaction**
+   - Implemented transaction-based configuration updates
+   - Added support for backend and server management
+   - Created utility methods for common operations
+   - Implemented error handling and retry logic
+
 ## Certificate Management
 
 The CertificateService now integrates with the HAProxy Data Plane API to:

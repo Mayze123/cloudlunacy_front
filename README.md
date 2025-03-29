@@ -50,7 +50,7 @@ CloudLunacy Front Server is a comprehensive solution for managing dynamic routin
 - **Secure API:** Provides authenticated endpoints with role-based access control
 - **Health Monitoring:** Includes comprehensive health checks and self-healing capabilities
 - **Docker Integration:** Works seamlessly with Docker and Docker Compose environments
-- **Hot-Reload:** Leverages HAProxy's runtime API to apply configuration changes without requiring restarts
+- **Hot-Reload:** Leverages HAProxy's Data Plane API to apply configuration changes without requiring restarts
 
 ## Prerequisites
 
@@ -155,6 +155,11 @@ CF_ZONE_API_TOKEN=your_cloudflare_zone_api_token
 # Optional settings
 LOG_LEVEL=info                     # Logging level (debug, info, warn, error)
 HAPROXY_COMPOSE_PATH=/opt/haproxy/docker-compose.yml
+
+# HAProxy Data Plane API settings
+HAPROXY_API_URL=http://haproxy:5555/v2
+HAPROXY_API_USER=admin
+HAPROXY_API_PASS=admin
 ```
 
 ### HAProxy Configuration
@@ -454,6 +459,26 @@ View logs:
 docker logs haproxy
 ```
 
+#### HAProxy Data Plane API Issues
+
+Check if the API is running:
+
+```bash
+curl -u admin:admin http://localhost:5555/health
+```
+
+Verify API access:
+
+```bash
+curl -u admin:admin http://localhost:5555/v2/services/haproxy/info
+```
+
+If you need to restart the Data Plane API:
+
+```bash
+docker restart haproxy
+```
+
 #### Certificate Issues
 
 Verify certificate files:
@@ -492,10 +517,16 @@ docker ps
 docker network ls
 
 # Verify ports are open
-netstat -tulpn | grep -E '80|443|8081|27017'
+netstat -tulpn | grep -E '80|443|8081|27017|5555'
 
 # Test HAProxy configuration
 docker exec haproxy haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
+
+# Check Data Plane API status
+curl -u admin:admin http://localhost:5555/health
+
+# View available API endpoints
+curl -u admin:admin http://localhost:5555/v2
 ```
 
 ## API Reference
@@ -555,3 +586,29 @@ ISC
 ---
 
 For support or contributions, please visit the [GitHub repository](https://github.com/Mayze123/cloudlunacy_front).
+
+### HAProxy Data Plane API Configuration
+
+CloudLunacy Front Server now uses the HAProxy Data Plane API for all HAProxy interactions:
+
+```bash
+# HAProxy Data Plane API settings
+HAPROXY_API_URL=http://haproxy:5555/v2
+HAPROXY_API_USER=admin
+HAPROXY_API_PASS=admin
+```
+
+The Data Plane API provides several advantages:
+
+- Changes are applied atomically through transactions
+- Configuration is validated before being applied
+- No need to restart HAProxy when making changes
+- Secure authentication for all configuration operations
+
+You can access the Data Plane API directly at:
+
+```
+http://your-server:5555/v2/
+```
+
+Default credentials are configured in the `.env` file (admin/admin by default).
