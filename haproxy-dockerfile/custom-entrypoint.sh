@@ -86,6 +86,42 @@ fi
 echo "Starting HAProxy with configuration:"
 head -n 20 /tmp/haproxy.cfg
 
+# Verify the configuration before starting
+echo "Verifying HAProxy configuration..."
+if ! haproxy -c -f /tmp/haproxy.cfg; then
+    echo "ERROR: HAProxy configuration is invalid! Using fallback configuration..."
+    # Create a minimal working configuration
+    cat > /tmp/haproxy-minimal.cfg << EOF
+global
+    log stdout format raw local0 info
+    daemon
+    maxconn 4000
+
+defaults
+    log global
+    mode http
+    timeout connect 5s
+    timeout client 30s
+    timeout server 30s
+
+frontend stats
+    bind *:8081
+    stats enable
+    stats uri /stats
+    stats refresh 10s
+
+frontend app
+    bind *:80
+    default_backend app_backend
+
+backend app_backend
+    server app node-app:3005 check
+EOF
+    
+    echo "Using minimal fallback configuration."
+    cp /tmp/haproxy-minimal.cfg /tmp/haproxy.cfg
+fi
+
 # Start Data Plane API in the background
 echo "Starting Data Plane API..."
 dataplaneapi -f /usr/local/etc/haproxy/dataplaneapi.yml &
