@@ -80,6 +80,7 @@ frontend dataplane_api
     http-request use-service haproxy.http-errors status:500,429,503 if { path /health }
     http-request use-service haproxy.http-errors status:200 if { path_beg /v1 } authenticated
     http-request use-service haproxy.http-errors status:200 if { path_beg /v2 } authenticated
+    http-request use-service haproxy.http-errors status:200 if { path_beg /v3 } authenticated
 EOF
 fi
 
@@ -122,12 +123,12 @@ EOF
     cp /tmp/haproxy-minimal.cfg /tmp/haproxy.cfg
 fi
 
-# Start Data Plane API in the background
+# Start Data Plane API in the background with the correct configuration file path
 echo "Starting Data Plane API..."
 dataplaneapi -f /usr/local/etc/haproxy/dataplaneapi.yml &
 
 # Wait a moment for the Data Plane API to initialize
-sleep 2
+sleep 5
 
 # Run the original HAProxy entrypoint with our config
 exec docker-entrypoint.sh haproxy -f /tmp/haproxy.cfg "$@" 

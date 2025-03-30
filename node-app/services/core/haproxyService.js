@@ -21,7 +21,7 @@ class HAProxyService {
     this.certificateService = certificateService;
 
     // Data Plane API configuration
-    this.apiBaseUrl = process.env.HAPROXY_API_URL || "http://haproxy:5555/v2";
+    this.apiBaseUrl = process.env.HAPROXY_API_URL || "http://haproxy:5555/v3";
     this.apiUsername = process.env.HAPROXY_API_USER || "admin";
     this.apiPassword = process.env.HAPROXY_API_PASS || "admin";
 
@@ -125,7 +125,7 @@ class HAProxyService {
   async _testApiConnection() {
     try {
       const client = this._getApiClient();
-      const response = await client.get("/services/haproxy/info");
+      const response = await client.get("/info");
 
       if (response.status === 200) {
         logger.info("Successfully connected to HAProxy Data Plane API");
@@ -181,9 +181,7 @@ class HAProxyService {
       this.mongoDBServers = [];
 
       // Load backends to find HTTP routes
-      const backendsResponse = await client.get(
-        "/services/haproxy/configuration/backends"
-      );
+      const backendsResponse = await client.get("/configuration/backends");
       const backends = backendsResponse.data.data;
 
       // Extract HTTP routes
@@ -1163,7 +1161,7 @@ class HAProxyService {
       // 2. Test API connection
       try {
         const client = this._getApiClient();
-        const response = await client.get("/services/haproxy/info");
+        const response = await client.get("/info");
 
         if (response.status === 200) {
           health.apiConnected = true;

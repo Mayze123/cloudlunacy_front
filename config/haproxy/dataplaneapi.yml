@@ -1,8 +1,8 @@
 dataplaneapi:
   host: 0.0.0.0
   port: 5555
-  # Schemes: http or https (v2 supported both in a list, v3 is a single value)
-  scheme: ["http"]
+  # Schemes: http or https (v3 uses a single value instead of a list)
+  scheme: http
 
   # HAProxy configuration
   haproxy:

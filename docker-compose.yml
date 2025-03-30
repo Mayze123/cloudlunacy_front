@@ -40,7 +40,7 @@ services:
       - HAPROXY_API_USER=${HAPROXY_API_USER:-admin}
       - HAPROXY_API_PASS=${HAPROXY_API_PASS:-admin}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5555/v2/info"]
+      test: ["CMD", "curl", "-f", "http://localhost:5555/v3/health"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -86,7 +86,7 @@ services:
       - MONGO_DOMAIN=${MONGO_DOMAIN:-mongodb.cloudlunacy.uk}
       - APP_DOMAIN=${APP_DOMAIN:-apps.cloudlunacy.uk}
       - HAPROXY_CONTAINER=haproxy
-      - HAPROXY_API_URL=http://haproxy:5555/v2
+      - HAPROXY_API_URL=http://haproxy:5555/v3
       - HAPROXY_API_USER=${HAPROXY_API_USER:-admin}
       - HAPROXY_API_PASS=${HAPROXY_API_PASS:-admin}
       - NODE_ENV=production
