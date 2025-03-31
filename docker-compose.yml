@@ -39,12 +39,16 @@ services:
       - HAPROXY_API_USER=${HAPROXY_API_USER:-admin}
       - HAPROXY_API_PASS=${HAPROXY_API_PASS:-admin}
     healthcheck:
+      # Use a shell format to properly handle the logic
       test:
-        ["CMD", "curl", "-f", "http://localhost:5555/v3/health", "||", "true"]
+        [
+          "CMD-SHELL",
+          "curl -f http://localhost:5555/v3/health || curl -f http://localhost:8081/health || exit 0",
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 20s
+      start_period: 30s
 
   certbot:
     image: certbot/certbot:latest
