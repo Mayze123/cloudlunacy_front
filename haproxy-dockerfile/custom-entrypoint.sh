@@ -113,10 +113,10 @@ frontend dataplane_api
     acl authenticated http_auth(dataplaneapi)
     http-request auth realm dataplane_api if !authenticated
     http-request use-service prometheus-exporter if { path /metrics }
-    http-request use-service haproxy.http-errors status:500,429,503 if { path /health }
-    http-request use-service haproxy.http-errors status:200 if { path_beg /v1 } authenticated
-    http-request use-service haproxy.http-errors status:200 if { path_beg /v2 } authenticated
-    http-request use-service haproxy.http-errors status:200 if { path_beg /v3 } authenticated
+    http-request return status 200 content-type "text/plain" string "healthy" if { path /health }
+    http-request return status 200 content-type "application/json" string "{\"status\":\"OK\"}" if { path_beg /v1 } authenticated
+    http-request return status 200 content-type "application/json" string "{\"status\":\"OK\"}" if { path_beg /v2 } authenticated
+    http-request return status 200 content-type "application/json" string "{\"status\":\"OK\"}" if { path_beg /v3 } authenticated
 EOF
 fi
 
@@ -199,10 +199,10 @@ frontend dataplane_api
     acl authenticated http_auth(dataplaneapi)
     http-request auth realm dataplane_api if !authenticated
     http-request use-service prometheus-exporter if { path /metrics }
-    http-request use-service haproxy.http-errors status:200 if { path /health }
-    http-request use-service haproxy.http-errors status:200 if { path_beg /v1 } authenticated
-    http-request use-service haproxy.http-errors status:200 if { path_beg /v2 } authenticated
-    http-request use-service haproxy.http-errors status:200 if { path_beg /v3 } authenticated
+    http-request return status 200 content-type "text/plain" string "healthy" if { path /health }
+    http-request return status 200 content-type "application/json" string "{\"status\":\"OK\"}" if { path_beg /v1 } authenticated
+    http-request return status 200 content-type "application/json" string "{\"status\":\"OK\"}" if { path_beg /v2 } authenticated
+    http-request return status 200 content-type "application/json" string "{\"status\":\"OK\"}" if { path_beg /v3 } authenticated
 
 frontend app
     bind *:80
