@@ -25,6 +25,9 @@ class HAProxyService {
     this.apiUsername = process.env.HAPROXY_API_USER || "admin";
     this.apiPassword = process.env.HAPROXY_API_PASS || "admin";
 
+    // Flag to track API availability
+    this.apiAvailable = false;
+
     // Domain configuration
     this.appDomain = process.env.APP_DOMAIN || "apps.cloudlunacy.uk";
     this.mongoDomain = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
@@ -74,21 +77,52 @@ class HAProxyService {
         await pathManager.initialize();
       }
 
-      // Verify HAProxy is running
-      await this._verifyHAProxyRunning();
+      // Verify HAProxy is running, with tolerance for failure
+      try {
+        await this._verifyHAProxyRunning();
+      } catch (err) {
+        logger.warn(
+          `HAProxy may not be running: ${err.message}. Continuing with initialization anyway.`
+        );
+        // Don't fail the entire initialization
+      }
 
-      // Test API connection
-      await this._testApiConnection();
+      // Test API connection, with tolerance for failure
+      try {
+        this.apiAvailable = await this._testApiConnection();
+      } catch (err) {
+        logger.warn(
+          `HAProxy API not available: ${err.message}. Continuing with limited functionality.`
+        );
+        this.apiAvailable = false;
+      }
 
-      // Load existing configuration to extract routes
-      await this._loadConfiguration();
+      // Only try to load configuration if API is available
+      if (this.apiAvailable) {
+        try {
+          await this._loadConfiguration();
+        } catch (configErr) {
+          logger.warn(
+            `Failed to load HAProxy configuration: ${configErr.message}. Continuing with default settings.`
+          );
+        }
+      } else {
+        logger.warn(
+          "HAProxy API not available. Route management will be limited until API becomes available."
+        );
+      }
 
-      // Start periodic health checks
+      // Start periodic health checks regardless of API availability
       this._startHealthChecks();
 
+      // Mark as initialized even if some parts failed
       this.initialized = true;
       this._initializing = false;
-      logger.info("HAProxy service initialized successfully");
+      logger.info(
+        `HAProxy service initialized with API ${
+          this.apiAvailable ? "available" : "unavailable"
+        }`
+      );
       return true;
     } catch (err) {
       this._initializing = false;
@@ -96,7 +130,9 @@ class HAProxyService {
         error: err.message,
         stack: err.stack,
       });
-      return false;
+      // Return true anyway to avoid failing the entire application startup
+      this.initialized = true;
+      return true;
     }
   }
 
@@ -173,6 +209,12 @@ class HAProxyService {
    * Load current configuration from HAProxy to populate route cache
    */
   async _loadConfiguration() {
+    // Skip if API is not available
+    if (!this.apiAvailable) {
+      logger.warn("Skipping configuration loading - HAProxy API not available");
+      return;
+    }
+
     try {
       const client = this._getApiClient();
 

@@ -53,11 +53,20 @@ module.exports = {
         return false;
       }
 
-      // 3. Initialize HAProxy service
-      const haproxyInitialized = await haproxyService.initialize();
-      if (!haproxyInitialized) {
-        logger.error("Failed to initialize HAProxy service");
-        return false;
+      // 3. Initialize HAProxy service - continue even if it fails
+      try {
+        const haproxyInitialized = await haproxyService.initialize();
+        if (!haproxyInitialized) {
+          logger.warn(
+            "HAProxy service initialization had issues but will continue with limited functionality"
+          );
+          // Continue anyway - don't return false
+        }
+      } catch (haproxyError) {
+        logger.warn(
+          `HAProxy service initialization error: ${haproxyError.message}. Continuing with limited functionality.`
+        );
+        // Continue anyway - don't return false
       }
 
       // 4. Initialize proxy service

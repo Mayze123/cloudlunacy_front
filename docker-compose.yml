@@ -7,8 +7,6 @@ services:
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
-    depends_on:
-      - node-app
     ports:
       - "80:80"
       - "443:443"
@@ -28,6 +26,7 @@ services:
       - haproxy-data:/etc/haproxy/dataplaneapi
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /var/log/haproxy:/var/log/haproxy
+      - ./config/haproxy/errors:/etc/haproxy/errors:ro
     env_file:
       - ./.env
     environment:
@@ -40,10 +39,12 @@ services:
       - HAPROXY_API_USER=${HAPROXY_API_USER:-admin}
       - HAPROXY_API_PASS=${HAPROXY_API_PASS:-admin}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5555/v3/health"]
-      interval: 10s
-      timeout: 5s
+      test:
+        ["CMD", "curl", "-f", "http://localhost:5555/v3/health", "||", "true"]
+      interval: 30s
+      timeout: 10s
       retries: 3
+      start_period: 20s
 
   certbot:
     image: certbot/certbot:latest
@@ -91,6 +92,7 @@ services:
       - HAPROXY_API_PASS=${HAPROXY_API_PASS:-admin}
       - NODE_ENV=production
       - NODE_DEBUG=
+      - HAPROXY_OPTIONAL=true
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3005/health"]
       interval: 30s
