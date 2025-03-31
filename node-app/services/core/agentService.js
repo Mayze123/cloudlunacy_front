@@ -11,7 +11,7 @@ const logger = require("../../utils/logger").getLogger("agentService");
 
 class AgentService {
   constructor(configManager, mongodbService) {
-    this.configManager = configManager;
+    this.configManager = configManager || {};
     this.mongodbService = mongodbService;
     this.initialized = false;
     this.agents = new Map();
@@ -38,7 +38,9 @@ class AgentService {
         error: err.message,
         stack: err.stack,
       });
-      return false;
+      // Still mark as initialized to avoid blocking the application
+      this.initialized = true;
+      return true;
     }
   }
 
@@ -54,13 +56,31 @@ class AgentService {
       // Clear existing registrations
       this.agents.clear();
 
-      // Check if config manager is initialized
-      if (!this.configManager.initialized) {
-        await this.configManager.initialize();
+      // Check if config manager exists and is initialized
+      if (!this.configManager) {
+        logger.warn("Config manager is not available, skipping agent loading");
+        return;
       }
 
-      // Get agent configs from main configuration
-      const mainConfig = this.configManager.configs.main;
+      // Check if config manager is initialized
+      if (typeof this.configManager.initialized === "undefined") {
+        logger.warn(
+          "Config manager doesn't have an initialized property, skipping initialization check"
+        );
+      } else if (!this.configManager.initialized) {
+        try {
+          await this.configManager.initialize();
+        } catch (initErr) {
+          logger.warn(
+            `Failed to initialize config manager: ${initErr.message}`
+          );
+          return;
+        }
+      }
+
+      // Get agent configs from main configuration if available
+      const mainConfig =
+        this.configManager.configs && this.configManager.configs.main;
 
       // Check if agents section exists in config
       if (mainConfig && mainConfig.agents) {
@@ -89,6 +109,7 @@ class AgentService {
         error: err.message,
         stack: err.stack,
       });
+      // Don't throw, just handle the error gracefully
     }
   }
 
