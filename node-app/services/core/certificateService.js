@@ -248,6 +248,104 @@ IP.1 = ${targetIp}
   }
 
   /**
+   * Alias for createCertificateForAgent to maintain API compatibility
+   * @param {string} agentId - Agent ID
+   * @param {string} targetIp - Target IP address
+   * @returns {Promise<Object>} Result with certificate paths and contents
+   */
+  async generateAgentCertificate(agentId, targetIp) {
+    try {
+      if (!this.initialized) {
+        await this.initialize();
+      }
+
+      // Create certificates first
+      const result = await this.createCertificateForAgent(agentId, targetIp);
+
+      if (!result.success) {
+        return result;
+      }
+
+      // Read content of cert files to include in response
+      const caCert = await fs.readFile(this.caCertPath, "utf8");
+      const serverCert = await fs.readFile(result.certPath, "utf8");
+      const serverKey = await fs.readFile(result.keyPath, "utf8");
+
+      return {
+        success: true,
+        agentId,
+        keyPath: result.keyPath,
+        certPath: result.certPath,
+        pemPath: result.pemPath,
+        caPath: this.caCertPath,
+        caCert,
+        serverCert,
+        serverKey,
+      };
+    } catch (err) {
+      logger.error(
+        `Failed to generate certificate for agent ${agentId}: ${err.message}`
+      );
+      return {
+        success: false,
+        error: err.message,
+      };
+    }
+  }
+
+  /**
+   * Get agent certificate files
+   * @param {string} agentId - Agent ID
+   * @returns {Promise<Object>} Certificate files and paths
+   */
+  async getAgentCertificates(agentId) {
+    try {
+      if (!this.initialized) {
+        await this.initialize();
+      }
+
+      const agentCertDir = path.join(this.certsDir, "agents", agentId);
+      const keyPath = path.join(agentCertDir, "server.key");
+      const certPath = path.join(agentCertDir, "server.crt");
+      const pemPath = path.join(agentCertDir, "server.pem");
+
+      // Check if certificate exists
+      try {
+        await fs.access(certPath);
+        await fs.access(keyPath);
+      } catch (err) {
+        logger.warn(`Certificates for agent ${agentId} not found`);
+        return {
+          success: false,
+          error: `Certificates for agent ${agentId} not found`,
+        };
+      }
+
+      // Read certificate files
+      const serverCert = await fs.readFile(certPath, "utf8");
+      const serverKey = await fs.readFile(keyPath, "utf8");
+      const caCert = await fs.readFile(this.caCertPath, "utf8");
+
+      return {
+        agentId,
+        domain: `${agentId}.${this.mongoDomain}`,
+        serverKey,
+        serverCert,
+        caCert,
+        keyPath,
+        certPath,
+        caPath: this.caCertPath,
+        pemPath,
+      };
+    } catch (err) {
+      logger.error(
+        `Failed to get agent certificates for ${agentId}: ${err.message}`
+      );
+      throw err;
+    }
+  }
+
+  /**
    * Update HAProxy certificates through Data Plane API
    * @param {string} agentId - Agent ID
    * @param {string} certPath - Path to server certificate
