@@ -616,8 +616,75 @@ agent:
         this.configs.haproxy &&
         this.configs.haproxy.includes(`redis-agent-${agentId}`);
 
-      // Return agent configuration summary
-      return {
+      // Generate certificates if they don't exist or need refreshing
+      let certificates = null;
+      try {
+        // Check if we have access to the certificate service
+        const coreServices = require("../core");
+        if (coreServices && coreServices.certificateService) {
+          logger.info(`Generating certificates for agent ${agentId}`);
+
+          // Get the agent's IP address from agent service if available
+          let agentIp = null;
+          if (coreServices.agentService) {
+            try {
+              // Check if agent service has a record for this agent
+              const agentData = coreServices.agentService.agents.get(agentId);
+              if (agentData && agentData.targetIp) {
+                agentIp = agentData.targetIp;
+                logger.info(`Using stored IP ${agentIp} for agent ${agentId}`);
+              }
+            } catch (ipErr) {
+              logger.warn(
+                `Failed to get agent IP for ${agentId}: ${ipErr.message}`
+              );
+            }
+          }
+
+          // If no IP found, use a fallback that works with the agent
+          if (!agentIp) {
+            // Use a more appropriate fallback than localhost
+            // Extract IP from request if possible or use a default
+            agentIp = "0.0.0.0"; // This is better than 127.0.0.1 for certificates
+            logger.warn(
+              `Using fallback IP ${agentIp} for agent ${agentId} certificates`
+            );
+          }
+
+          // Generate certificates
+          const certResult =
+            await coreServices.certificateService.generateAgentCertificate(
+              agentId,
+              agentIp
+            );
+
+          if (certResult && certResult.success) {
+            certificates = {
+              caCert: certResult.caCert,
+              serverCert: certResult.serverCert,
+              serverKey: certResult.serverKey,
+            };
+            logger.info(`Certificates generated for agent ${agentId}`);
+          } else {
+            logger.warn(
+              `Failed to generate certificates for agent ${agentId}: ${
+                certResult ? certResult.error : "Unknown error"
+              }`
+            );
+          }
+        } else {
+          logger.warn(
+            `Certificate service not available, skipping certificate generation for agent ${agentId}`
+          );
+        }
+      } catch (certErr) {
+        logger.error(
+          `Error generating certificates for agent ${agentId}: ${certErr.message}`
+        );
+      }
+
+      // Return agent configuration summary with certificates if available
+      const result = {
         success: true,
         agentId,
         haproxy: {
@@ -631,6 +698,13 @@ agent:
           app: `*.${agentId}.${this.domains.app}`,
         },
       };
+
+      // Add certificates if available
+      if (certificates) {
+        result.certificates = certificates;
+      }
+
+      return result;
     } catch (err) {
       logger.error(
         `Failed to get agent config for ${agentId}: ${err.message}`,
