@@ -557,6 +557,68 @@ ${serverLine}`,
   }
 
   /**
+   * Get configuration for a specific agent
+   * @param {string} agentId - Agent ID
+   * @returns {Promise<Object>} Agent configuration
+   */
+  async getAgentConfig(agentId) {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+
+    try {
+      // Construct the agent config file path
+      const agentConfigPath = path.join(this.paths.agents, `${agentId}.yml`);
+
+      // Check if the agent config file exists
+      try {
+        await fs.access(agentConfigPath);
+      } catch (_err) {
+        logger.warn(`Agent config file not found for agent ${agentId}`);
+        return {
+          success: false,
+          message: `No configuration found for agent ${agentId}`,
+        };
+      }
+
+      // Look for MongoDB backend for this agent
+      const mongoBackendExists =
+        this.configs.haproxy &&
+        this.configs.haproxy.includes(`mongodb-agent-${agentId}`);
+
+      // Look for Redis backend for this agent
+      const redisBackendExists =
+        this.configs.haproxy &&
+        this.configs.haproxy.includes(`redis-agent-${agentId}`);
+
+      // Return agent configuration summary
+      return {
+        success: true,
+        agentId,
+        haproxy: {
+          mongodb: mongoBackendExists,
+          redis: redisBackendExists,
+        },
+        domains: {
+          mongodb: mongoBackendExists
+            ? `${agentId}.${this.domains.mongo}`
+            : null,
+          app: `*.${agentId}.${this.domains.app}`,
+        },
+      };
+    } catch (err) {
+      logger.error(
+        `Failed to get agent config for ${agentId}: ${err.message}`,
+        {
+          error: err.message,
+          stack: err.stack,
+        }
+      );
+      throw err;
+    }
+  }
+
+  /**
    * List all agent IDs
    */
   async listAgents() {
