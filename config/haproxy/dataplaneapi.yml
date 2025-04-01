@@ -9,6 +9,12 @@ dataplaneapi:
     config_file: /usr/local/etc/haproxy/haproxy.cfg
     haproxy_bin: /usr/local/sbin/haproxy
 
+  # User authentication - Adding this to fix the authentication issue
+  users:
+    - username: admin
+      password: admin
+      insecure: true
+
   # Userlist in the HAProxy configuration where credentials are defined
   userlist:
     userlist_file: /usr/local/etc/haproxy/haproxy.cfg

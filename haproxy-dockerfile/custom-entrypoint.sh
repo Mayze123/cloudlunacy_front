@@ -100,7 +100,7 @@ if ! grep -q "userlist dataplaneapi" /tmp/haproxy.cfg; then
 
 # Data Plane API User List
 userlist dataplaneapi
-    user ${HAPROXY_API_USER:-admin} insecure-password ${HAPROXY_API_PASS:-admin}
+    user admin insecure-password admin
 
 # Data Plane API Frontend
 frontend dataplane_api
@@ -186,7 +186,7 @@ frontend stats
 
 # Data Plane API User List
 userlist dataplaneapi
-    user ${HAPROXY_API_USER:-admin} insecure-password ${HAPROXY_API_PASS:-admin}
+    user admin insecure-password admin
 
 # Data Plane API Frontend
 frontend dataplane_api
@@ -231,7 +231,7 @@ API_READY=false
 
 while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
     sleep 3
-    if curl -s -f -u "${HAPROXY_API_USER:-admin}:${HAPROXY_API_PASS:-admin}" http://localhost:5555/v3/info > /dev/null 2>&1; then
+    if curl -s -f -u "admin:admin" http://localhost:5555/v3/info > /dev/null 2>&1; then
         echo "Data Plane API is available!"
         API_READY=true
         break
