@@ -434,7 +434,8 @@ ${serverLine}`,
 
         // Also add the frontend if it doesn't exist
         if (!this.configs.haproxy.includes("frontend redis-in")) {
-          updatedConfig += `\n# Frontend for Redis traffic\nfrontend redis-in\n    bind *:6379\n    mode tcp\n    option tcplog\n    default_backend redis_default\n`;
+          updatedConfig +=
+            "\n# Frontend for Redis traffic\nfrontend redis-in\n    bind *:6379\n    mode tcp\n    option tcplog\n    default_backend redis_default\n";
         }
       } else {
         // Backend exists, check if this agent already has a server line
@@ -571,13 +572,37 @@ ${serverLine}`,
       const agentConfigPath = path.join(this.paths.agents, `${agentId}.yml`);
 
       // Check if the agent config file exists
+      let configExists = true;
       try {
         await fs.access(agentConfigPath);
       } catch (_err) {
-        logger.warn(`Agent config file not found for agent ${agentId}`);
+        configExists = false;
+        logger.warn(
+          `Agent config file not found for agent ${agentId}, will create one`
+        );
+
+        // Create a basic agent configuration file
+        const basicConfig = `# Configuration for agent ${agentId}
+agent:
+  id: ${agentId}
+  registered: true
+  registeredAt: ${new Date().toISOString()}
+`;
+        try {
+          await fs.writeFile(agentConfigPath, basicConfig, "utf8");
+          logger.info(`Created basic configuration file for agent ${agentId}`);
+          configExists = true;
+        } catch (writeErr) {
+          logger.error(
+            `Failed to create agent config file: ${writeErr.message}`
+          );
+        }
+      }
+
+      if (!configExists) {
         return {
           success: false,
-          message: `No configuration found for agent ${agentId}`,
+          message: `Failed to create configuration for agent ${agentId}`,
         };
       }
 
