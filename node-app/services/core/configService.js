@@ -227,14 +227,21 @@ backend mongodb_default
 
 # Frontend for MongoDB traffic with TLS/SSL and SNI support
 frontend mongodb-in
-    bind *:27017 ssl crt /etc/ssl/certs/mongodb.pem
+    # Use certificate list to support multiple agent certificates
+    bind *:27017 ssl crt-list /etc/ssl/certs/mongodb-certs.list
     mode tcp
     option tcplog
+    
+    # Add enhanced logging to debug SSL connections
+    log-format "%ci:%cp [%t] %ft %b/%s %Tw/%Tc/%Tt %B %ts %ac/%fc/%bc/%sc/%rc %sq/%bq sslv:%sslv sni:%[ssl_fc_sni] %[ssl_fc_session_id,hex]"
     
     # Extract the agent ID from the SNI hostname for routing
     http-request set-var(txn.agent_id) req.ssl_sni,field(1,".")
     
-    # Use the agent ID to route traffic based on SNI
+    # Use agent-specific backend if SNI is provided
+    use_backend %[ssl_fc_sni,field(1,'.')]-mongodb-backend if { ssl_fc_has_sni }
+    
+    # Default backend if no SNI
     default_backend mongodb_default`;
   }
 

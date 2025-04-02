@@ -13,6 +13,7 @@ const { AppError } = require("../../utils/errorHandler");
 const pathManager = require("../../utils/pathManager");
 const { execAsync } = require("../../utils/exec");
 const { withRetry } = require("../../utils/retryHandler");
+const fs = require("fs").promises;
 
 class HAProxyService {
   constructor(certificateService) {
@@ -1049,7 +1050,20 @@ class HAProxyService {
         logger.info("TCP frontend exists");
       } catch (err) {
         if (err.response && err.response.status === 404) {
-          // Create TCP frontend
+          // Check if certificate list exists
+          let certListExists = false;
+          try {
+            await fs.access("/etc/ssl/certs/mongodb-certs.list");
+            certListExists = true;
+            logger.info(
+              "Found certificate list at /etc/ssl/certs/mongodb-certs.list"
+            );
+          } catch (err) {
+            // Ignore error but log warning
+            logger.warn(`Certificate list not found: ${err.code}`);
+          }
+
+          // Create TCP frontend with certificate list if available
           const frontendData = {
             name: "tcp-in",
             mode: "tcp",
@@ -1059,9 +1073,11 @@ class HAProxyService {
                 name: "mongodb",
                 address: "*",
                 port: 27017,
-                ssl: {
-                  crt_list: "/etc/ssl/private/mongo-cert.pem",
-                },
+                ssl: certListExists
+                  ? {
+                      crt_list: "/etc/ssl/certs/mongodb-certs.list",
+                    }
+                  : undefined,
               },
             ],
           };
@@ -1070,7 +1086,11 @@ class HAProxyService {
             `/services/haproxy/configuration/frontends?transaction_id=${this.currentTransaction}`,
             frontendData
           );
-          logger.info("Created TCP frontend for MongoDB");
+          logger.info(
+            `Created TCP frontend for MongoDB ${
+              certListExists ? "with" : "without"
+            } SSL`
+          );
         } else {
           throw err;
         }
@@ -1385,6 +1405,232 @@ class HAProxyService {
     } catch (err) {
       logger.error(`Failed to get stats from socket: ${err.message}`);
       return null;
+    }
+  }
+
+  /**
+   * Create or update a MongoDB backend for an agent
+   * @param {Object} transaction - Transaction information
+   * @param {string} backendName - Backend name
+   * @param {string} targetHost - Target host
+   * @param {number} targetPort - Target port
+   * @param {Object} options - Additional options
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _createOrUpdateMongoBackend(
+    transaction,
+    backendName,
+    targetHost,
+    targetPort,
+    options = {}
+  ) {
+    try {
+      const client = this._getApiClient();
+
+      // Check if backend exists
+      let backendExists = false;
+      try {
+        await client.get(
+          `/services/haproxy/configuration/backends/${backendName}?transaction_id=${transaction.id}`
+        );
+        backendExists = true;
+      } catch (err) {
+        if (err.response && err.response.status === 404) {
+          // Backend doesn't exist
+          backendExists = false;
+        } else {
+          throw err;
+        }
+      }
+
+      // Create or update backend
+      if (backendExists) {
+        // Update existing backend
+        await client.put(
+          `/services/haproxy/configuration/backends/${backendName}?transaction_id=${transaction.id}`,
+          {
+            mode: "tcp",
+            balance: { algorithm: "roundrobin" },
+          }
+        );
+      } else {
+        // Create new backend
+        await client.post(
+          `/services/haproxy/configuration/backends?transaction_id=${transaction.id}`,
+          {
+            name: backendName,
+            mode: "tcp",
+            balance: { algorithm: "roundrobin" },
+          }
+        );
+      }
+
+      // Check if server exists
+      const serverName = `server-${backendName}`;
+      let serverExists = false;
+      try {
+        await client.get(
+          `/services/haproxy/configuration/servers/${serverName}?backend=${backendName}&transaction_id=${transaction.id}`
+        );
+        serverExists = true;
+      } catch (err) {
+        if (err.response && err.response.status === 404) {
+          // Server doesn't exist
+          serverExists = false;
+        } else {
+          throw err;
+        }
+      }
+
+      // Create or update server with TLS settings
+      const serverData = {
+        name: serverName,
+        address: targetHost,
+        port: targetPort,
+        check: "enabled",
+      };
+
+      // Add TLS settings if enabled
+      if (options.useTls !== false) {
+        serverData.ssl = {
+          enabled: true,
+          verify: "none",
+          ca_file: options.caFile || "/etc/ssl/certs/ca.crt",
+        };
+
+        // Add client certificate if available
+        if (options.sslCertPath) {
+          serverData.ssl.crt_file = options.sslCertPath;
+        }
+      }
+
+      if (serverExists) {
+        // Update existing server
+        await client.put(
+          `/services/haproxy/configuration/servers/${serverName}?backend=${backendName}&transaction_id=${transaction.id}`,
+          serverData
+        );
+      } else {
+        // Create new server
+        await client.post(
+          `/services/haproxy/configuration/servers?backend=${backendName}&transaction_id=${transaction.id}`,
+          serverData
+        );
+      }
+
+      logger.info(
+        `Created/updated MongoDB backend ${backendName} for target ${targetHost}:${targetPort}`
+      );
+    } catch (err) {
+      logger.error(`Failed to create/update MongoDB backend: ${err.message}`);
+      throw err;
+    }
+  }
+
+  /**
+   * Set up MongoDB frontend routing for an agent
+   * @param {Object} transaction - Transaction information
+   * @param {string} agentId - Agent ID
+   * @param {string} backendName - Backend name
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _setupMongoFrontend(transaction, agentId, backendName) {
+    try {
+      const client = this._getApiClient();
+
+      // First check if the frontend exists
+      const frontendName = "mongodb-in";
+      let frontendExists = false;
+
+      try {
+        await client.get(
+          `/services/haproxy/configuration/frontends/${frontendName}?transaction_id=${transaction.id}`
+        );
+        frontendExists = true;
+      } catch (err) {
+        if (err.response && err.response.status === 404) {
+          // Frontend doesn't exist, need to create it
+          frontendExists = false;
+        } else {
+          throw err;
+        }
+      }
+
+      // Create frontend if it doesn't exist
+      if (!frontendExists) {
+        await client.post(
+          `/services/haproxy/configuration/frontends?transaction_id=${transaction.id}`,
+          {
+            name: frontendName,
+            mode: "tcp",
+            default_backend: "mongodb_default",
+            binds: [
+              {
+                name: "mongodb",
+                address: "*",
+                port: 27017,
+                ssl: {
+                  crt_list: "/etc/ssl/certs/mongodb-certs.list",
+                },
+              },
+            ],
+          }
+        );
+      }
+
+      // Add use_backend rule based on SNI
+      const ruleName = `use-backend-${agentId}-mongo`;
+
+      // Check if rule already exists
+      let ruleExists = false;
+      try {
+        const rulesResponse = await client.get(
+          `/services/haproxy/configuration/tcp_request_rules?parent_name=${frontendName}&parent_type=frontend&transaction_id=${transaction.id}`
+        );
+
+        const rule = rulesResponse.data.data.find((r) => r.name === ruleName);
+        ruleExists = !!rule;
+
+        if (ruleExists) {
+          // Update existing rule
+          await client.put(
+            `/services/haproxy/configuration/tcp_request_rules/${rule.index}?parent_name=${frontendName}&parent_type=frontend&transaction_id=${transaction.id}`,
+            {
+              name: ruleName,
+              type: "use-backend",
+              backend: backendName,
+              condition: `if { ssl_fc_sni -i ${agentId}.${this.mongoDomain} }`,
+            }
+          );
+        }
+      } catch (err) {
+        if (err.response && err.response.status === 404) {
+          // No rules found
+          ruleExists = false;
+        } else {
+          throw err;
+        }
+      }
+
+      // Create rule if it doesn't exist
+      if (!ruleExists) {
+        await client.post(
+          `/services/haproxy/configuration/tcp_request_rules?parent_name=${frontendName}&parent_type=frontend&transaction_id=${transaction.id}`,
+          {
+            name: ruleName,
+            type: "use-backend",
+            backend: backendName,
+            condition: `if { ssl_fc_sni -i ${agentId}.${this.mongoDomain} }`,
+          }
+        );
+      }
+
+      logger.info(`Set up MongoDB frontend routing for agent ${agentId}`);
+    } catch (err) {
+      logger.error(`Failed to set up MongoDB frontend: ${err.message}`);
+      throw err;
     }
   }
 }

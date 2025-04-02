@@ -346,6 +346,47 @@ IP.1 = ${targetIp}
   }
 
   /**
+   * Reload HAProxy to apply certificate changes
+   * @returns {Promise<Object>} Result of the operation
+   */
+  async reloadHAProxy() {
+    try {
+      logger.info("Reloading HAProxy to apply certificate changes");
+
+      // Try using Docker to reload HAProxy
+      try {
+        const haproxyContainer = process.env.HAPROXY_CONTAINER || "haproxy";
+        await execAsync(
+          `docker exec ${haproxyContainer} service haproxy reload`
+        );
+        logger.info("HAProxy reloaded successfully via Docker command");
+        return { success: true, message: "HAProxy reloaded successfully" };
+      } catch (dockerErr) {
+        logger.warn(
+          `Failed to reload HAProxy via Docker: ${dockerErr.message}`
+        );
+
+        // Fallback to Data Plane API
+        try {
+          const client = this._getApiClient();
+          await client.post("/services/haproxy/reload");
+          logger.info("HAProxy reloaded successfully via Data Plane API");
+          return {
+            success: true,
+            message: "HAProxy reloaded successfully via API",
+          };
+        } catch (apiErr) {
+          logger.error(`Failed to reload HAProxy via API: ${apiErr.message}`);
+          throw apiErr;
+        }
+      }
+    } catch (err) {
+      logger.error(`Failed to reload HAProxy: ${err.message}`);
+      return { success: false, error: err.message };
+    }
+  }
+
+  /**
    * Update HAProxy certificates through Data Plane API
    * @param {string} agentId - Agent ID
    * @param {string} certPath - Path to server certificate
@@ -357,38 +398,86 @@ IP.1 = ${targetIp}
     try {
       logger.info(`Updating HAProxy certificates for agent ${agentId}`);
 
-      // Copy files to system locations for HAProxy
+      // Base directories for HAProxy certificates
       const haproxyCertsDir = "/etc/ssl/certs";
       const haproxyPrivateDir = "/etc/ssl/private";
+      const mongodbCertsDir = path.join(haproxyCertsDir, "mongodb");
+      const certListPath = path.join(haproxyCertsDir, "mongodb-certs.list");
 
       try {
         // Create directories if they don't exist
         await fs.mkdir(haproxyCertsDir, { recursive: true });
         await fs.mkdir(haproxyPrivateDir, { recursive: true });
+        await fs.mkdir(mongodbCertsDir, { recursive: true });
 
-        // Copy certificate and key
+        // Define agent-specific filenames
+        const agentPemPath = path.join(mongodbCertsDir, `${agentId}.pem`);
+
+        // Copy PEM file to agent-specific location
+        await fs.copyFile(pemPath, agentPemPath);
+        await fs.chmod(agentPemPath, 0o600);
+
+        // Also maintain backwards compatibility with individual cert/key files
         const certsFilename = `${agentId}-mongodb.crt`;
         const keyFilename = `${agentId}-mongodb.key`;
-        const pemFilename = `${agentId}-mongodb.pem`;
-
         const targetCertPath = path.join(haproxyCertsDir, certsFilename);
         const targetKeyPath = path.join(haproxyPrivateDir, keyFilename);
-        const targetPemPath = path.join(haproxyPrivateDir, pemFilename);
 
         await fs.copyFile(certPath, targetCertPath);
         await fs.copyFile(keyPath, targetKeyPath);
-        await fs.copyFile(pemPath, targetPemPath);
-
         await fs.chmod(targetCertPath, 0o644);
         await fs.chmod(targetKeyPath, 0o600);
-        await fs.chmod(targetPemPath, 0o600);
 
         logger.info(
           `Copied certificates to HAProxy directories for agent ${agentId}`
         );
 
+        // Add entry to certificate list file
+        const certListEntry = `${agentPemPath} ${agentId}.${this.mongoDomain}\n`;
+
+        try {
+          // Check if certificate list file exists and if entry is already present
+          let currentList = "";
+          try {
+            currentList = await fs.readFile(certListPath, "utf-8");
+          } catch (err) {
+            // File doesn't exist, will create a new one
+            logger.info(
+              `Certificate list file doesn't exist, creating a new one at ${certListPath}`
+            );
+          }
+
+          if (!currentList.includes(certListEntry)) {
+            // Append the new entry to the list
+            await fs.appendFile(certListPath, certListEntry);
+            logger.info(
+              `Added agent ${agentId} certificate to the certificate list`
+            );
+          } else {
+            logger.info(
+              `Certificate for agent ${agentId} already in certificate list`
+            );
+          }
+
+          // Copy one agent's certificate to the mongodb.pem location for backward compatibility
+          // This ensures existing code paths that expect this file will continue to work
+          await fs.copyFile(
+            agentPemPath,
+            path.join(haproxyCertsDir, "mongodb.pem")
+          );
+          await fs.chmod(path.join(haproxyCertsDir, "mongodb.pem"), 0o600);
+
+          // Reload HAProxy to apply certificate changes
+          await this.reloadHAProxy();
+        } catch (listErr) {
+          logger.error(
+            `Failed to update certificate list file: ${listErr.message}`
+          );
+          throw listErr;
+        }
+
         // Update HAProxy configuration via Data Plane API
-        return this.updateHAProxyTlsConfig(agentId, targetPemPath);
+        return this.updateHAProxyTlsConfig(agentId, agentPemPath);
       } catch (copyErr) {
         logger.warn(
           `Failed to copy certificates to system locations: ${copyErr.message}`
