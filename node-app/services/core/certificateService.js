@@ -403,81 +403,113 @@ IP.1 = ${targetIp}
       const haproxyPrivateDir = "/etc/ssl/private";
       const mongodbCertsDir = path.join(haproxyCertsDir, "mongodb");
       const certListPath = path.join(haproxyCertsDir, "mongodb-certs.list");
+      const singleCertPath = path.join(haproxyCertsDir, "mongodb.pem");
 
       try {
         // Create directories if they don't exist
         await fs.mkdir(haproxyCertsDir, { recursive: true });
         await fs.mkdir(haproxyPrivateDir, { recursive: true });
-        await fs.mkdir(mongodbCertsDir, { recursive: true });
 
-        // Define agent-specific filenames
-        const agentPemPath = path.join(mongodbCertsDir, `${agentId}.pem`);
-
-        // Copy PEM file to agent-specific location
-        await fs.copyFile(pemPath, agentPemPath);
-        await fs.chmod(agentPemPath, 0o600);
-
-        // Also maintain backwards compatibility with individual cert/key files
-        const certsFilename = `${agentId}-mongodb.crt`;
-        const keyFilename = `${agentId}-mongodb.key`;
-        const targetCertPath = path.join(haproxyCertsDir, certsFilename);
-        const targetKeyPath = path.join(haproxyPrivateDir, keyFilename);
-
-        await fs.copyFile(certPath, targetCertPath);
-        await fs.copyFile(keyPath, targetKeyPath);
-        await fs.chmod(targetCertPath, 0o644);
-        await fs.chmod(targetKeyPath, 0o600);
-
+        // Always ensure the single certificate is updated (for backward compatibility)
+        await fs.copyFile(pemPath, singleCertPath);
+        await fs.chmod(singleCertPath, 0o600);
         logger.info(
-          `Copied certificates to HAProxy directories for agent ${agentId}`
+          `Updated single certificate at ${singleCertPath} for backward compatibility`
         );
 
-        // Add entry to certificate list file
-        const certListEntry = `${agentPemPath} ${agentId}.${this.mongoDomain}\n`;
-
+        // Try to upgrade to the multi-certificate structure if possible
         try {
-          // Check if certificate list file exists and if entry is already present
-          let currentList = "";
+          // Create mongodb directory if it doesn't exist
+          await fs.mkdir(mongodbCertsDir, { recursive: true });
+
+          // Define agent-specific filenames
+          const agentPemPath = path.join(mongodbCertsDir, `${agentId}.pem`);
+
+          // Copy PEM file to agent-specific location
+          await fs.copyFile(pemPath, agentPemPath);
+          await fs.chmod(agentPemPath, 0o600);
+
+          // Also maintain backwards compatibility with individual cert/key files
+          const certsFilename = `${agentId}-mongodb.crt`;
+          const keyFilename = `${agentId}-mongodb.key`;
+          const targetCertPath = path.join(haproxyCertsDir, certsFilename);
+          const targetKeyPath = path.join(haproxyPrivateDir, keyFilename);
+
+          await fs.copyFile(certPath, targetCertPath);
+          await fs.copyFile(keyPath, targetKeyPath);
+          await fs.chmod(targetCertPath, 0o644);
+          await fs.chmod(targetKeyPath, 0o600);
+
+          logger.info(
+            `Copied certificates to HAProxy directories for agent ${agentId}`
+          );
+
+          // Add entry to certificate list file
+          const certListEntry = `${agentPemPath} ${agentId}.${this.mongoDomain}\n`;
+
           try {
-            currentList = await fs.readFile(certListPath, "utf-8");
-          } catch (err) {
-            // File doesn't exist, will create a new one
-            logger.info(
-              `Certificate list file doesn't exist, creating a new one at ${certListPath}`
+            // Check if certificate list file exists and if entry is already present
+            let currentList = "";
+            let listExists = false;
+
+            try {
+              currentList = await fs.readFile(certListPath, "utf-8");
+              listExists = true;
+            } catch (readErr) {
+              // File doesn't exist, will create a new one
+              logger.info(
+                `Certificate list file doesn't exist, creating a new one at ${certListPath}`
+              );
+              // Initialize with header
+              currentList =
+                "# HAProxy Certificate List for MongoDB\n# Format: <path> <SNI>\n\n";
+            }
+
+            if (!currentList.includes(certListEntry)) {
+              // Append the new entry to the list
+              await fs.writeFile(certListPath, currentList + certListEntry);
+              logger.info(
+                `Added agent ${agentId} certificate to the certificate list`
+              );
+            } else {
+              logger.info(
+                `Certificate for agent ${agentId} already in certificate list`
+              );
+            }
+
+            // If we've successfully set up the certificate list, we should also update HAProxy config
+            if (!listExists) {
+              try {
+                // This is where we'd update the HAProxy config to use the certificate list
+                // But we'll do this gradually to avoid breaking changes
+                logger.info(
+                  "Created certificate list file, but keeping single certificate config for now"
+                );
+                // In a future version, we can update the HAProxy config to use the certificate list
+              } catch (configErr) {
+                logger.warn(
+                  `Failed to update HAProxy config: ${configErr.message}`
+                );
+              }
+            }
+          } catch (listErr) {
+            logger.error(
+              `Failed to update certificate list file: ${listErr.message}`
             );
+            logger.info("Continuing with single certificate approach");
           }
-
-          if (!currentList.includes(certListEntry)) {
-            // Append the new entry to the list
-            await fs.appendFile(certListPath, certListEntry);
-            logger.info(
-              `Added agent ${agentId} certificate to the certificate list`
-            );
-          } else {
-            logger.info(
-              `Certificate for agent ${agentId} already in certificate list`
-            );
-          }
-
-          // Copy one agent's certificate to the mongodb.pem location for backward compatibility
-          // This ensures existing code paths that expect this file will continue to work
-          await fs.copyFile(
-            agentPemPath,
-            path.join(haproxyCertsDir, "mongodb.pem")
+        } catch (multiCertErr) {
+          logger.warn(
+            `Failed to set up multi-certificate structure: ${multiCertErr.message}`
           );
-          await fs.chmod(path.join(haproxyCertsDir, "mongodb.pem"), 0o600);
-
-          // Reload HAProxy to apply certificate changes
-          await this.reloadHAProxy();
-        } catch (listErr) {
-          logger.error(
-            `Failed to update certificate list file: ${listErr.message}`
-          );
-          throw listErr;
+          logger.info("Continuing with single certificate approach");
         }
 
+        // Reload HAProxy to apply certificate changes - this works for both approaches
+        await this.reloadHAProxy();
+
         // Update HAProxy configuration via Data Plane API
-        return this.updateHAProxyTlsConfig(agentId, agentPemPath);
+        return this.updateHAProxyTlsConfig(agentId, pemPath);
       } catch (copyErr) {
         logger.warn(
           `Failed to copy certificates to system locations: ${copyErr.message}`
