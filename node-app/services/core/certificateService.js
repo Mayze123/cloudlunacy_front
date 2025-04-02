@@ -393,12 +393,14 @@ IP.1 = ${targetIp}
    */
   async ensureMinimalCertificate() {
     try {
-      const singleCertPath = "/etc/ssl/certs/mongodb.pem";
+      // Use the host path instead of the container path
+      const hostCertsDir = this.certsDir; // This is /opt/cloudlunacy_front/config/certs
+      const singleCertPath = path.join(hostCertsDir, "mongodb.pem");
 
       try {
         // Check if certificate already exists
         await fs.access(singleCertPath);
-        logger.debug("MongoDB certificate already exists");
+        logger.debug("MongoDB certificate already exists at host path");
         return true;
       } catch {
         // Certificate doesn't exist, create a minimal self-signed one
@@ -427,11 +429,13 @@ IP.1 = ${targetIp}
           const pemContent = certContent + keyContent;
           await fs.writeFile(pemPath, pemContent);
 
-          // Copy to HAProxy certificate location
+          // Copy to HOST certificate location, not the container
           await fs.copyFile(pemPath, singleCertPath);
           await fs.chmod(singleCertPath, 0o600);
 
-          logger.info("Created placeholder certificate for HAProxy");
+          logger.info(
+            "Created placeholder certificate for HAProxy at host path"
+          );
 
           // Clean up temp files
           await fs.unlink(keyPath);
@@ -444,8 +448,10 @@ IP.1 = ${targetIp}
             `Failed to generate placeholder certificate: ${genErr.message}`
           );
 
-          // As a fallback, create an empty file so HAProxy can start
-          logger.warn("Creating empty certificate file as last resort");
+          // As a fallback, create an empty file
+          logger.warn(
+            "Creating empty certificate file as last resort at host path"
+          );
           await fs.writeFile(singleCertPath, "");
           await fs.chmod(singleCertPath, 0o600);
 
@@ -465,19 +471,20 @@ IP.1 = ${targetIp}
       // Ensure minimal certificate exists first for HAProxy startup
       await this.ensureMinimalCertificate();
 
-      // Base directories for HAProxy certificates
-      const haproxyCertsDir = "/etc/ssl/certs";
-      const haproxyPrivateDir = "/etc/ssl/private";
-      const mongodbCertsDir = path.join(haproxyCertsDir, "mongodb");
-      const certListPath = path.join(haproxyCertsDir, "mongodb-certs.list");
-      const singleCertPath = path.join(haproxyCertsDir, "mongodb.pem");
+      // Use the host paths instead of container paths
+      // Base directories for HAProxy certificates (on the HOST)
+      const hostCertsDir = this.certsDir; // This is /opt/cloudlunacy_front/config/certs
+      const mongodbCertsDir = path.join(hostCertsDir, "mongodb");
+      const certListPath = path.join(hostCertsDir, "mongodb-certs.list");
+      const singleCertPath = path.join(hostCertsDir, "mongodb.pem");
 
       try {
         // Create directories if they don't exist
-        await fs.mkdir(haproxyCertsDir, { recursive: true });
-        await fs.mkdir(haproxyPrivateDir, { recursive: true });
+        await fs.mkdir(hostCertsDir, { recursive: true });
+        await fs.mkdir(path.join(hostCertsDir, "private"), { recursive: true });
 
         // Always ensure the single certificate is updated (for backward compatibility)
+        // This will be available in the container at /etc/ssl/certs/mongodb.pem
         await fs.copyFile(pemPath, singleCertPath);
         await fs.chmod(singleCertPath, 0o600);
         logger.info(
@@ -499,8 +506,8 @@ IP.1 = ${targetIp}
           // Also maintain backwards compatibility with individual cert/key files
           const certsFilename = `${agentId}-mongodb.crt`;
           const keyFilename = `${agentId}-mongodb.key`;
-          const targetCertPath = path.join(haproxyCertsDir, certsFilename);
-          const targetKeyPath = path.join(haproxyPrivateDir, keyFilename);
+          const targetCertPath = path.join(hostCertsDir, certsFilename);
+          const targetKeyPath = path.join(hostCertsDir, "private", keyFilename);
 
           await fs.copyFile(certPath, targetCertPath);
           await fs.copyFile(keyPath, targetKeyPath);
@@ -508,11 +515,13 @@ IP.1 = ${targetIp}
           await fs.chmod(targetKeyPath, 0o600);
 
           logger.info(
-            `Copied certificates to HAProxy directories for agent ${agentId}`
+            `Copied certificates to host directories for agent ${agentId}`
           );
 
           // Add entry to certificate list file
-          const certListEntry = `${agentPemPath} ${agentId}.${this.mongoDomain}\n`;
+          // Make sure to use container path in the list entry since HAProxy will read it there
+          const containerAgentPemPath = `/etc/ssl/certs/mongodb/${agentId}.pem`;
+          const certListEntry = `${containerAgentPemPath} ${agentId}.${this.mongoDomain}\n`;
 
           try {
             // Check if certificate list file exists and if entry is already present
