@@ -387,16 +387,83 @@ IP.1 = ${targetIp}
   }
 
   /**
-   * Update HAProxy certificates through Data Plane API
-   * @param {string} agentId - Agent ID
-   * @param {string} certPath - Path to server certificate
-   * @param {string} keyPath - Path to server key
-   * @param {string} pemPath - Path to combined PEM file
-   * @returns {Promise<Object>} Result of the operation
+   * Ensure a minimal valid certificate exists for HAProxy to start
+   * This creates a self-signed certificate if no certificate exists yet
+   * @returns {Promise<boolean>} Success status
    */
+  async ensureMinimalCertificate() {
+    try {
+      const singleCertPath = "/etc/ssl/certs/mongodb.pem";
+
+      try {
+        // Check if certificate already exists
+        await fs.access(singleCertPath);
+        logger.debug("MongoDB certificate already exists");
+        return true;
+      } catch {
+        // Certificate doesn't exist, create a minimal self-signed one
+        logger.info("Creating placeholder certificate for HAProxy startup");
+
+        const tempDir = "/tmp/cloudlunacy-certs";
+        await fs.mkdir(tempDir, { recursive: true });
+
+        const keyPath = path.join(tempDir, "placeholder.key");
+        const certPath = path.join(tempDir, "placeholder.crt");
+        const pemPath = path.join(tempDir, "placeholder.pem");
+
+        // Generate a self-signed certificate
+        try {
+          // Create private key
+          execSync(`openssl genrsa -out ${keyPath} 2048`);
+
+          // Create certificate
+          execSync(
+            `openssl req -new -x509 -key ${keyPath} -out ${certPath} -days 3650 -subj "/CN=placeholder.${this.mongoDomain}" -nodes`
+          );
+
+          // Combine into PEM file
+          const certContent = await fs.readFile(certPath, "utf8");
+          const keyContent = await fs.readFile(keyPath, "utf8");
+          const pemContent = certContent + keyContent;
+          await fs.writeFile(pemPath, pemContent);
+
+          // Copy to HAProxy certificate location
+          await fs.copyFile(pemPath, singleCertPath);
+          await fs.chmod(singleCertPath, 0o600);
+
+          logger.info("Created placeholder certificate for HAProxy");
+
+          // Clean up temp files
+          await fs.unlink(keyPath);
+          await fs.unlink(certPath);
+          await fs.unlink(pemPath);
+
+          return true;
+        } catch (genErr) {
+          logger.error(
+            `Failed to generate placeholder certificate: ${genErr.message}`
+          );
+
+          // As a fallback, create an empty file so HAProxy can start
+          logger.warn("Creating empty certificate file as last resort");
+          await fs.writeFile(singleCertPath, "");
+          await fs.chmod(singleCertPath, 0o600);
+
+          return false;
+        }
+      }
+    } catch (_) {
+      logger.error("Failed to ensure minimal certificate");
+      return false;
+    }
+  }
+
   async updateHAProxyCertificates(agentId, certPath, keyPath, pemPath) {
     try {
       logger.info(`Updating HAProxy certificates for agent ${agentId}`);
+
+      // Ensure minimal certificate exists first for HAProxy startup
+      await this.ensureMinimalCertificate();
 
       // Base directories for HAProxy certificates
       const haproxyCertsDir = "/etc/ssl/certs";
@@ -455,7 +522,7 @@ IP.1 = ${targetIp}
             try {
               currentList = await fs.readFile(certListPath, "utf-8");
               listExists = true;
-            } catch (readErr) {
+            } catch {
               // File doesn't exist, will create a new one
               logger.info(
                 `Certificate list file doesn't exist, creating a new one at ${certListPath}`
@@ -477,18 +544,17 @@ IP.1 = ${targetIp}
               );
             }
 
-            // If we've successfully set up the certificate list, we should also update HAProxy config
+            // If we've successfully set up the certificate list, we should also check if we need to update HAProxy config
             if (!listExists) {
               try {
-                // This is where we'd update the HAProxy config to use the certificate list
-                // But we'll do this gradually to avoid breaking changes
                 logger.info(
-                  "Created certificate list file, but keeping single certificate config for now"
+                  "Successfully created certificate list for future use"
                 );
-                // In a future version, we can update the HAProxy config to use the certificate list
+                // In the future, we can automatically update HAProxy config to use the certificate list
+                // but for now we'll keep using the single cert approach
               } catch (configErr) {
                 logger.warn(
-                  `Failed to update HAProxy config: ${configErr.message}`
+                  `Failed to prepare for future certificate list usage: ${configErr.message}`
                 );
               }
             }
