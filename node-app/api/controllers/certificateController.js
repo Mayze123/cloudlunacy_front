@@ -666,22 +666,13 @@ exports.getMetricsHistory = asyncHandler(async (req, res) => {
  * @param {Object} res - Express response object
  * @param {Function} next - Express next middleware function
  */
-const getCertificateProviderTypes = async (req, res, next) => {
-  try {
-    const providerTypes = CertificateProviderFactory.getSupportedTypes();
-    res.status(200).json({
-      success: true,
-      providerTypes,
-    });
-  } catch (err) {
-    next(
-      new AppError(
-        `Failed to get certificate provider types: ${err.message}`,
-        500
-      )
-    );
-  }
-};
+exports.getCertificateProviderTypes = asyncHandler(async (req, res) => {
+  const providerTypes = CertificateProviderFactory.getSupportedTypes();
+  res.status(200).json({
+    success: true,
+    providerTypes,
+  });
+});
 
 /**
  * Get configuration template for a certificate provider type
@@ -689,28 +680,22 @@ const getCertificateProviderTypes = async (req, res, next) => {
  * @param {Object} res - Express response object
  * @param {Function} next - Express next middleware function
  */
-const getCertificateProviderConfig = async (req, res, next) => {
-  try {
-    const { providerType } = req.params;
+exports.getCertificateProviderConfig = asyncHandler(async (req, res) => {
+  const { providerType } = req.params;
 
-    if (!providerType) {
-      return next(new AppError("Provider type is required", 400));
-    }
-
-    const configTemplate =
-      CertificateProviderFactory.getConfigTemplate(providerType);
-
-    res.status(200).json({
-      success: true,
-      providerType,
-      configTemplate,
-    });
-  } catch (err) {
-    next(
-      new AppError(`Failed to get provider configuration: ${err.message}`, 500)
-    );
+  if (!providerType) {
+    throw new AppError("Provider type is required", 400);
   }
-};
+
+  const configTemplate =
+    CertificateProviderFactory.getConfigTemplate(providerType);
+
+  res.status(200).json({
+    success: true,
+    providerType,
+    configTemplate,
+  });
+});
 
 /**
  * Get current certificate provider capabilities
@@ -718,25 +703,19 @@ const getCertificateProviderConfig = async (req, res, next) => {
  * @param {Object} res - Express response object
  * @param {Function} next - Express next middleware function
  */
-const getCertificateProviderCapabilities = async (req, res, next) => {
-  try {
-    if (!certificateService.initialized) {
-      await certificateService.initialize();
-    }
-
-    const capabilities = certificateService.getProviderCapabilities() || {};
-
-    res.status(200).json({
-      success: true,
-      providerType: process.env.CERT_PROVIDER_TYPE || "self-signed",
-      capabilities,
-    });
-  } catch (err) {
-    next(
-      new AppError(`Failed to get provider capabilities: ${err.message}`, 500)
-    );
+exports.getCertificateProviderCapabilities = asyncHandler(async (req, res) => {
+  if (!certificateService.initialized) {
+    await certificateService.initialize();
   }
-};
+
+  const capabilities = certificateService.getProviderCapabilities() || {};
+
+  res.status(200).json({
+    success: true,
+    providerType: process.env.CERT_PROVIDER_TYPE || "self-signed",
+    capabilities,
+  });
+});
 
 /**
  * Validate certificate provider configuration
@@ -744,33 +723,16 @@ const getCertificateProviderCapabilities = async (req, res, next) => {
  * @param {Object} res - Express response object
  * @param {Function} next - Express next middleware function
  */
-const validateCertificateProviderConfig = async (req, res, next) => {
-  try {
-    if (!certificateService.initialized) {
-      await certificateService.initialize();
-    }
-
-    const validationResults = await certificateService.validateProviderConfig();
-
-    res.status(200).json({
-      success: true,
-      providerType: process.env.CERT_PROVIDER_TYPE || "self-signed",
-      validationResults,
-    });
-  } catch (err) {
-    next(
-      new AppError(
-        `Failed to validate provider configuration: ${err.message}`,
-        500
-      )
-    );
+exports.validateCertificateProviderConfig = asyncHandler(async (req, res) => {
+  if (!certificateService.initialized) {
+    await certificateService.initialize();
   }
-};
 
-module.exports = {
-  // ...existing exports...
-  getCertificateProviderTypes,
-  getCertificateProviderConfig,
-  getCertificateProviderCapabilities,
-  validateCertificateProviderConfig,
-};
+  const validationResults = await certificateService.validateProviderConfig();
+
+  res.status(200).json({
+    success: true,
+    providerType: process.env.CERT_PROVIDER_TYPE || "self-signed",
+    validationResults,
+  });
+});
