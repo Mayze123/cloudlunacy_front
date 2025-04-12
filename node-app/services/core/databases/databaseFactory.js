@@ -10,9 +10,9 @@ const path = require("path");
 const fs = require("fs");
 
 class DatabaseFactory {
-  constructor(routingService, haproxyManager) {
+  constructor(routingService, haproxyService) {
     this.routingService = routingService;
-    this.haproxyManager = haproxyManager;
+    this.haproxyService = haproxyService;
     this.serviceInstances = new Map();
     this.initialized = false;
   }
@@ -54,10 +54,10 @@ class DatabaseFactory {
           // Load the service class
           const ServiceClass = require(path.join(servicesDir, file));
 
-          // Instantiate and initialize the service with both routing service and haproxy manager
+          // Instantiate and initialize the service with routing service and haproxy service
           const serviceInstance = new ServiceClass(
             this.routingService,
-            this.haproxyManager
+            this.haproxyService
           );
           await serviceInstance.initialize();
 
@@ -116,7 +116,7 @@ class DatabaseFactory {
         const ServiceClass = require(`./${dbType}Service.js`);
         const serviceInstance = new ServiceClass(
           this.routingService,
-          this.haproxyManager
+          this.haproxyService
         );
         this.serviceInstances.set(dbType, serviceInstance);
 

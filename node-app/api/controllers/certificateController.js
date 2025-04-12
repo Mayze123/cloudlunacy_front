@@ -7,6 +7,12 @@ const coreServices = require("../../services/core");
 const { asyncHandler, AppError } = require("../../utils/errorHandler");
 const pathManager = require("../../utils/pathManager");
 const { execSync } = require("child_process");
+const CertificateService = require("../../services/core/certificateService");
+const CertificateMetricsService = require("../../services/core/certificateMetricsService");
+const CertificateProviderFactory = require("../../utils/certProviders/providerFactory");
+
+const certificateService = new CertificateService();
+const certificateMetricsService = new CertificateMetricsService();
 
 // Path to MongoDB CA certificate
 const MONGO_CA_PATH =
@@ -236,59 +242,64 @@ exports.regenerateAgentCertificate = asyncHandler(async (req, res) => {
       );
     }
 
-    // Check if HAProxy template-based configuration is available
+    // Update HAProxy configuration using the enhanced HAProxy service
     let haproxyUpdated = false;
-    if (coreServices.haproxyConfigManager) {
-      try {
-        // Ensure HAProxy configuration is up to date using the template system
-        const configData = {
-          statsPassword: "admin_password",
-          includeHttp: true,
-          includeMongoDB: true,
-          useSsl: true,
-          sslCertPath: "/etc/ssl/certs/mongodb.pem",
-          mongoDBServers: coreServices.haproxyManager?.mongoDBServers || [],
-        };
 
-        await coreServices.haproxyConfigManager.saveConfig(configData);
-        await coreServices.haproxyConfigManager.applyConfig();
-
-        logger.info("HAProxy configuration updated using template system");
-        haproxyUpdated = true;
-      } catch (configError) {
-        logger.error(
-          `Template-based HAProxy config update failed: ${configError.message}`
-        );
-      }
-    }
-
-    // Fall back to HAProxy manager if template system failed
-    if (!haproxyUpdated && coreServices.haproxyManager) {
-      try {
-        // Update HAProxy configuration using the HAProxy manager
-        await coreServices.haproxyManager.updateMongoDBBackend(
+    try {
+      // Try to use the enhanced HAProxy service first
+      if (
+        coreServices.enhancedHAProxyService &&
+        coreServices.enhancedHAProxyService.initialized
+      ) {
+        // Update MongoDB route using the enhanced service
+        await coreServices.enhancedHAProxyService.addMongoDBRoute(
           agentId,
           targetIp || "127.0.0.1",
-          27017
+          27017,
+          { useTls: true }
         );
 
-        // Try to reload HAProxy using Docker command as a fallback
-        try {
-          execSync(
-            "docker exec haproxy-dev haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg"
-          );
-          execSync("docker exec haproxy-dev service haproxy reload");
-          logger.info(
-            "HAProxy configuration verified and reloaded using Docker commands"
-          );
-          haproxyUpdated = true;
-        } catch (reloadErr) {
-          logger.error(
-            `Failed to reload HAProxy using Docker: ${reloadErr.message}`
-          );
-        }
-      } catch (managerError) {
-        logger.error(`HAProxy manager update failed: ${managerError.message}`);
+        logger.info(
+          `HAProxy configuration updated for agent ${agentId} using enhanced HAProxy service`
+        );
+        haproxyUpdated = true;
+      }
+      // Fallback to standard HAProxy service
+      else if (
+        coreServices.haproxyService &&
+        coreServices.haproxyService.initialized
+      ) {
+        await coreServices.haproxyService.addMongoDBRoute(
+          agentId,
+          targetIp || "127.0.0.1",
+          27017,
+          { useTls: true }
+        );
+        logger.info(
+          `HAProxy configuration updated for agent ${agentId} using standard HAProxy service`
+        );
+        haproxyUpdated = true;
+      }
+    } catch (haproxyErr) {
+      logger.error(
+        `Failed to update HAProxy configuration: ${haproxyErr.message}`
+      );
+
+      // Try Docker fallback approach if both service approaches failed
+      try {
+        // Verify config and reload HAProxy using Docker command as a fallback
+        execSync(
+          "docker exec haproxy haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg"
+        );
+        execSync("docker exec haproxy kill -SIGUSR2 1"); // Soft reload
+        logger.info(
+          "HAProxy configuration verified and reloaded using Docker commands"
+        );
+        haproxyUpdated = true;
+      } catch (reloadErr) {
+        logger.error(
+          `Failed to reload HAProxy using Docker: ${reloadErr.message}`
+        );
       }
     }
 
@@ -308,3 +319,458 @@ exports.regenerateAgentCertificate = asyncHandler(async (req, res) => {
     );
   }
 });
+
+/**
+ * Validate certificate setup for an agent
+ * This endpoint checks the certificate and HAProxy configuration for an agent
+ *
+ * GET /api/certificates/agent/:agentId/validate
+ */
+exports.validateAgentCertificate = asyncHandler(async (req, res) => {
+  const { agentId } = req.params;
+
+  logger.info(`Validating certificate setup for agent ${agentId}`);
+
+  // Check authorization
+  if (
+    !(
+      req.user &&
+      (req.user.role === "admin" ||
+        (req.user.role === "agent" && req.user.agentId === agentId))
+    )
+  ) {
+    throw new AppError("Unauthorized to validate these certificates", 403);
+  }
+
+  // Initialize certificate service if needed
+  if (!coreServices.certificateService) {
+    throw new AppError("Certificate service not available", 500);
+  }
+
+  if (!coreServices.certificateService.initialized) {
+    logger.info("Initializing certificate service");
+    await coreServices.certificateService.initialize();
+  }
+
+  try {
+    // Validate the certificate setup
+    const validationResult =
+      await coreServices.certificateService.validateCertificateSetup(agentId);
+
+    // If there are serious issues, set appropriate status code
+    const statusCode = validationResult.success
+      ? 200
+      : validationResult.certificate.exists === false
+      ? 404
+      : 200;
+
+    // Add remediation instructions if there are issues
+    if (
+      !validationResult.success &&
+      validationResult.issues &&
+      validationResult.issues.length > 0
+    ) {
+      validationResult.remediation = {
+        instructions: "To fix certificate issues, try the following steps:",
+        steps: [],
+      };
+
+      // Add specific remediation steps based on detected issues
+      if (!validationResult.certificate.exists) {
+        validationResult.remediation.steps.push(
+          "Regenerate certificates by calling POST /api/certificates/agent/" +
+            agentId +
+            "/regenerate"
+        );
+      } else if (validationResult.certificate.expired) {
+        validationResult.remediation.steps.push(
+          "Renew the expired certificate by calling POST /api/certificates/agent/" +
+            agentId +
+            "/regenerate"
+        );
+      }
+
+      if (
+        !validationResult.haproxy.singleCertExists &&
+        !validationResult.haproxy.agentCertExists
+      ) {
+        validationResult.remediation.steps.push(
+          "Update HAProxy certificates by regenerating the certificates"
+        );
+      }
+
+      if (!validationResult.haproxy.backendExists) {
+        validationResult.remediation.steps.push(
+          "Register MongoDB for this agent using the MongoDB registration endpoint"
+        );
+      }
+    }
+
+    return res.status(statusCode).json({
+      ...validationResult,
+      message: validationResult.success
+        ? `Certificate setup for agent ${agentId} is valid`
+        : `Certificate setup for agent ${agentId} has issues that need to be addressed`,
+    });
+  } catch (error) {
+    logger.error(
+      `Certificate validation error for ${agentId}: ${error.message}`
+    );
+    throw new AppError(
+      `Failed to validate certificate setup: ${error.message}`,
+      500
+    );
+  }
+});
+
+/**
+ * Get certificate dashboard data
+ * Display status of all certificates in the system
+ *
+ * GET /api/certificates/dashboard
+ * Requires admin role
+ */
+exports.getCertificateDashboard = asyncHandler(async (req, res) => {
+  // Check if user is authorized (admin only)
+  if (!req.user || req.user.role !== "admin") {
+    throw new AppError("Unauthorized - Admin access required", 403);
+  }
+
+  // Initialize certificate service if needed
+  if (!coreServices.certificateService) {
+    throw new AppError("Certificate service not available", 500);
+  }
+
+  if (!coreServices.certificateService.initialized) {
+    await coreServices.certificateService.initialize();
+  }
+
+  logger.info("Generating certificate dashboard");
+
+  try {
+    const dashboardData =
+      await coreServices.certificateService.getCertificateDashboard();
+
+    return res.status(200).json({
+      success: true,
+      dashboard: dashboardData,
+    });
+  } catch (error) {
+    logger.error(`Certificate dashboard generation error: ${error.message}`);
+    throw new AppError(
+      `Failed to generate certificate dashboard: ${error.message}`,
+      500
+    );
+  }
+});
+
+/**
+ * List all certificates in the system
+ *
+ * GET /api/certificates
+ * Requires admin role
+ */
+exports.getAllCertificates = asyncHandler(async (req, res) => {
+  // Check if user is authorized (admin only)
+  if (!req.user || req.user.role !== "admin") {
+    throw new AppError("Unauthorized - Admin access required", 403);
+  }
+
+  // Initialize certificate service if needed
+  if (!coreServices.certificateService) {
+    throw new AppError("Certificate service not available", 500);
+  }
+
+  if (!coreServices.certificateService.initialized) {
+    await coreServices.certificateService.initialize();
+  }
+
+  logger.info("Listing all certificates");
+
+  try {
+    const certificates =
+      await coreServices.certificateService.getAllCertificates();
+
+    return res.status(200).json({
+      success: true,
+      ...certificates,
+    });
+  } catch (error) {
+    logger.error(`Error listing certificates: ${error.message}`);
+    throw new AppError(`Failed to list certificates: ${error.message}`, 500);
+  }
+});
+
+/**
+ * Trigger a certificate renewal check
+ *
+ * POST /api/certificates/renew-check
+ * Requires admin role
+ */
+exports.runRenewalCheck = asyncHandler(async (req, res) => {
+  // Check if user is authorized (admin only)
+  if (!req.user || req.user.role !== "admin") {
+    throw new AppError("Unauthorized - Admin access required", 403);
+  }
+
+  const { force, renewBeforeDays } = req.query;
+
+  // Initialize services if needed
+  if (!coreServices.certificateRenewalService) {
+    throw new AppError("Certificate renewal service not available", 500);
+  }
+
+  if (!coreServices.certificateRenewalService.initialized) {
+    await coreServices.certificateRenewalService.initialize();
+  }
+
+  logger.info(
+    `Triggering certificate renewal check${force === "true" ? " (forced)" : ""}`
+  );
+
+  try {
+    // Perform renewal check directly instead of waiting for schedule
+    const result =
+      await coreServices.certificateRenewalService.performRenewalCheck();
+
+    // If user requested forced renewal and the normal check didn't renew everything
+    if (force === "true") {
+      logger.info("Forced renewal requested - renewing all certificates");
+
+      // Directly use certificate service to force renewal of all certificates
+      const forceRenewalResult =
+        await coreServices.certificateService.checkAndRenewCertificates({
+          forceRenewal: true,
+          renewBeforeDays: renewBeforeDays ? parseInt(renewBeforeDays, 10) : 30,
+        });
+
+      return res.status(200).json({
+        success: true,
+        message: "Forced certificate renewal completed",
+        forceRenewalResult,
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Certificate renewal check completed",
+      ...result,
+    });
+  } catch (error) {
+    logger.error(`Certificate renewal check error: ${error.message}`);
+    throw new AppError(
+      `Failed to run certificate renewal check: ${error.message}`,
+      500
+    );
+  }
+});
+
+/**
+ * Get certificate metrics
+ * Returns current metrics and trends for certificate management
+ *
+ * GET /api/certificates/metrics
+ * Requires admin role
+ */
+exports.getCertificateMetrics = asyncHandler(async (req, res) => {
+  // Check if user is authorized (admin only)
+  if (!req.user || req.user.role !== "admin") {
+    throw new AppError("Unauthorized - Admin access required", 403);
+  }
+
+  // Get metrics service
+  if (!coreServices.certificateMetricsService) {
+    throw new AppError("Certificate metrics service not available", 500);
+  }
+
+  logger.info("Retrieving certificate metrics");
+
+  try {
+    // Take a new snapshot to ensure current data
+    const currentSnapshot =
+      await coreServices.certificateMetricsService.takeMetricsSnapshot();
+    const trends = coreServices.certificateMetricsService.calculateTrends();
+
+    return res.status(200).json({
+      success: true,
+      metrics: currentSnapshot,
+      trends,
+    });
+  } catch (error) {
+    logger.error(`Failed to get certificate metrics: ${error.message}`);
+    throw new AppError(
+      `Failed to get certificate metrics: ${error.message}`,
+      500
+    );
+  }
+});
+
+/**
+ * Get historical certificate metrics
+ * Returns metrics history for a specific time range
+ *
+ * GET /api/certificates/metrics/history
+ * Requires admin role
+ */
+exports.getMetricsHistory = asyncHandler(async (req, res) => {
+  // Check if user is authorized (admin only)
+  if (!req.user || req.user.role !== "admin") {
+    throw new AppError("Unauthorized - Admin access required", 403);
+  }
+
+  const { start, end } = req.query;
+
+  if (!start || !end) {
+    throw new AppError("Start and end dates are required", 400);
+  }
+
+  // Parse date strings to Date objects
+  const startDate = new Date(start);
+  const endDate = new Date(end);
+
+  if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+    throw new AppError(
+      "Invalid date format. Use ISO 8601 format (e.g. 2025-04-12T00:00:00Z)",
+      400
+    );
+  }
+
+  // Get metrics service
+  if (!coreServices.certificateMetricsService) {
+    throw new AppError("Certificate metrics service not available", 500);
+  }
+
+  logger.info(`Retrieving certificate metrics history from ${start} to ${end}`);
+
+  try {
+    const history = coreServices.certificateMetricsService.getMetricsHistory(
+      startDate,
+      endDate
+    );
+
+    return res.status(200).json({
+      success: true,
+      startDate: startDate.toISOString(),
+      endDate: endDate.toISOString(),
+      history,
+    });
+  } catch (error) {
+    logger.error(`Failed to get metrics history: ${error.message}`);
+    throw new AppError(`Failed to get metrics history: ${error.message}`, 500);
+  }
+});
+
+/**
+ * Get available certificate provider types
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next middleware function
+ */
+const getCertificateProviderTypes = async (req, res, next) => {
+  try {
+    const providerTypes = CertificateProviderFactory.getSupportedTypes();
+    res.status(200).json({
+      success: true,
+      providerTypes,
+    });
+  } catch (err) {
+    next(
+      new AppError(
+        `Failed to get certificate provider types: ${err.message}`,
+        500
+      )
+    );
+  }
+};
+
+/**
+ * Get configuration template for a certificate provider type
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next middleware function
+ */
+const getCertificateProviderConfig = async (req, res, next) => {
+  try {
+    const { providerType } = req.params;
+
+    if (!providerType) {
+      return next(new AppError("Provider type is required", 400));
+    }
+
+    const configTemplate =
+      CertificateProviderFactory.getConfigTemplate(providerType);
+
+    res.status(200).json({
+      success: true,
+      providerType,
+      configTemplate,
+    });
+  } catch (err) {
+    next(
+      new AppError(`Failed to get provider configuration: ${err.message}`, 500)
+    );
+  }
+};
+
+/**
+ * Get current certificate provider capabilities
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next middleware function
+ */
+const getCertificateProviderCapabilities = async (req, res, next) => {
+  try {
+    if (!certificateService.initialized) {
+      await certificateService.initialize();
+    }
+
+    const capabilities = certificateService.getProviderCapabilities() || {};
+
+    res.status(200).json({
+      success: true,
+      providerType: process.env.CERT_PROVIDER_TYPE || "self-signed",
+      capabilities,
+    });
+  } catch (err) {
+    next(
+      new AppError(`Failed to get provider capabilities: ${err.message}`, 500)
+    );
+  }
+};
+
+/**
+ * Validate certificate provider configuration
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next middleware function
+ */
+const validateCertificateProviderConfig = async (req, res, next) => {
+  try {
+    if (!certificateService.initialized) {
+      await certificateService.initialize();
+    }
+
+    const validationResults = await certificateService.validateProviderConfig();
+
+    res.status(200).json({
+      success: true,
+      providerType: process.env.CERT_PROVIDER_TYPE || "self-signed",
+      validationResults,
+    });
+  } catch (err) {
+    next(
+      new AppError(
+        `Failed to validate provider configuration: ${err.message}`,
+        500
+      )
+    );
+  }
+};
+
+module.exports = {
+  // ...existing exports...
+  getCertificateProviderTypes,
+  getCertificateProviderConfig,
+  getCertificateProviderCapabilities,
+  validateCertificateProviderConfig,
+};

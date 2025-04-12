@@ -125,12 +125,20 @@ exports.registerMongoDB = asyncHandler(async (req, res) => {
     useTls ? "tls=true&tlsAllowInvalidCertificates=true" : ""
   }`;
 
-  // Update HAProxy configuration
-  await coreServices.haproxyManager.updateMongoDBBackend(
-    agentId,
-    targetIp,
-    targetPort
-  );
+  // Update HAProxy configuration using the enhanced service instead of the legacy manager
+  try {
+    // Use enhancedHAProxyService if available, otherwise fall back to standard haproxyService
+    const haproxyService =
+      coreServices.enhancedHAProxyService || coreServices.haproxyService;
+    await haproxyService.addMongoDBRoute(agentId, targetIp, targetPort, {
+      useTls,
+    });
+
+    logger.info(`Successfully updated HAProxy for MongoDB agent ${agentId}`);
+  } catch (haproxyErr) {
+    logger.error(`Failed to update HAProxy for MongoDB: ${haproxyErr.message}`);
+    // Continue anyway - the MongoDB registration was successful
+  }
 
   // Return success response
   res.status(200).json({
@@ -152,24 +160,42 @@ exports.registerMongoDB = asyncHandler(async (req, res) => {
 exports.listSubdomains = asyncHandler(async (req, res) => {
   logger.info("Listing all MongoDB subdomains");
 
-  // Get all routes from HAProxy manager
-  const routes = coreServices.haproxyManager
-    .listRoutes()
-    .filter(
-      (route) => route.key.startsWith("tcp:") && route.key !== "tcp:mongodb"
-    )
-    .map((route) => ({
-      name: route.name,
-      agentId: route.agentId,
-      targetAddress: route.targetAddress,
-      lastUpdated: route.lastUpdated,
-    }));
+  // Get all routes using the enhanced HAProxy service
+  try {
+    // Use enhancedHAProxyService if available, otherwise fall back to haproxyService
+    const haproxyService =
+      coreServices.enhancedHAProxyService || coreServices.haproxyService;
 
-  res.status(200).json({
-    success: true,
-    count: routes.length,
-    subdomains: routes,
-  });
+    // Ensure service is initialized
+    if (!haproxyService.initialized) {
+      await haproxyService.initialize();
+    }
+
+    // Get all routes
+    const routesResponse = await haproxyService.getAllRoutes();
+
+    // Filter for MongoDB routes
+    const mongoRoutes = routesResponse.routes
+      .filter((route) => route.type === "mongodb")
+      .map((route) => ({
+        name: route.name || `mongodb-agent-${route.agentId}`,
+        agentId: route.agentId,
+        targetAddress: `${route.targetHost}:${route.targetPort}`,
+        lastUpdated: route.lastUpdated,
+      }));
+
+    res.status(200).json({
+      success: true,
+      count: mongoRoutes.length,
+      subdomains: mongoRoutes,
+    });
+  } catch (err) {
+    logger.error(`Failed to list MongoDB subdomains: ${err.message}`);
+    throw new AppError(
+      `Failed to list MongoDB subdomains: ${err.message}`,
+      500
+    );
+  }
 });
 
 /**

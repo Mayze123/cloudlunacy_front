@@ -132,51 +132,134 @@ class AgentService {
       // Generate a token for this agent
       const token = this.generateAgentToken(agentId);
 
-      // MongoDB registration is now handled separately
-      // This is done when the agent explicitly installs MongoDB
-      let certificates = null;
-
-      // Generate certificates if needed
-      if (
-        options.generateCertificates !== false &&
-        this.configManager.certificate
-      ) {
-        try {
-          const certResult =
-            await this.configManager.certificate.generateAgentCertificate(
-              agentId,
-              targetIp
-            );
-          if (certResult.success) {
-            certificates = {
-              caCert: certResult.caCert,
-              serverKey: certResult.serverKey,
-              serverCert: certResult.serverCert,
-            };
-            logger.info(`Certificates generated for agent ${agentId}`);
-          } else {
-            logger.warn(
-              `Certificate generation warning for agent ${agentId}: ${certResult.error}`
-            );
-          }
-        } catch (certErr) {
-          logger.error(
-            `Certificate generation failed for agent ${agentId}: ${certErr.message}`,
-            {
-              error: certErr.message,
-              stack: certErr.stack,
-            }
-          );
-          // Continue with agent registration even if certificate generation fails
-        }
-      }
-
-      // Save agent registration info
+      // Save agent registration info first to ensure the agent is registered
+      // even if certificate generation fails
       this.agents.set(agentId, {
         targetIp,
         registeredAt: new Date().toISOString(),
         lastSeen: new Date().toISOString(),
       });
+
+      // Try to save to persistent storage if config manager is available
+      if (
+        this.configManager &&
+        typeof this.configManager.updateConfig === "function"
+      ) {
+        try {
+          await this.configManager.updateConfig(
+            "main",
+            {
+              agents: {
+                [agentId]: {
+                  registration: {
+                    targetIp,
+                    registeredAt: new Date().toISOString(),
+                    lastSeen: new Date().toISOString(),
+                  },
+                },
+              },
+            },
+            true
+          ); // Try to merge with existing config
+        } catch (configErr) {
+          logger.warn(
+            `Could not persist agent ${agentId} registration: ${configErr.message}`
+          );
+        }
+      }
+
+      // MongoDB registration is now handled separately when agent explicitly installs MongoDB
+      let certificates = null;
+      let certificateError = null;
+
+      // Generate certificates if needed
+      if (options.generateCertificates !== false) {
+        // Get certificate service from core services to ensure we have the latest version
+        const coreServices = require("../core");
+        const certificateService = coreServices.certificateService;
+
+        if (certificateService) {
+          try {
+            // Try to initialize the certificate service if needed
+            if (!certificateService.initialized) {
+              await certificateService.initialize();
+            }
+
+            // Attempt certificate generation with retry
+            let certResult = null;
+            let retryCount = 0;
+            const maxRetries = 3;
+            let lastError = null;
+
+            do {
+              try {
+                if (retryCount > 0) {
+                  logger.info(
+                    `Retry ${retryCount}/${maxRetries} generating certificate for agent ${agentId}`
+                  );
+                  // Add a small delay before retrying to allow for lock releases
+                  await new Promise((resolve) =>
+                    setTimeout(resolve, 1000 * retryCount)
+                  );
+                }
+
+                certResult = await certificateService.generateAgentCertificate(
+                  agentId,
+                  targetIp
+                );
+
+                if (certResult.success) {
+                  certificates = {
+                    caCert: certResult.caCert,
+                    serverKey: certResult.serverKey,
+                    serverCert: certResult.serverCert,
+                  };
+                  logger.info(`Certificates generated for agent ${agentId}`);
+                  break; // Exit retry loop on success
+                } else if (certResult.transient) {
+                  // Transient error means we should retry
+                  lastError = certResult.error;
+                  logger.warn(
+                    `Transient certificate generation issue for agent ${agentId}: ${certResult.error}`
+                  );
+                } else {
+                  // Non-transient error means we should stop retrying
+                  certificateError = certResult.error;
+                  logger.warn(
+                    `Certificate generation warning for agent ${agentId}: ${certResult.error}`
+                  );
+                  break;
+                }
+              } catch (certGenErr) {
+                lastError = certGenErr.message;
+                logger.error(
+                  `Certificate generation attempt ${retryCount + 1} failed: ${
+                    certGenErr.message
+                  }`
+                );
+              }
+            } while (++retryCount < maxRetries && !certificates);
+
+            // If we exhausted retries, record the last error
+            if (retryCount >= maxRetries && !certificates) {
+              certificateError = `Certificate generation failed after ${maxRetries} attempts. Last error: ${lastError}`;
+              logger.error(certificateError);
+            }
+          } catch (certErr) {
+            certificateError = `Certificate service error: ${certErr.message}`;
+            logger.error(
+              `Certificate generation failed for agent ${agentId}: ${certErr.message}`,
+              {
+                error: certErr.message,
+                stack: certErr.stack,
+              }
+            );
+          }
+        } else {
+          certificateError = "Certificate service not available";
+          logger.warn(`Certificate service not available for agent ${agentId}`);
+        }
+      }
 
       // Build response
       const response = {
@@ -190,6 +273,10 @@ class AgentService {
       // Add certificates if available
       if (certificates) {
         response.certificates = certificates;
+      } else if (certificateError) {
+        // Include certificate error but don't fail the registration
+        response.certificateError = certificateError;
+        response.tlsEnabled = false; // Can't enable TLS without certificates
       }
 
       return response;

@@ -13,11 +13,11 @@ const logger = require("../../../utils/logger").getLogger("mongodbService");
 const DatabaseService = require("./databaseService");
 
 class MongoDBService extends DatabaseService {
-  constructor(routingService, haproxyManager) {
+  constructor(routingService, haproxyService) {
     super(routingService);
     this.mongoDomain = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
     this.connectionCache = new Map();
-    this.haproxyManager = haproxyManager;
+    this.haproxyService = haproxyService;
   }
 
   /**
@@ -29,9 +29,9 @@ class MongoDBService extends DatabaseService {
     }
 
     try {
-      if (!this.haproxyManager) {
+      if (!this.haproxyService) {
         logger.warn(
-          "No HAProxy manager provided during initialization, MongoDB routes will not work correctly"
+          "No HAProxy service provided during initialization, MongoDB routes will not work correctly"
         );
       }
 
@@ -73,25 +73,42 @@ class MongoDBService extends DatabaseService {
         `Registering MongoDB agent: ${agentId}, IP: ${targetIp}:${targetPort}`
       );
 
-      if (!this.haproxyManager) {
+      if (!this.haproxyService) {
         return {
           success: false,
-          error: "HAProxy manager not available",
+          error: "HAProxy service not available",
         };
       }
 
-      // Update HAProxy configuration
-      const result = await this.haproxyManager.updateMongoDBBackend(
-        agentId,
-        targetIp,
-        targetPort
-      );
-
-      if (!result.success) {
-        logger.error(`Failed to update HAProxy backend: ${result.error}`);
+      // Update HAProxy configuration using the enhanced HAProxy service
+      try {
+        // Check if haproxyService has the appropriate MongoDB routing method
+        if (typeof this.haproxyService.addMongoDBRoute === "function") {
+          await this.haproxyService.addMongoDBRoute(
+            agentId,
+            targetIp,
+            targetPort,
+            { useTls }
+          );
+          logger.info(
+            `Successfully updated HAProxy for MongoDB agent ${agentId}`
+          );
+        } else {
+          logger.warn(
+            `HAProxy service does not support addMongoDBRoute method`
+          );
+          return {
+            success: false,
+            error: "HAProxy service does not support MongoDB routes",
+          };
+        }
+      } catch (haproxyErr) {
+        logger.error(
+          `Failed to update HAProxy for MongoDB: ${haproxyErr.message}`
+        );
         return {
           success: false,
-          error: `Failed to update HAProxy backend: ${result.error}`,
+          error: `Failed to update HAProxy backend: ${haproxyErr.message}`,
         };
       }
 
@@ -151,21 +168,30 @@ class MongoDBService extends DatabaseService {
 
       logger.info(`Deregistering MongoDB agent: ${agentId}`);
 
-      if (!this.haproxyManager) {
+      if (!this.haproxyService) {
         return {
           success: false,
-          error: "HAProxy manager not available",
+          error: "HAProxy service not available",
         };
       }
 
-      // Remove from HAProxy configuration
-      const result = await this.haproxyManager.removeMongoDBBackend(agentId);
-
-      if (!result.success) {
-        logger.error(`Failed to remove MongoDB backend: ${result.error}`);
+      // Remove from HAProxy configuration using the enhanced HAProxy service
+      try {
+        if (typeof this.haproxyService.removeRoute === "function") {
+          await this.haproxyService.removeRoute(agentId, null, "mongodb");
+          logger.info(`MongoDB route for ${agentId} removed from HAProxy`);
+        } else {
+          logger.warn("HAProxy service does not support MongoDB route removal");
+          return {
+            success: false,
+            error: "HAProxy service does not support MongoDB route removal",
+          };
+        }
+      } catch (haproxyErr) {
+        logger.error(`Failed to remove MongoDB backend: ${haproxyErr.message}`);
         return {
           success: false,
-          error: `Failed to remove MongoDB backend: ${result.error}`,
+          error: `Failed to remove MongoDB backend: ${haproxyErr.message}`,
         };
       }
 
@@ -400,14 +426,24 @@ class MongoDBService extends DatabaseService {
    */
   async checkMongoDBPort() {
     try {
-      if (!this.haproxyManager) {
-        logger.warn("HAProxy manager not available, cannot check MongoDB port");
+      if (!this.haproxyService) {
+        logger.warn("HAProxy service not available, cannot check MongoDB port");
         return false;
       }
 
-      // Delegate to HAProxy manager
-      const result = await this.haproxyManager.checkMongoDBPort();
-      return result.success;
+      // Check if the HAProxy service has the checkMongoDBPort method
+      if (typeof this.haproxyService.checkMongoDBPort === "function") {
+        return await this.haproxyService.checkMongoDBPort();
+      }
+
+      // Fallback to querying the service health
+      if (typeof this.haproxyService.getHealthStatus === "function") {
+        const healthStatus = await this.haproxyService.getHealthStatus();
+        return healthStatus && healthStatus.status === "healthy";
+      }
+
+      logger.warn("HAProxy service does not support MongoDB port checking");
+      return false;
     } catch (error) {
       logger.error(`Error checking MongoDB port: ${error.message}`, {
         error: error.message,
@@ -423,16 +459,23 @@ class MongoDBService extends DatabaseService {
    */
   async ensureMongoDBPort() {
     try {
-      if (!this.haproxyManager) {
+      if (!this.haproxyService) {
         logger.warn(
-          "HAProxy manager not available, cannot ensure MongoDB port"
+          "HAProxy service not available, cannot ensure MongoDB port"
         );
         return false;
       }
 
-      // Delegate to HAProxy manager
-      const result = await this.haproxyManager.ensureMongoDBPort();
-      return result.success;
+      // Check if the HAProxy service has the ensureMongoDBPort method
+      if (typeof this.haproxyService.ensureMongoDBPort === "function") {
+        const result = await this.haproxyService.ensureMongoDBPort();
+        return result === true;
+      }
+
+      logger.warn(
+        "HAProxy service does not support ensuring MongoDB port configuration"
+      );
+      return false;
     } catch (error) {
       logger.error(`Error ensuring MongoDB port: ${error.message}`, {
         error: error.message,

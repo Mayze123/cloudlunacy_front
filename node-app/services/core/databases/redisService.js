@@ -13,11 +13,11 @@ const logger = require("../../../utils/logger").getLogger("redisService");
 const DatabaseService = require("./databaseService");
 
 class RedisService extends DatabaseService {
-  constructor(routingService, haproxyManager) {
+  constructor(routingService, haproxyService) {
     super(routingService);
     this.redisDomain = process.env.REDIS_DOMAIN || "redis.cloudlunacy.uk";
     this.connectionCache = new Map();
-    this.haproxyManager = haproxyManager;
+    this.haproxyService = haproxyService;
   }
 
   /**
@@ -29,9 +29,9 @@ class RedisService extends DatabaseService {
     }
 
     try {
-      if (!this.haproxyManager) {
+      if (!this.haproxyService) {
         logger.warn(
-          "No HAProxy manager provided during initialization, Redis routes will not work correctly"
+          "No HAProxy service provided during initialization, Redis routes will not work correctly"
         );
       }
 
@@ -68,25 +68,40 @@ class RedisService extends DatabaseService {
         `Registering Redis agent: ${agentId}, IP: ${targetIp}:${targetPort}`
       );
 
-      if (!this.haproxyManager) {
+      if (!this.haproxyService) {
         return {
           success: false,
-          error: "HAProxy manager not available",
+          error: "HAProxy service not available",
         };
       }
 
-      // Update HAProxy configuration for Redis - we'll assume a method is implemented or will be
-      const result = await this.haproxyManager.updateRedisBackend(
-        agentId,
-        targetIp,
-        targetPort
-      );
-
-      if (!result.success) {
-        logger.error(`Failed to update HAProxy backend: ${result.error}`);
+      // Update HAProxy configuration for Redis using the enhanced HAProxy service
+      try {
+        // Check if the haproxyService has the addRedisRoute method
+        if (typeof this.haproxyService.addRedisRoute === "function") {
+          await this.haproxyService.addRedisRoute(
+            agentId,
+            targetIp,
+            targetPort,
+            { useTls }
+          );
+          logger.info(
+            `Successfully updated HAProxy for Redis agent ${agentId}`
+          );
+        } else {
+          logger.warn(`HAProxy service does not support addRedisRoute method`);
+          return {
+            success: false,
+            error: "HAProxy service does not support Redis routes",
+          };
+        }
+      } catch (haproxyErr) {
+        logger.error(
+          `Failed to update HAProxy for Redis: ${haproxyErr.message}`
+        );
         return {
           success: false,
-          error: `Failed to update HAProxy backend: ${result.error}`,
+          error: `Failed to update HAProxy backend: ${haproxyErr.message}`,
         };
       }
 
@@ -146,21 +161,27 @@ class RedisService extends DatabaseService {
 
       logger.info(`Deregistering Redis agent: ${agentId}`);
 
-      if (!this.haproxyManager) {
+      if (!this.haproxyService) {
         return {
           success: false,
-          error: "HAProxy manager not available",
+          error: "HAProxy service not available",
         };
       }
 
-      // Remove from HAProxy configuration
-      const result = await this.haproxyManager.removeRedisBackend(agentId);
-
-      if (!result.success) {
-        logger.error(`Failed to remove Redis backend: ${result.error}`);
+      // Remove from HAProxy configuration using the enhanced HAProxy service
+      try {
+        // Check if the haproxyService has the removeRoute method for Redis
+        if (typeof this.haproxyService.removeRoute === "function") {
+          await this.haproxyService.removeRoute(agentId, null, "redis");
+          logger.info(`Redis route for ${agentId} removed from HAProxy`);
+        } else {
+          logger.warn("HAProxy service does not support Redis route removal");
+        }
+      } catch (haproxyErr) {
+        logger.error(`Failed to remove Redis backend: ${haproxyErr.message}`);
         return {
           success: false,
-          error: `Failed to remove Redis backend: ${result.error}`,
+          error: `Failed to remove Redis backend: ${haproxyErr.message}`,
         };
       }
 

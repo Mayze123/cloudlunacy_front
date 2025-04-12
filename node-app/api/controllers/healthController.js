@@ -10,8 +10,14 @@ const { exec } = require("child_process");
 const { promisify } = require("util");
 const execAsync = promisify(exec);
 const coreServices = require("../../services/core");
+const {
+  enhancedHAProxyService,
+  enhancedCertificateService,
+} = require("../../services/core");
 const logger = require("../../utils/logger").getLogger("healthController");
 const { asyncHandler } = require("../../utils/errorHandler");
+const path = require("path");
+const fs = require("fs").promises;
 
 /**
  * Get system health
@@ -474,4 +480,712 @@ exports.checkMongoDBListener = asyncHandler(async (req, res) => {
       active: true,
     },
   });
+});
+
+/**
+ * Get system health status
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
+exports.getSystemHealth = async (req, res) => {
+  try {
+    const health = {
+      status: "healthy",
+      timestamp: new Date().toISOString(),
+      services: {},
+    };
+
+    // Check HAProxy health if enhanced service is initialized
+    try {
+      if (enhancedHAProxyService.initialized) {
+        // Force refresh the health status if requested
+        const forceRefresh = req.query.refresh === "true";
+        const haproxyHealth = await enhancedHAProxyService.getHealthStatus(
+          forceRefresh
+        );
+
+        health.services.haproxy = {
+          status: haproxyHealth.status,
+          circuitState: haproxyHealth.circuitState,
+          lastCheck: haproxyHealth.lastCheck?.timestamp,
+          metrics: {
+            routeCount: haproxyHealth.routeCount,
+            connections: haproxyHealth.metrics?.connections,
+          },
+        };
+
+        // Update overall health based on HAProxy status
+        if (haproxyHealth.status === "UNHEALTHY") {
+          health.status = "degraded";
+        }
+      } else {
+        health.services.haproxy = {
+          status: "not_initialized",
+          message: "HAProxy service is not initialized",
+        };
+        health.status = "degraded";
+      }
+    } catch (err) {
+      health.services.haproxy = {
+        status: "error",
+        message: `Failed to check HAProxy health: ${err.message}`,
+      };
+      health.status = "degraded";
+    }
+
+    // TODO: Add other services health checks here as needed
+
+    res.json(health);
+  } catch (err) {
+    logger.error(`Error in getSystemHealth: ${err.message}`);
+    res.status(500).json({
+      status: "error",
+      message: "Failed to retrieve system health status",
+      error: err.message,
+    });
+  }
+};
+
+/**
+ * Get detailed HAProxy health metrics
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
+exports.getHAProxyHealth = async (req, res) => {
+  try {
+    if (!enhancedHAProxyService.initialized) {
+      return res.status(503).json({
+        success: false,
+        message: "HAProxy service is not initialized",
+      });
+    }
+
+    // Get detailed metrics with optional refresh
+    const forceRefresh = req.query.refresh === "true";
+    const health = await enhancedHAProxyService.getHealthStatus(forceRefresh);
+
+    res.json({
+      success: true,
+      health,
+    });
+  } catch (err) {
+    logger.error(`Error in getHAProxyHealth: ${err.message}`);
+    res.status(500).json({
+      success: false,
+      message: "Failed to retrieve HAProxy health",
+      error: err.message,
+    });
+  }
+};
+
+/**
+ * Get HAProxy stats and metrics
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
+exports.getHAProxyStats = async (req, res) => {
+  try {
+    if (!enhancedHAProxyService.initialized) {
+      return res.status(503).json({
+        success: false,
+        message: "HAProxy service is not initialized",
+      });
+    }
+
+    const stats = await enhancedHAProxyService.getStats();
+
+    res.json({
+      success: true,
+      stats,
+    });
+  } catch (err) {
+    logger.error(`Error in getHAProxyStats: ${err.message}`);
+    res.status(500).json({
+      success: false,
+      message: "Failed to retrieve HAProxy stats",
+      error: err.message,
+    });
+  }
+};
+
+/**
+ * Attempt to recover HAProxy service
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
+exports.recoverHAProxyService = async (req, res) => {
+  try {
+    if (!enhancedHAProxyService.initialized) {
+      return res.status(503).json({
+        success: false,
+        message: "HAProxy service is not initialized",
+      });
+    }
+
+    // Check if administrator key is provided for this sensitive operation
+    const adminKey = req.headers["x-admin-key"] || "";
+    const configuredKey = process.env.ADMIN_KEY || "";
+
+    if (!configuredKey || adminKey !== configuredKey) {
+      logger.warn(`Unauthorized HAProxy recovery attempt from ${req.ip}`);
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized: Admin key required for this operation",
+      });
+    }
+
+    // Attempt recovery
+    logger.info(`Manual HAProxy recovery initiated by admin from ${req.ip}`);
+    const result = await enhancedHAProxyService.recoverService();
+
+    if (result.success) {
+      res.json({
+        success: true,
+        message: result.message,
+        action: result.action,
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        message: result.message,
+        error: result.error,
+      });
+    }
+  } catch (err) {
+    logger.error(`Error in recoverHAProxyService: ${err.message}`);
+    res.status(500).json({
+      success: false,
+      message: "Failed to recover HAProxy service",
+      error: err.message,
+    });
+  }
+};
+
+/**
+ * Validate HAProxy configuration
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
+exports.validateHAProxyConfig = async (req, res) => {
+  try {
+    if (!enhancedHAProxyService.initialized) {
+      return res.status(503).json({
+        success: false,
+        message: "HAProxy service is not initialized",
+      });
+    }
+
+    const validationResult = await enhancedHAProxyService.validateConfig();
+
+    res.json({
+      success: true,
+      valid: validationResult.valid,
+      message: validationResult.message,
+      error: validationResult.error,
+    });
+  } catch (err) {
+    logger.error(`Error in validateHAProxyConfig: ${err.message}`);
+    res.status(500).json({
+      success: false,
+      message: "Failed to validate HAProxy configuration",
+      error: err.message,
+    });
+  }
+};
+
+/**
+ * Get certificate status report
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
+exports.getCertificateReport = async (req, res) => {
+  try {
+    await enhancedCertificateService.initialize();
+
+    const report = await enhancedCertificateService.getCertificateReport();
+
+    res.status(200).json({
+      success: true,
+      report,
+    });
+  } catch (err) {
+    logger.error(`Error getting certificate report: ${err.message}`);
+    res.status(500).json({
+      success: false,
+      error: "Failed to retrieve certificate report",
+    });
+  }
+};
+
+/**
+ * Get certificate metrics
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
+exports.getCertificateMetrics = async (req, res) => {
+  try {
+    await enhancedCertificateService.initialize();
+
+    const metrics = await enhancedCertificateService.getMetrics();
+
+    res.status(200).json({
+      success: true,
+      metrics,
+    });
+  } catch (err) {
+    logger.error(`Error getting certificate metrics: ${err.message}`);
+    res.status(500).json({
+      success: false,
+      error: "Failed to retrieve certificate metrics",
+    });
+  }
+};
+
+/**
+ * Validate a certificate
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
+exports.validateCertificate = async (req, res) => {
+  try {
+    await enhancedCertificateService.initialize();
+
+    const { certPath } = req.body;
+
+    if (!certPath) {
+      return res.status(400).json({
+        success: false,
+        error: "Certificate path is required",
+      });
+    }
+
+    const certManager = enhancedCertificateService.certManager;
+    const result = await certManager.validateCertificate(certPath);
+
+    res.status(200).json({
+      success: true,
+      valid: result.valid,
+      certificate: result.certificate,
+      error: result.error,
+    });
+  } catch (err) {
+    logger.error(`Error validating certificate: ${err.message}`);
+    res.status(500).json({
+      success: false,
+      error: "Failed to validate certificate",
+    });
+  }
+};
+
+/**
+ * Request certificate renewal
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
+exports.renewCertificate = async (req, res) => {
+  try {
+    await enhancedCertificateService.initialize();
+
+    const { certPath, agentId, domain, force } = req.body;
+
+    if (!certPath && !agentId && !domain) {
+      return res.status(400).json({
+        success: false,
+        error: "Certificate path, agent ID, or domain is required",
+      });
+    }
+
+    let result;
+
+    if (agentId) {
+      result = await enhancedCertificateService.renewAgentCertificate(agentId);
+    } else if (domain) {
+      result = await enhancedCertificateService.generateLetsEncryptCertificate(
+        domain
+      );
+    } else {
+      // Get certificate info
+      const certManager = enhancedCertificateService.certManager;
+      const certInfo = await certManager.analyzeCertificate(certPath);
+
+      if (!certInfo) {
+        return res.status(400).json({
+          success: false,
+          error: "Invalid certificate or certificate not found",
+        });
+      }
+
+      // Check if certificate needs renewal
+      if (!force && !certInfo.isExpiring && !certInfo.isExpired) {
+        return res.status(200).json({
+          success: true,
+          renewed: false,
+          message: "Certificate does not need renewal",
+          certificate: certInfo,
+        });
+      }
+
+      // Renew based on type
+      if (certInfo.agent) {
+        result = await enhancedCertificateService.renewAgentCertificate(
+          certInfo.agent
+        );
+      } else if (certPath.includes("letsencrypt")) {
+        result = await enhancedCertificateService.renewLetsEncryptCertificate(
+          certInfo
+        );
+      } else {
+        return res.status(400).json({
+          success: false,
+          error: "Unknown certificate type for renewal",
+        });
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      result,
+    });
+  } catch (err) {
+    logger.error(`Error renewing certificate: ${err.message}`);
+    res.status(500).json({
+      success: false,
+      error: `Failed to renew certificate: ${err.message}`,
+    });
+  }
+};
+
+/**
+ * Generate Let's Encrypt certificate
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
+exports.generateLetsEncryptCertificate = async (req, res) => {
+  try {
+    await enhancedCertificateService.initialize();
+
+    const { domain, email } = req.body;
+
+    if (!domain) {
+      return res.status(400).json({
+        success: false,
+        error: "Domain is required",
+      });
+    }
+
+    const result =
+      await enhancedCertificateService.generateLetsEncryptCertificate(domain, {
+        email,
+      });
+
+    res.status(200).json({
+      success: true,
+      result,
+    });
+  } catch (err) {
+    logger.error(`Error generating Let's Encrypt certificate: ${err.message}`);
+    res.status(500).json({
+      success: false,
+      error: `Failed to generate Let's Encrypt certificate: ${err.message}`,
+    });
+  }
+};
+
+/**
+ * Get basic health status
+ * Simple health check for load balancers and container orchestration
+ *
+ * GET /api/health
+ */
+exports.getBasicHealth = asyncHandler(async (req, res) => {
+  logger.debug("Basic health check requested");
+
+  // Simple health check with minimal processing for load balancers
+  const health = {
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    service: "cloudlunacy-front",
+  };
+
+  res.status(200).json(health);
+});
+
+/**
+ * Get comprehensive system health dashboard
+ * Aggregates health information from all components
+ *
+ * GET /api/health/dashboard
+ */
+exports.getHealthDashboard = asyncHandler(async (req, res) => {
+  logger.info("Health dashboard requested");
+  const startTime = Date.now();
+
+  try {
+    // Collect system health metrics
+    const dashboard = {
+      status: "healthy", // Will be updated based on component status
+      timestamp: new Date().toISOString(),
+      systemInfo: {
+        platform: os.platform(),
+        arch: os.arch(),
+        hostname: os.hostname(),
+        uptime: os.uptime(),
+        cpus: os.cpus().length,
+        memory: {
+          total: os.totalmem(),
+          free: os.freemem(),
+          usedPercent: (
+            ((os.totalmem() - os.freemem()) / os.totalmem()) *
+            100
+          ).toFixed(1),
+        },
+        load: os.loadavg(),
+      },
+      application: {
+        uptime: process.uptime(),
+        memoryUsage: process.memoryUsage(),
+        version: process.env.APP_VERSION || "1.0.0",
+      },
+      components: {},
+      alerts: [],
+      recommendations: [],
+    };
+
+    // Get HAProxy health (with metrics if available)
+    try {
+      if (
+        coreServices.enhancedHAProxyService &&
+        coreServices.enhancedHAProxyService.initialized
+      ) {
+        const forceRefresh = req.query.refresh === "true";
+        const haproxyHealth =
+          await coreServices.enhancedHAProxyService.getHealthStatus(
+            forceRefresh
+          );
+
+        dashboard.components.haproxy = {
+          status: haproxyHealth.status,
+          lastCheck: haproxyHealth.lastCheck?.timestamp,
+          circuitBreakerState: haproxyHealth.circuitState || "UNKNOWN",
+          containerRunning: haproxyHealth.containerRunning || false,
+          configValid: haproxyHealth.configValid || false,
+          metrics: haproxyHealth.metrics || null,
+        };
+
+        // Get detailed metrics if available
+        if (coreServices.enhancedHAProxyService.metricsCollector) {
+          const metrics =
+            coreServices.enhancedHAProxyService.metricsCollector.getCurrentMetrics();
+          if (metrics && metrics.haproxy && metrics.haproxy.summary) {
+            dashboard.components.haproxy.detailedMetrics =
+              metrics.haproxy.summary;
+
+            // Get anomalies
+            const anomalies =
+              coreServices.enhancedHAProxyService.metricsCollector.getAnomalies(
+                5
+              );
+            if (anomalies && anomalies.length > 0) {
+              dashboard.components.haproxy.anomalies = anomalies;
+
+              // Add high severity anomalies to alerts
+              anomalies.forEach((anomaly) => {
+                if (anomaly.severity === "high") {
+                  dashboard.alerts.push({
+                    component: "haproxy",
+                    severity: "high",
+                    message: anomaly.message,
+                    timestamp: anomaly.timestamp,
+                  });
+                }
+              });
+            }
+
+            // Get trends
+            const trends =
+              coreServices.enhancedHAProxyService.metricsCollector.calculateTrends();
+            if (trends && trends.status !== "insufficient_data") {
+              dashboard.components.haproxy.trends = trends;
+            }
+          }
+        }
+
+        // Update overall status based on HAProxy status
+        if (haproxyHealth.status === "UNHEALTHY") {
+          dashboard.status = "critical";
+          dashboard.alerts.push({
+            component: "haproxy",
+            severity: "critical",
+            message: "HAProxy is unhealthy",
+          });
+
+          // Add recommendations for HAProxy issues
+          dashboard.recommendations.push({
+            component: "haproxy",
+            action: "Run manual recovery",
+            endpoint: "/api/health/haproxy/recover",
+            description: "Attempt to automatically recover HAProxy service",
+          });
+        } else if (haproxyHealth.status === "DEGRADED") {
+          if (dashboard.status === "healthy") {
+            dashboard.status = "degraded";
+          }
+          dashboard.alerts.push({
+            component: "haproxy",
+            severity: "warning",
+            message: "HAProxy is in a degraded state",
+          });
+        }
+      } else {
+        dashboard.components.haproxy = {
+          status: "unavailable",
+          message: "HAProxy service is not initialized",
+        };
+        dashboard.status = "degraded";
+      }
+    } catch (err) {
+      logger.error(`Failed to get HAProxy health: ${err.message}`);
+      dashboard.components.haproxy = {
+        status: "error",
+        message: `Failed to get HAProxy health: ${err.message}`,
+      };
+      dashboard.status = "degraded";
+    }
+
+    // Get Certificate Service health
+    try {
+      if (
+        coreServices.certificateService &&
+        coreServices.certificateService.initialized
+      ) {
+        // Get certificate report
+        const certReport =
+          await coreServices.certificateService.getCertificateReport();
+
+        dashboard.components.certificates = {
+          status: certReport.status || "unknown",
+          total: certReport.total || 0,
+          valid: certReport.valid || 0,
+          expiring: certReport.expiring || 0,
+          expired: certReport.expired || 0,
+          details: certReport.details || null,
+        };
+
+        // Check for certificate issues
+        if (certReport.expired > 0) {
+          if (dashboard.status === "healthy") {
+            dashboard.status = "critical";
+          }
+          dashboard.alerts.push({
+            component: "certificates",
+            severity: "critical",
+            message: `${certReport.expired} certificate(s) are expired`,
+          });
+
+          // Add recommendations for expired certificates
+          dashboard.recommendations.push({
+            component: "certificates",
+            action: "Renew expired certificates",
+            endpoint: "/api/health/certificates/renew",
+            description:
+              "Renew expired certificates to prevent service disruption",
+          });
+        } else if (certReport.expiring > 0) {
+          if (dashboard.status === "healthy") {
+            dashboard.status = "warning";
+          }
+          dashboard.alerts.push({
+            component: "certificates",
+            severity: "warning",
+            message: `${certReport.expiring} certificate(s) are about to expire`,
+          });
+        }
+      } else {
+        dashboard.components.certificates = {
+          status: "unavailable",
+          message: "Certificate service is not initialized",
+        };
+      }
+    } catch (err) {
+      logger.error(`Failed to get certificate health: ${err.message}`);
+      dashboard.components.certificates = {
+        status: "error",
+        message: `Failed to get certificate health: ${err.message}`,
+      };
+    }
+
+    // Get MongoDB status
+    try {
+      const mongoDBHealth = await checkMongoDBHealth();
+      const mongoDBConfig = await checkMongoDBConfig();
+
+      dashboard.components.mongodb = {
+        status: mongoDBHealth.status,
+        portActive: mongoDBHealth.portActive,
+        configValid: mongoDBConfig.valid,
+      };
+
+      if (!mongoDBHealth.portActive) {
+        if (dashboard.status === "healthy") {
+          dashboard.status = "degraded";
+        }
+        dashboard.alerts.push({
+          component: "mongodb",
+          severity: "warning",
+          message: "MongoDB port is not active",
+        });
+
+        dashboard.recommendations.push({
+          component: "mongodb",
+          action: "Fix MongoDB listener",
+          endpoint: "/api/health/mongodb-listener",
+          description: "Attempt to fix MongoDB port listener",
+        });
+      }
+    } catch (err) {
+      logger.error(`Failed to get MongoDB health: ${err.message}`);
+      dashboard.components.mongodb = {
+        status: "error",
+        message: `Failed to get MongoDB health: ${err.message}`,
+      };
+    }
+
+    // Get Routing Service health
+    if (coreServices.routingService) {
+      dashboard.components.routing = {
+        status: coreServices.routingService.initialized
+          ? "healthy"
+          : "not_initialized",
+      };
+    }
+
+    // Get Config Service health
+    if (coreServices.configService) {
+      dashboard.components.config = {
+        status: coreServices.configService.initialized
+          ? "healthy"
+          : "not_initialized",
+      };
+    }
+
+    // Calculate response time
+    const responseTime = Date.now() - startTime;
+    dashboard.responseTime = responseTime;
+
+    res.status(200).json({
+      success: true,
+      dashboard,
+    });
+  } catch (err) {
+    logger.error(`Error generating health dashboard: ${err.message}`, {
+      error: err.message,
+      stack: err.stack,
+    });
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to generate health dashboard",
+      error: err.message,
+    });
+  }
 });

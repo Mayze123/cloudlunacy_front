@@ -62,6 +62,14 @@ exports.registerAgent = asyncHandler(async (req, res) => {
   logger.info(`Registering agent ${agentId} with IP ${targetIp}`);
 
   try {
+    // Check if agent already exists
+    if (coreServices.agentService.agents.has(agentId)) {
+      // Agent exists - this might be a re-registration
+      logger.info(
+        `Agent ${agentId} already registered, processing as a re-registration`
+      );
+    }
+
     // Register the agent using core service
     const result = await coreServices.agentService.registerAgent(
       agentId,
@@ -72,14 +80,32 @@ exports.registerAgent = asyncHandler(async (req, res) => {
       }
     );
 
-    res.status(201).json({
+    // Build response based on certificate generation results
+    const response = {
       success: true,
       agentId,
       token: result.token,
       targetIp,
       tlsEnabled: result.tlsEnabled,
-      certificates: result.certificates,
-    });
+    };
+
+    // Add certificates if they were generated successfully
+    if (result.certificates) {
+      response.certificates = result.certificates;
+    }
+
+    // Include certificate warnings if applicable
+    if (result.certificateError) {
+      response.warning = "Certificate generation encountered issues";
+      response.certificateError = result.certificateError;
+
+      // Log warning for observability
+      logger.warn(
+        `Agent ${agentId} registered successfully, but certificate generation had issues: ${result.certificateError}`
+      );
+    }
+
+    res.status(201).json(response);
   } catch (err) {
     logger.error(`Agent registration failed: ${err.message}`, {
       error: err.message,

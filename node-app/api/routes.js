@@ -11,6 +11,12 @@ const { AppError } = require("../utils/errorHandler");
 const { errorMiddleware } = require("../utils/errorHandler");
 const authMiddleware = require("./middleware/auth");
 
+// Import route modules
+const certificateRoutes = require("./routes/certificate.routes");
+const mongodbRoutes = require("./routes/mongodb.routes");
+const healthRoutes = require("./routes/health.routes");
+const metricsRoutes = require("./routes/metrics.routes"); // Added metrics routes
+
 // Import core services
 const ProxyService = require("../services/core/proxyService");
 const AgentService = require("../services/core/agentService");
@@ -34,39 +40,11 @@ const configService = new ConfigService();
   }
 })();
 
-/**
- * Health and Status Routes
- */
-router.get("/health", async (req, res, next) => {
-  try {
-    const proxyHealth = await proxyService.checkHealth();
-
-    res.json({
-      success: true,
-      timestamp: new Date().toISOString(),
-      uptime: process.uptime(),
-      services: {
-        proxy: proxyHealth,
-      },
-    });
-  } catch (err) {
-    next(err);
-  }
-});
-
-router.post(
-  "/health/repair",
-  authMiddleware.requireAuth,
-  authMiddleware.requireAdmin(),
-  async (req, res, next) => {
-    try {
-      const result = await proxyService.repair();
-      res.json(result);
-    } catch (err) {
-      next(err);
-    }
-  }
-);
+// Mount modular routes
+router.use("/certificates", certificateRoutes);
+router.use("/mongodb", mongodbRoutes);
+router.use("/health", healthRoutes);
+router.use("/metrics", metricsRoutes); // Mount metrics routes
 
 /**
  * Agent Routes
