@@ -75,6 +75,123 @@ log_success() {
   echo -e "\e[32m[SUCCESS]\e[0m $1"
 }
 
+# Function to check if a port is used by a Docker container and handle it
+check_docker_port_usage() {
+  local port=$1
+  local container_ids=$(docker ps -q --filter "publish=$port")
+  
+  # If no containers are using the port, return
+  if [ -z "$container_ids" ]; then
+    return 0
+  fi
+  
+  log_warn "Port $port is used by Docker container(s):"
+  
+  # List all containers using this port with their details
+  for container_id in $container_ids; do
+    local container_name=$(docker inspect --format '{{.Name}}' "$container_id" | sed 's/^\///')
+    local image_name=$(docker inspect --format '{{.Config.Image}}' "$container_id")
+    log_warn "  - Container: $container_name (ID: $container_id, Image: $image_name)"
+  done
+  
+  # In non-interactive mode, automatically stop containers
+  if [ "${INTERACTIVE:-true}" = false ]; then
+    log "Non-interactive mode: Automatically stopping containers using port $port"
+    docker stop $container_ids
+    return 0
+  fi
+  
+  # In interactive mode, ask user what to do
+  echo ""
+  read -p "Do you want to stop these container(s) to free up port $port? (y/N): " choice
+  case "$choice" in
+    y|Y) 
+      log "Stopping container(s) using port $port..."
+      docker stop $container_ids
+      sleep 2 # Give some time for ports to be released
+      return 0
+      ;;
+    *) 
+      log_error "Port $port is still in use. Installation cannot continue."
+      return 1
+      ;;
+  esac
+}
+
+# Function to detect and handle conflicting CloudLunacy containers
+handle_existing_cloudlunacy_containers() {
+  log "Checking for existing CloudLunacy containers that might conflict..."
+  
+  # List of common CloudLunacy container name patterns
+  local container_patterns=("haproxy" "node-app" "cloudlunacy-front")
+  local found_containers=()
+  
+  for pattern in "${container_patterns[@]}"; do
+    # Find running containers matching this pattern
+    local matching_containers=$(docker ps -q --filter "name=$pattern")
+    
+    if [ -n "$matching_containers" ]; then
+      # Add these containers to our list
+      for container in $matching_containers; do
+        container_name=$(docker inspect --format '{{.Name}}' "$container" | sed 's/^\///')
+        container_ports=$(docker port "$container" | sed 's/.*://' | cut -d'/' -f1 | tr '\n' ', ' | sed 's/,$//')
+        found_containers+=("$container:$container_name:$container_ports")
+      done
+    fi
+  done
+  
+  # If no containers were found, just return
+  if [ ${#found_containers[@]} -eq 0 ]; then
+    log "No existing CloudLunacy containers detected"
+    return 0
+  fi
+  
+  # We found some containers that might conflict
+  log_warn "Found ${#found_containers[@]} existing CloudLunacy containers that might conflict with this installation:"
+  
+  for container_info in "${found_containers[@]}"; do
+    # Parse container info
+    IFS=':' read -r container_id container_name container_ports <<< "$container_info"
+    log_warn "  - $container_name (Ports: $container_ports)"
+  done
+  
+  # In auto-fix mode or non-interactive mode, automatically stop containers
+  if [ "$AUTO_FIX_CONFLICTS" = true ] || [ "$INTERACTIVE" = false ]; then
+    log "Auto-fixing conflicts: Stopping conflicting containers..."
+    
+    for container_info in "${found_containers[@]}"; do
+      IFS=':' read -r container_id container_name container_ports <<< "$container_info"
+      log "Stopping container $container_name..."
+      docker stop "$container_id"
+    done
+    
+    log "Conflicting containers stopped. Installation can proceed."
+    sleep 2 # Give some time for ports to be released
+    return 0
+  fi
+  
+  # In interactive mode, ask user what to do
+  echo ""
+  read -p "Do you want to stop these container(s) to proceed with installation? (Y/n): " choice
+  case "$choice" in
+    n|N) 
+      log_error "Existing containers will conflict with installation. Please stop them manually."
+      return 1
+      ;;
+    *) 
+      log "Stopping conflicting containers..."
+      for container_info in "${found_containers[@]}"; do
+        IFS=':' read -r container_id container_name container_ports <<< "$container_info"
+        log "Stopping container $container_name..."
+        docker stop "$container_id"
+      done
+      log "Conflicting containers stopped. Installation can proceed."
+      sleep 2 # Give some time for ports to be released
+      return 0
+      ;;
+  esac
+}
+
 # Error exit with cleanup option
 error_exit() {
   log_error "$1"
@@ -227,13 +344,24 @@ check_prerequisites() {
     return 1
   fi
   
-  # Check if ports 80, 443, 8081, and 27017 are available
+  # Check if required ports are available and offer to stop Docker containers if they're using them
+  local port_conflict=false
   for port in 80 443 8081 27017; do
     if nc -z localhost "$port" 2>/dev/null; then
-      log_error "Port $port is already in use. Please free up this port before continuing."
-      return 1
+      log_error "Port $port is already in use."
+      
+      # Check if it's used by a Docker container and offer to stop it
+      if ! check_docker_port_usage "$port"; then
+        port_conflict=true
+      fi
     fi
   done
+  
+  # If we still have port conflicts after trying to resolve them, exit
+  if [ "$port_conflict" = true ]; then
+    log_error "Port conflicts could not be resolved. Please free up the required ports manually."
+    return 1
+  fi
   
   log "All prerequisites satisfied"
   update_install_state "prerequisites_checked" "true"
@@ -775,6 +903,7 @@ parse_arguments() {
   UPDATE_MODE=false
   FORCE_RECREATE=false
   SKIP_DOCKER_RESTART=false
+  AUTO_FIX_CONFLICTS=false
   
   # Parse arguments
   while [[ $# -gt 0 ]]; do
@@ -797,6 +926,11 @@ parse_arguments() {
       --skip-docker-restart)
         SKIP_DOCKER_RESTART=true
         log "Will skip restarting Docker containers"
+        shift
+        ;;
+      --auto-fix-conflicts)
+        AUTO_FIX_CONFLICTS=true
+        log "Will automatically try to fix port conflicts"
         shift
         ;;
       --help)
@@ -824,6 +958,7 @@ Options:
   --update             Run in update mode (preserves existing configurations)
   --force-recreate     Force recreation of configuration files
   --skip-docker-restart Skip restarting Docker containers
+  --auto-fix-conflicts Automatically stop conflicting Docker containers
   --help               Show this help message
 
 For more information, visit: https://github.com/Mayze123/cloudlunacy_front
@@ -941,6 +1076,9 @@ main() {
   
   # Initialize installation state
   init_install_state
+  
+  # First check for existing CloudLunacy containers that might cause port conflicts
+  handle_existing_cloudlunacy_containers || error_exit "Failed to handle existing CloudLunacy containers"
   
   check_prerequisites || error_exit "Failed to meet prerequisites"
   
