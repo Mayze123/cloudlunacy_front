@@ -1,88 +1,96 @@
-#!/bin/sh
-set -e
+#!/bin/bash
+# HAProxy Health Check Script for CloudLunacy
+# This script checks the HAProxy configuration and connectivity to backend services
 
 # Colors for better readability
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-echo "Running comprehensive health check for CloudLunacy services..."
-
-# HAProxy container name
-HAPROXY_CONTAINER="${HAPROXY_CONTAINER:-haproxy}"
-NODE_APP_CONTAINER="${NODE_APP_CONTAINER:-cloudlunacy-front}"
+echo -e "${BLUE}[INFO]${NC} Running HAProxy health check..."
 
 # Check if HAProxy container is running
-echo "\n${YELLOW}Checking HAProxy container status:${NC}"
-HAPROXY_RUNNING=$(docker ps -q -f "name=${HAPROXY_CONTAINER}" | wc -l)
-if [ "$HAPROXY_RUNNING" -eq "1" ]; then
-    echo "${GREEN}✅ HAProxy container is running${NC}"
-else
-    echo "${RED}❌ HAProxy container is not running!${NC}"
+if ! docker ps | grep -q haproxy; then
+  echo -e "${RED}[ERROR]${NC} HAProxy container is not running"
+  exit 1
 fi
 
-# Check if HAProxy has valid configuration
-echo "\n${YELLOW}Checking HAProxy configuration:${NC}"
-if docker exec ${HAPROXY_CONTAINER} haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg > /dev/null 2>&1; then
-    echo "${GREEN}✅ HAProxy configuration is valid${NC}"
+# Check if HAProxy configuration is valid
+echo -e "${BLUE}[INFO]${NC} Validating HAProxy configuration..."
+if ! docker exec haproxy haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg; then
+  echo -e "${RED}[ERROR]${NC} HAProxy configuration is invalid"
+  exit 1
+fi
+echo -e "${GREEN}[SUCCESS]${NC} HAProxy configuration is valid"
+
+# Check if HAProxy is listening on required ports
+echo -e "${BLUE}[INFO]${NC} Checking HAProxy port bindings..."
+for port in 80 443 8081 27017; do
+  if ! docker exec haproxy ss -tlnp | grep -q ":$port"; then
+    echo -e "${RED}[ERROR]${NC} HAProxy is not listening on port $port"
+  else
+    echo -e "${GREEN}[SUCCESS]${NC} HAProxy is listening on port $port"
+  fi
+done
+
+# Check Node.js app health
+echo -e "${BLUE}[INFO]${NC} Checking Node.js app health..."
+if docker ps | grep -q cloudlunacy-front; then
+  # Check if the app is responding to health checks
+  if docker exec cloudlunacy-front wget -qO- http://localhost:3005/health | grep -q "ok"; then
+    echo -e "${GREEN}[SUCCESS]${NC} Node.js app is healthy"
+  else
+    echo -e "${RED}[ERROR]${NC} Node.js app health check failed"
+  fi
 else
-    echo "${RED}❌ HAProxy configuration is invalid!${NC}"
-    echo "\nDetailed errors:"
-    docker exec ${HAPROXY_CONTAINER} haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
+  echo -e "${RED}[ERROR]${NC} cloudlunacy-front container is not running"
 fi
 
-# Check HAProxy process
-echo "\n${YELLOW}Checking HAProxy process:${NC}"
-HAPROXY_PROCESS=$(docker exec ${HAPROXY_CONTAINER} ps -ef | grep -v grep | grep haproxy | wc -l)
-if [ "$HAPROXY_PROCESS" -gt "0" ]; then
-    echo "${GREEN}✅ HAProxy process is running${NC}"
-else
-    echo "${RED}❌ HAProxy process is not running!${NC}"
+# Check connectivity between HAProxy and Node.js app
+echo -e "${BLUE}[INFO]${NC} Checking connectivity from HAProxy to Node.js app..."
+
+# Install netcat in HAProxy container if not present
+if ! docker exec haproxy which nc &> /dev/null; then
+  echo -e "${YELLOW}[WARNING]${NC} Installing netcat in HAProxy container..."
+  docker exec haproxy apt-get update -qq &> /dev/null
+  docker exec haproxy apt-get install -y netcat &> /dev/null
 fi
 
-# Check if node-app service is running
-echo "\n${YELLOW}Checking node-app service:${NC}"
-NODE_APP_RUNNING=$(docker ps -q -f "name=${NODE_APP_CONTAINER}" | wc -l)
-if [ "$NODE_APP_RUNNING" -eq "1" ]; then
-    echo "${GREEN}✅ Node App container is running${NC}"
+# Test connection to cloudlunacy-front
+if docker exec haproxy nc -z cloudlunacy-front 3005 &> /dev/null; then
+  echo -e "${GREEN}[SUCCESS]${NC} HAProxy can connect to cloudlunacy-front:3005"
 else
-    echo "${RED}❌ Node App container is not running!${NC}"
+  echo -e "${RED}[ERROR]${NC} HAProxy cannot connect to cloudlunacy-front:3005"
+  
+  # Try alternate hostname
+  if docker exec haproxy nc -z node-app 3005 &> /dev/null; then
+    echo -e "${GREEN}[SUCCESS]${NC} HAProxy can connect to node-app:3005"
+    echo -e "${YELLOW}[WARNING]${NC} HAProxy should use 'node-app' as the server name in backend section"
+  fi
+  
+  # Display hosts file content for debugging
+  echo -e "${BLUE}[INFO]${NC} Content of /etc/hosts in HAProxy container:"
+  docker exec haproxy cat /etc/hosts
+  
+  # Try to fix by adding hosts entry
+  NODE_APP_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' cloudlunacy-front 2>/dev/null || echo "")
+  if [ -n "$NODE_APP_IP" ]; then
+    echo -e "${BLUE}[INFO]${NC} Adding cloudlunacy-front to hosts file in HAProxy container..."
+    docker exec haproxy bash -c "grep -v cloudlunacy-front /etc/hosts > /tmp/hosts && echo '$NODE_APP_IP cloudlunacy-front node-app' >> /tmp/hosts && cat /tmp/hosts > /etc/hosts"
+    
+    # Test again
+    if docker exec haproxy nc -z cloudlunacy-front 3005 &> /dev/null; then
+      echo -e "${GREEN}[SUCCESS]${NC} HAProxy can now connect to cloudlunacy-front:3005"
+    else
+      echo -e "${RED}[ERROR]${NC} HAProxy still cannot connect to cloudlunacy-front:3005 after hosts file update"
+    fi
+  fi
 fi
 
-# Check if node-app is reachable from HAProxy
-echo "\n${YELLOW}Checking connectivity to node-app from HAProxy:${NC}"
-if docker exec ${HAPROXY_CONTAINER} ping -c 1 node-app > /dev/null 2>&1; then
-    echo "${GREEN}✅ Node App service is reachable from HAProxy${NC}"
-else
-    echo "${RED}❌ Node App service is not reachable from HAProxy!${NC}"
-    echo "\nChecking docker network configuration:"
-    HAPROXY_NETWORKS=$(docker inspect ${HAPROXY_CONTAINER} -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}')
-    NODE_APP_NETWORKS=$(docker inspect ${NODE_APP_CONTAINER} -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}')
-    echo "HAProxy container is connected to networks: $HAPROXY_NETWORKS"
-    echo "Node App container is connected to networks: $NODE_APP_NETWORKS"
-fi
+# Check if HAProxy backend shows the node app server as UP
+echo -e "${BLUE}[INFO]${NC} Checking HAProxy backend status..."
+docker exec haproxy bash -c "echo 'show stat' | socat unix-connect:/var/run/haproxy.sock stdio" | grep node-app-backend
 
-# Test if node-app port is open
-echo "\n${YELLOW}Testing if node-app port is open:${NC}"
-if docker exec ${HAPROXY_CONTAINER} nc -zv node-app 3005 > /dev/null 2>&1; then
-    echo "${GREEN}✅ Node App port 3005 is open and accepting connections${NC}"
-else
-    echo "${RED}❌ Node App port 3005 is closed or not accepting connections!${NC}"
-    echo "\nChecking node-app container logs:"
-    docker logs --tail 20 ${NODE_APP_CONTAINER}
-fi
-
-# Check HAProxy stats
-echo "\n${YELLOW}Checking HAProxy stats:${NC}"
-STATS=$(docker exec ${HAPROXY_CONTAINER} echo "show stat" | socat unix-connect:/var/run/haproxy.sock stdio)
-if [ -n "$STATS" ]; then
-    # Extract and summarize backend status
-    echo "${GREEN}✅ HAProxy stats socket is responding${NC}"
-    echo "\nBackend Status Summary:"
-    echo "$STATS" | grep -E "BACKEND|node-app-backend" | awk -F, '{printf "%-20s %-10s %-10s\n", $1, $2, $18}'
-else
-    echo "${RED}❌ HAProxy stats socket is not responding!${NC}"
-fi
-
-echo "\n${YELLOW}Health check completed.${NC}" 
+echo -e "${BLUE}[INFO]${NC} Health check completed. If issues persist, try running the fix-networking.sh script."
