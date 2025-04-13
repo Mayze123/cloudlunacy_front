@@ -142,7 +142,7 @@ router.post(
 router.get(
   "/providers",
   auth(["admin"]),
-  asyncHandler(certificateController.getCertificateProviderTypes)
+  certificateController.getCertificateProviderTypes
 );
 
 /**
@@ -154,7 +154,7 @@ router.get(
 router.get(
   "/providers/:providerType/config",
   auth(["admin"]),
-  asyncHandler(certificateController.getCertificateProviderConfig)
+  certificateController.getCertificateProviderConfig
 );
 
 /**
@@ -166,7 +166,7 @@ router.get(
 router.get(
   "/provider/capabilities",
   auth(["admin"]),
-  asyncHandler(certificateController.getCertificateProviderCapabilities)
+  certificateController.getCertificateProviderCapabilities
 );
 
 /**
@@ -178,7 +178,7 @@ router.get(
 router.get(
   "/provider/validate",
   auth(["admin"]),
-  asyncHandler(certificateController.validateCertificateProviderConfig)
+  certificateController.validateCertificateProviderConfig
 );
 
 module.exports = router;
