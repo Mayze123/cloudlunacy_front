@@ -1918,6 +1918,51 @@ IP.1 = ${targetIp || "127.0.0.1"}
     }
     return this.provider.validateConfig();
   }
+
+  /**
+   * Get dashboard data for certificates
+   * @returns {Promise<Object>} Dashboard data including certificate counts, status, and recent activity
+   */
+  async getDashboardData() {
+    try {
+      const allCerts = await this.getAllCertificates();
+      const caInfo = await this.getCAInfo();
+
+      // Calculate certificate statistics
+      const stats = {
+        total: allCerts.length,
+        active: allCerts.filter((cert) => cert.status === "active").length,
+        expired: allCerts.filter((cert) => cert.status === "expired").length,
+        expiringSoon: allCerts.filter((cert) => {
+          const daysUntilExpiry = Math.floor(
+            (new Date(cert.expiryDate) - new Date()) / (1000 * 60 * 60 * 24)
+          );
+          return daysUntilExpiry <= 30 && daysUntilExpiry > 0;
+        }).length,
+      };
+
+      // Get recent certificate activity
+      const recentActivity = allCerts
+        .sort((a, b) => new Date(b.lastUpdated) - new Date(a.lastUpdated))
+        .slice(0, 5)
+        .map((cert) => ({
+          agentId: cert.agentId,
+          status: cert.status,
+          lastUpdated: cert.lastUpdated,
+          expiryDate: cert.expiryDate,
+        }));
+
+      return {
+        stats,
+        caInfo,
+        recentActivity,
+        provider: this.provider.getProviderInfo(),
+      };
+    } catch (error) {
+      logger.error(`Error getting dashboard data: ${error.message}`);
+      throw new AppError("Failed to get dashboard data", 500);
+    }
+  }
 }
 
 module.exports = CertificateService;
