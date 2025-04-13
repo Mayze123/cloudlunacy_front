@@ -432,11 +432,11 @@ exports.getCertificateDashboard = async (req, res) => {
     const dashboardData = await certificateService.getDashboardData();
     res.json({
       success: true,
-      data: dashboardData
+      data: dashboardData,
     });
   } catch (error) {
     logger.error(`Error getting certificate dashboard: ${error.message}`);
-    throw new AppError('Failed to get certificate dashboard', 500);
+    throw new AppError("Failed to get certificate dashboard", 500);
   }
 };
 
@@ -550,11 +550,11 @@ exports.getCertificateMetrics = async (req, res) => {
     const metrics = await certificateMetricsService.getMetrics();
     res.json({
       success: true,
-      data: metrics
+      data: metrics,
     });
   } catch (error) {
     logger.error(`Error getting certificate metrics: ${error.message}`);
-    throw new AppError('Failed to get certificate metrics', 500);
+    throw new AppError("Failed to get certificate metrics", 500);
   }
 };
 
@@ -688,4 +688,85 @@ exports.validateCertificateProviderConfig = asyncHandler(async (req, res) => {
     providerType: process.env.CERT_PROVIDER_TYPE || "self-signed",
     validationResults,
   });
+});
+
+/**
+ * Get certificate dashboard data
+ * Display status of all certificates in the system
+ *
+ * GET /api/certificates/dashboard
+ * Requires admin role
+ */
+exports.getDashboardData = asyncHandler(async (req, res) => {
+  // Check if user is authorized (admin only)
+  if (!req.user || req.user.role !== "admin") {
+    throw new AppError("Unauthorized - Admin access required", 403);
+  }
+
+  // Initialize certificate service if needed
+  if (!coreServices.certificateService) {
+    throw new AppError("Certificate service not available", 500);
+  }
+
+  if (!coreServices.certificateService.initialized) {
+    await coreServices.certificateService.initialize();
+  }
+
+  logger.info("Generating certificate dashboard");
+
+  try {
+    const dashboardData =
+      await coreServices.certificateService.getCertificateDashboard();
+
+    return res.status(200).json({
+      success: true,
+      dashboard: dashboardData,
+    });
+  } catch (error) {
+    logger.error(`Certificate dashboard generation error: ${error.message}`);
+    throw new AppError(
+      `Failed to generate certificate dashboard: ${error.message}`,
+      500
+    );
+  }
+});
+
+/**
+ * Get certificate metrics
+ * Returns current metrics and trends for certificate management
+ *
+ * GET /api/certificates/metrics
+ * Requires admin role
+ */
+exports.getCertificateMetrics = asyncHandler(async (req, res) => {
+  // Check if user is authorized (admin only)
+  if (!req.user || req.user.role !== "admin") {
+    throw new AppError("Unauthorized - Admin access required", 403);
+  }
+
+  // Get metrics service
+  if (!coreServices.certificateMetricsService) {
+    throw new AppError("Certificate metrics service not available", 500);
+  }
+
+  logger.info("Retrieving certificate metrics");
+
+  try {
+    // Take a new snapshot to ensure current data
+    const currentSnapshot =
+      await coreServices.certificateMetricsService.takeMetricsSnapshot();
+    const trends = coreServices.certificateMetricsService.calculateTrends();
+
+    return res.status(200).json({
+      success: true,
+      metrics: currentSnapshot,
+      trends,
+    });
+  } catch (error) {
+    logger.error(`Failed to get certificate metrics: ${error.message}`);
+    throw new AppError(
+      `Failed to get certificate metrics: ${error.message}`,
+      500
+    );
+  }
 });
