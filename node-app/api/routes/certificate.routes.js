@@ -32,7 +32,7 @@ router.get("/mongodb-ca", certificateController.getMongoCA);
 router.get(
   "/dashboard",
   auth(["admin"]),
-  asyncHandler(certificateController.getDashboardData)
+  certificateController.getDashboardData
 );
 
 /**
@@ -45,7 +45,7 @@ router.get(
 router.get(
   "/metrics",
   auth(["admin"]),
-  asyncHandler(certificateController.getCertificateMetrics)
+  certificateController.getCertificateMetrics
 );
 
 /**
