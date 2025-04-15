@@ -32,7 +32,9 @@ router.get("/mongodb-ca", certificateController.getMongoCA);
 router.get(
   "/dashboard",
   auth(["admin"]),
-  certificateController.getDashboardData
+  (req, res) => {
+    return certificateController.getDashboardData(req, res);
+  }
 );
 
 /**
@@ -45,7 +47,9 @@ router.get(
 router.get(
   "/metrics",
   auth(["admin"]),
-  certificateController.getCertificateMetrics
+  (req, res) => {
+    return certificateController.getCertificateMetrics(req, res);
+  }
 );
 
 /**
