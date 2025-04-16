@@ -374,9 +374,23 @@ class CertificateMetricsService {
           ? certificates
           : [];
         if (!Array.isArray(certificates)) {
+          // Log more details about what we received to help debugging
+          const type = typeof certificates;
+          let extraInfo = "";
+
+          if (type === "object" && certificates !== null) {
+            // If it's an object, log its structure to help identify the issue
+            const keys = Object.keys(certificates);
+            extraInfo = ` with keys: [${keys.join(", ")}]`;
+
+            // If it has a length property or looks like it might be array-like
+            if ("length" in certificates) {
+              extraInfo += `, length: ${certificates.length}`;
+            }
+          }
+
           logger.warn(
-            "Expected certificates to be an array but got: " +
-              typeof certificates
+            `Expected certificates to be an array but got: ${type}${extraInfo}`
           );
         }
 
