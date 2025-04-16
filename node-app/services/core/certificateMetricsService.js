@@ -14,7 +14,10 @@ const logger = require("../../utils/logger").getLogger(
 );
 
 class CertificateMetricsService {
-  constructor(options = {}) {
+  constructor(certificateService = null, options = {}) {
+    // Store reference to certificate service
+    this.certificateService = certificateService;
+
     this.metrics = {
       certificates: {
         total: 0,
@@ -351,6 +354,106 @@ class CertificateMetricsService {
       ),
       timestamp: new Date().toISOString(),
     };
+  }
+
+  /**
+   * Take a snapshot of current certificate metrics
+   * @returns {Promise<Object>} Snapshot of current metrics
+   */
+  async takeMetricsSnapshot() {
+    try {
+      logger.debug("Taking certificate metrics snapshot");
+
+      // Check if certificateService is available
+      if (this.certificateService) {
+        // Get all certificates
+        const certificates = await this.certificateService.getAllCertificates();
+
+        // Count certificates by status
+        let totalCertificates = certificates.length;
+        let validCertificates = 0;
+        let expiringSoon = 0;
+        let expired = 0;
+
+        const now = new Date();
+        const thirtyDays = 30 * 24 * 60 * 60 * 1000; // 30 days in milliseconds
+
+        certificates.forEach((cert) => {
+          if (!cert.expiresAt) return;
+
+          const expiryDate = new Date(cert.expiresAt);
+          const timeRemaining = expiryDate - now;
+
+          if (timeRemaining <= 0) {
+            expired++;
+          } else if (timeRemaining <= thirtyDays) {
+            expiringSoon++;
+          } else {
+            validCertificates++;
+          }
+        });
+
+        // Update metrics
+        this.updateCertificateMetrics({
+          totalCertificates,
+          validCertificates,
+          expiringSoon,
+          expired,
+          expiringCertificates: certificates.map((cert) => ({
+            domain: cert.domain || "unknown",
+            provider: cert.provider || "unknown",
+            status: this._getCertificateStatus(cert),
+            expiresAt: cert.expiresAt,
+          })),
+        });
+
+        logger.info("Certificate metrics snapshot completed", {
+          totalCertificates,
+          validCertificates,
+          expiringSoon,
+          expired,
+        });
+      } else {
+        logger.warn("Certificate service not available, using empty metrics");
+      }
+
+      return this.getMetrics();
+    } catch (err) {
+      logger.error(
+        `Error taking certificate metrics snapshot: ${err.message}`,
+        {
+          error: err.message,
+          stack: err.stack,
+        }
+      );
+      throw err;
+    }
+  }
+
+  /**
+   * Determine certificate status based on expiry date
+   * @param {Object} cert - Certificate object
+   * @returns {string} Status (OK, WARNING, CRITICAL, EXPIRED)
+   * @private
+   */
+  _getCertificateStatus(cert) {
+    if (!cert.expiresAt) return "UNKNOWN";
+
+    const expiryDate = new Date(cert.expiresAt);
+    const now = new Date();
+    const timeRemaining = expiryDate - now;
+
+    if (timeRemaining <= 0) {
+      return "EXPIRED";
+    } else if (timeRemaining <= 7 * 24 * 60 * 60 * 1000) {
+      // 7 days
+      return "CRITICAL";
+    } else if (timeRemaining <= 30 * 24 * 60 * 60 * 1000) {
+      // 30 days
+      return "WARNING";
+    } else {
+      return "OK";
+    }
   }
 
   /**
