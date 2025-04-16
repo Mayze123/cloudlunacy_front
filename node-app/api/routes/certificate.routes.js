@@ -12,7 +12,7 @@ const express = require("express");
 const router = express.Router();
 const { asyncHandler } = require("../../utils/errorHandler");
 const certificateController = require("../controllers/certificateController");
-const auth = require("../middleware/auth");
+const { requireRole } = require("../middleware/auth");
 
 /**
  * Get MongoDB CA certificate
@@ -28,7 +28,7 @@ router.get("/mongodb-ca", certificateController.getMongoCA);
  * GET /api/certificates/status
  * Requires admin role
  */
-router.get("/status", auth(["admin"]), function (req, res) {
+router.get("/status", requireRole("admin"), function (req, res) {
   // Explicitly define a handler function
   if (typeof certificateController.getCertificateStatus === "function") {
     return certificateController.getCertificateStatus(req, res);
@@ -47,7 +47,7 @@ router.get("/status", auth(["admin"]), function (req, res) {
  * GET /api/certificates/metrics
  * Requires admin role
  */
-router.get("/metrics", auth(["admin"]), function (req, res) {
+router.get("/metrics", requireRole("admin"), function (req, res) {
   // Explicitly define a handler function
   if (typeof certificateController.getCertificateMetrics === "function") {
     return certificateController.getCertificateMetrics(req, res);
@@ -68,7 +68,7 @@ router.get("/metrics", auth(["admin"]), function (req, res) {
  */
 router.get(
   "/metrics/history",
-  auth(["admin"]),
+  requireRole("admin"),
   asyncHandler(certificateController.getMetricsHistory)
 );
 
@@ -80,7 +80,7 @@ router.get(
  */
 router.get(
   "/",
-  auth(["admin"]),
+  requireRole("admin"),
   asyncHandler(certificateController.getAllCertificates)
 );
 
@@ -92,7 +92,7 @@ router.get(
  */
 router.post(
   "/renew-check",
-  auth(["admin"]),
+  requireRole("admin"),
   asyncHandler(certificateController.runRenewalCheck)
 );
 
@@ -104,7 +104,7 @@ router.post(
  */
 router.get(
   "/agent/:agentId",
-  auth(["admin", "agent"]),
+  requireRole("admin"),
   asyncHandler(certificateController.getAgentCertificates)
 );
 
@@ -116,7 +116,7 @@ router.get(
  */
 router.post(
   "/agent/:agentId/regenerate",
-  auth(["admin", "agent"]),
+  requireRole("admin"),
   asyncHandler(certificateController.regenerateAgentCertificate)
 );
 
@@ -128,7 +128,7 @@ router.post(
  */
 router.get(
   "/agent/:agentId/validate",
-  auth(["admin", "agent"]),
+  requireRole("admin"),
   asyncHandler(certificateController.validateAgentCertificate)
 );
 
@@ -140,7 +140,7 @@ router.get(
  */
 router.post(
   "/letsencrypt",
-  auth(["admin"]),
+  requireRole("admin"),
   asyncHandler(certificateController.issueLetsEncryptCert)
 );
 
@@ -152,7 +152,7 @@ router.post(
  */
 router.get(
   "/providers",
-  auth(["admin"]),
+  requireRole("admin"),
   asyncHandler(certificateController.getCertificateProviderTypes)
 );
 
@@ -164,7 +164,7 @@ router.get(
  */
 router.get(
   "/providers/:providerType/config",
-  auth(["admin"]),
+  requireRole("admin"),
   asyncHandler(certificateController.getCertificateProviderConfig)
 );
 
@@ -176,7 +176,7 @@ router.get(
  */
 router.get(
   "/provider/capabilities",
-  auth(["admin"]),
+  requireRole("admin"),
   asyncHandler(certificateController.getCertificateProviderCapabilities)
 );
 
@@ -188,7 +188,7 @@ router.get(
  */
 router.get(
   "/provider/validate",
-  auth(["admin"]),
+  requireRole("admin"),
   asyncHandler(certificateController.validateCertificateProviderConfig)
 );
 
