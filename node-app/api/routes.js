@@ -56,12 +56,33 @@ router.post("/agents/register", async (req, res, next) => {
     if (!agentId || !agentKey) {
       throw new AppError("Agent ID and agent key are required", 400);
     }
+    
+    // Get target IP from request body or headers if not explicitly provided
+    let effectiveTargetIp = targetIp;
+    if (!effectiveTargetIp) {
+      effectiveTargetIp = 
+        req.headers["x-forwarded-for"] ||
+        req.headers["x-real-ip"] ||
+        req.headers["x-agent-ip"] ||
+        req.connection.remoteAddress ||
+        "127.0.0.1";
+        
+      // Extract first IP if there are multiple IPs in x-forwarded-for
+      effectiveTargetIp = effectiveTargetIp.split(",")[0].trim();
+      
+      // Remove IPv6 prefix if present
+      effectiveTargetIp = effectiveTargetIp.replace(/^::ffff:/, "");
+    }
 
     const result = await agentService.registerAgent(
       agentId,
-      agentKey,
-      agentName,
-      targetIp
+      effectiveTargetIp,
+      {
+        agentKey,
+        agentName,
+        useTls: true,
+        generateCertificates: true
+      }
     );
 
     res.json(result);
