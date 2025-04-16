@@ -32,8 +32,16 @@ router.get("/mongodb-ca", certificateController.getMongoCA);
 router.get(
   "/dashboard",
   auth(["admin"]),
-  (req, res) => {
-    return certificateController.getDashboardData(req, res);
+  function(req, res) {
+    // Explicitly define a handler function
+    if (typeof certificateController.getDashboardData === 'function') {
+      return certificateController.getDashboardData(req, res);
+    } else {
+      return res.status(501).json({
+        success: false,
+        message: "Certificate dashboard functionality not implemented yet"
+      });
+    }
   }
 );
 
@@ -47,8 +55,16 @@ router.get(
 router.get(
   "/metrics",
   auth(["admin"]),
-  (req, res) => {
-    return certificateController.getCertificateMetrics(req, res);
+  function(req, res) {
+    // Explicitly define a handler function
+    if (typeof certificateController.getCertificateMetrics === 'function') {
+      return certificateController.getCertificateMetrics(req, res);
+    } else {
+      return res.status(501).json({
+        success: false,
+        message: "Certificate metrics functionality not implemented yet"
+      });
+    }
   }
 );
 

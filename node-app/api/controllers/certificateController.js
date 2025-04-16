@@ -542,23 +542,6 @@ exports.runRenewalCheck = asyncHandler(async (req, res) => {
 });
 
 /**
- * Get certificate metrics
- * Shows current metrics and trends
- */
-exports.getCertificateMetrics = async (req, res) => {
-  try {
-    const metrics = await certificateMetricsService.getMetrics();
-    res.json({
-      success: true,
-      data: metrics,
-    });
-  } catch (error) {
-    logger.error(`Error getting certificate metrics: ${error.message}`);
-    throw new AppError("Failed to get certificate metrics", 500);
-  }
-};
-
-/**
  * Get historical certificate metrics
  * Returns metrics history for a specific time range
  *
