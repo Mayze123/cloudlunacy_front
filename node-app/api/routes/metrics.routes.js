@@ -11,7 +11,7 @@ const metricsController = require("../controllers/metricsController");
 const authMiddleware = require("../middleware/auth");
 
 // Apply auth middleware to all metrics routes
-router.use(authMiddleware.verifyToken);
+router.use(authMiddleware.requireAuth);
 
 // Dashboard data - comprehensive metrics for the front-end dashboard
 router.get("/dashboard", metricsController.getDashboardData);
@@ -37,7 +37,7 @@ router.get("/export", metricsController.exportMetrics);
 // Update alert thresholds - configure when alerts are triggered
 router.post(
   "/alerts/thresholds",
-  authMiddleware.verifyAdmin,
+  authMiddleware.requireAdmin(),
   metricsController.updateAlertThresholds
 );
 
