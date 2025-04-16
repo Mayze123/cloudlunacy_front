@@ -70,6 +70,33 @@ class FileLock {
   }
 
   /**
+   * Execute a function with a lock, ensuring the lock is released afterward
+   * @param {string} lockId - Unique identifier for the lock
+   * @param {Function} fn - Async function to execute while holding the lock
+   * @param {number} timeout - Maximum time to wait for lock acquisition in ms
+   * @returns {Promise<any>} Result of the function execution
+   * @static
+   */
+  static async withLock(lockId, fn, timeout = DEFAULT_TIMEOUT) {
+    const acquisitionResult = await FileLock.acquire(lockId, timeout);
+    
+    if (!acquisitionResult.success) {
+      throw new Error(`Could not acquire lock for ${lockId}: ${acquisitionResult.error}`);
+    }
+    
+    const lock = acquisitionResult.lock;
+    try {
+      // Execute the function while holding the lock
+      return await fn();
+    } finally {
+      // Always release the lock, even if the function fails
+      await lock.release().catch(err => {
+        logger.error(`Error releasing lock in withLock: ${err.message}`);
+      });
+    }
+  }
+
+  /**
    * Acquire a lock with timeout
    * @param {string} lockId - Unique identifier for the lock
    * @param {number} timeout - Maximum time to wait for lock acquisition in ms
