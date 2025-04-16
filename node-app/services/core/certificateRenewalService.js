@@ -79,13 +79,30 @@ class CertificateRenewalService {
     );
 
     // Run an initial check right away, but wait a minute for system to stabilize
-    setTimeout(() => this.performRenewalCheck(), 60 * 1000);
+    setTimeout(() => {
+      this.performRenewalCheck().catch((err) => {
+        logger.error(
+          `Error during initial certificate renewal check: ${err.message}`,
+          {
+            error: err.message,
+            stack: err.stack,
+          }
+        );
+      });
+    }, 60 * 1000);
 
     // Schedule regular checks
-    this.renewalInterval = setInterval(
-      () => this.performRenewalCheck(),
-      checkInterval
-    );
+    this.renewalInterval = setInterval(() => {
+      this.performRenewalCheck().catch((err) => {
+        logger.error(
+          `Error during scheduled certificate renewal check: ${err.message}`,
+          {
+            error: err.message,
+            stack: err.stack,
+          }
+        );
+      });
+    }, checkInterval);
 
     return true;
   }

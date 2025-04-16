@@ -228,6 +228,12 @@ class HAProxyLoadOptimizer extends EventEmitter {
 
       const backends = backendsResponse.data.data;
 
+      // Ensure backends is an array before iterating
+      if (!Array.isArray(backends)) {
+        logger.warn("No backends available or backends not in expected format");
+        return; // Exit early if not an array
+      }
+
       // Process each backend
       for (const backend of backends) {
         const backendName = backend.name;
