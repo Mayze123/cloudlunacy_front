@@ -265,10 +265,31 @@ class CertificateService {
           const tempCertPath = path.join(agentCertDir, ".server.crt.tmp");
           const tempPemPath = path.join(agentCertDir, ".server.pem.tmp");
           const configPath = path.join(agentCertDir, "openssl.cnf");
-          const mongoSubdomain = `${agentId}.${this.mongoDomain}`;
 
-          // Create OpenSSL configuration
-          const opensslConfig = `
+          // Define domain names
+          const mongoSubdomain = `${agentId}.${this.mongoDomain}`;
+          
+          // Validate IP address format to avoid OpenSSL errors
+          const isValidIP = (ip) => {
+            if (!ip || typeof ip !== "string") return false;
+            
+            // IPv4 validation
+            const ipv4Regex = /^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
+            
+            // IPv6 validation (simplified)
+            const ipv6Regex = /^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$|^::1$|^::$|^([0-9a-fA-F]{1,4}:){0,6}::([0-9a-fA-F]{1,4}:){0,6}[0-9a-fA-F]{1,4}$/;
+            
+            return ipv4Regex.test(ip) || ipv6Regex.test(ip);
+          };
+          
+          // Log the target IP to diagnose any issues
+          logger.debug(`Certificate generation for agent ${agentId} using targetIp: ${targetIp}`);
+
+          // Create a cleaned version of the targetIp for OpenSSL
+          const validIp = isValidIP(targetIp) ? targetIp : '127.0.0.1';
+          
+          // Create OpenSSL configuration with IP validation
+          let opensslConfig = `
 [req]
 distinguished_name = req_distinguished_name
 req_extensions = v3_req
@@ -285,9 +306,17 @@ subjectAltName = @alt_names
 [alt_names]
 DNS.1 = ${mongoSubdomain}
 DNS.2 = *.${mongoSubdomain}
-DNS.3 = ${targetIp || "localhost"}
-IP.1 = ${targetIp || "127.0.0.1"}
 `;
+
+          // Only add the IP as DNS.3 if it's not numeric to avoid OpenSSL errors
+          if (!isValidIP(targetIp)) {
+            opensslConfig += `DNS.3 = ${targetIp || "localhost"}\n`;
+          }
+          
+          // Only add as IP.1 if it's a valid IP format
+          if (isValidIP(validIp)) {
+            opensslConfig += `IP.1 = ${validIp}\n`;
+          }
 
           // Write OpenSSL configuration
           await fs.writeFile(configPath, opensslConfig);
@@ -306,13 +335,12 @@ IP.1 = ${targetIp || "127.0.0.1"}
               `openssl x509 -req -in ${csrPath} -CA ${this.caCertPath} -CAkey ${this.caKeyPath} -CAcreateserial -out ${tempCertPath} -days 365 -extensions v3_req -extfile ${configPath}`
             );
 
-            // Create combined PEM file for HAProxy
-            const certContent = await fs.readFile(tempCertPath, "utf8");
-            const keyContent = await fs.readFile(tempKeyPath, "utf8");
-            const pemContent = certContent + keyContent;
-            await fs.writeFile(tempPemPath, pemContent);
+            // Create combined PEM file (key + cert)
+            const key = await fs.readFile(tempKeyPath);
+            const cert = await fs.readFile(tempCertPath);
+            await fs.writeFile(tempPemPath, Buffer.concat([key, cert]));
 
-            // Set permissions
+            // Set proper permissions
             await fs.chmod(tempKeyPath, 0o600);
             await fs.chmod(tempCertPath, 0o644);
             await fs.chmod(tempPemPath, 0o600);
@@ -350,7 +378,12 @@ IP.1 = ${targetIp || "127.0.0.1"}
                 `Failed to clean up temporary files: ${cleanupErr.message}`
               );
             }
-            throw err;
+
+            logger.error(`Certificate creation failed: ${err.message}`);
+            return {
+              success: false,
+              error: `Certificate creation failed: ${err.message}`,
+            };
           }
         },
         15000

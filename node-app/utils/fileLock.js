@@ -79,18 +79,20 @@ class FileLock {
    */
   static async withLock(lockId, fn, timeout = DEFAULT_TIMEOUT) {
     const acquisitionResult = await FileLock.acquire(lockId, timeout);
-    
+
     if (!acquisitionResult.success) {
-      throw new Error(`Could not acquire lock for ${lockId}: ${acquisitionResult.error}`);
+      throw new Error(
+        `Could not acquire lock for ${lockId}: ${acquisitionResult.error}`
+      );
     }
-    
+
     const lock = acquisitionResult.lock;
     try {
       // Execute the function while holding the lock
       return await fn();
     } finally {
       // Always release the lock, even if the function fails
-      await lock.release().catch(err => {
+      await lock.release().catch((err) => {
         logger.error(`Error releasing lock in withLock: ${err.message}`);
       });
     }
