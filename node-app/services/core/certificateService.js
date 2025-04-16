@@ -114,11 +114,18 @@ class CertificateService {
       await this._ensureCA();
 
       // Initialize the certificate provider
-      if (this.provider.needsInitialization()) {
+      // Instead of checking if needsInitialization exists, directly call initialize
+      // as all providers are expected to implement this method
+      try {
         const providerInitialized = await this.provider.initialize();
         if (!providerInitialized) {
           throw new Error("Failed to initialize certificate provider");
         }
+      } catch (err) {
+        logger.error(
+          `Failed to initialize certificate provider: ${err.message}`
+        );
+        throw err;
       }
 
       this.initialized = true;
