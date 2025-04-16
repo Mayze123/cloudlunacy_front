@@ -224,8 +224,14 @@ class HAProxyService {
       this.mongoDBServers = [];
 
       // Load backends to find HTTP routes
-      const backendsResponse = await client.get("/configuration/backends");
-      const backends = backendsResponse.data.data;
+      const backendsResponse = await client.get(
+        "/services/haproxy/configuration/backends"
+      );
+      let backends = backendsResponse.data.data;
+      if (!Array.isArray(backends)) {
+        logger.warn("No backends available or invalid format from HAProxy API");
+        backends = [];
+      }
 
       // Extract HTTP routes
       for (const backend of backends) {

@@ -34,9 +34,9 @@ dataplaneapi:
 
   # API version and features
   api_detailed_errors: true
-  
+
   # Don't check API versions which can cause compatibility issues
   disable_version_check: true
-  
+
   # Enable debugging for troubleshooting
   debug: true
