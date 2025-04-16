@@ -11,7 +11,8 @@ const logger = require("../../utils/logger").getLogger("agentService");
 
 class AgentService {
   constructor(configManager, mongodbService) {
-    this.configManager = configManager || {};
+    // Store the config manager (don't default to empty object)
+    this.configManager = configManager;
     this.mongodbService = mongodbService;
     this.initialized = false;
     this.agents = new Map();
@@ -63,12 +64,12 @@ class AgentService {
       }
 
       // Check if config manager is initialized
-      if (typeof this.configManager.initialized === "undefined") {
-        logger.warn(
-          "Config manager doesn't have an initialized property, skipping initialization check"
-        );
-      } else if (!this.configManager.initialized) {
+      if (
+        !this.configManager.initialized &&
+        typeof this.configManager.initialize === "function"
+      ) {
         try {
+          logger.info("Initializing config manager before loading agents");
           await this.configManager.initialize();
         } catch (initErr) {
           logger.warn(

@@ -369,8 +369,19 @@ class CertificateMetricsService {
         // Get all certificates
         const certificates = await this.certificateService.getAllCertificates();
 
+        // Ensure certificates is an array
+        const certificatesArray = Array.isArray(certificates)
+          ? certificates
+          : [];
+        if (!Array.isArray(certificates)) {
+          logger.warn(
+            "Expected certificates to be an array but got: " +
+              typeof certificates
+          );
+        }
+
         // Count certificates by status
-        let totalCertificates = certificates.length;
+        let totalCertificates = certificatesArray.length;
         let validCertificates = 0;
         let expiringSoon = 0;
         let expired = 0;
@@ -378,7 +389,7 @@ class CertificateMetricsService {
         const now = new Date();
         const thirtyDays = 30 * 24 * 60 * 60 * 1000; // 30 days in milliseconds
 
-        certificates.forEach((cert) => {
+        certificatesArray.forEach((cert) => {
           if (!cert.expiresAt) return;
 
           const expiryDate = new Date(cert.expiresAt);
@@ -399,7 +410,7 @@ class CertificateMetricsService {
           validCertificates,
           expiringSoon,
           expired,
-          expiringCertificates: certificates.map((cert) => ({
+          expiringCertificates: certificatesArray.map((cert) => ({
             domain: cert.domain || "unknown",
             provider: cert.provider || "unknown",
             status: this._getCertificateStatus(cert),
@@ -426,7 +437,9 @@ class CertificateMetricsService {
           stack: err.stack,
         }
       );
-      throw err;
+
+      // Continue with default metrics instead of throwing
+      return this.getMetrics();
     }
   }
 
