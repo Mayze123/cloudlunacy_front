@@ -23,27 +23,22 @@ const auth = require("../middleware/auth");
 router.get("/mongodb-ca", certificateController.getMongoCA);
 
 /**
- * Get certificate dashboard
- * Shows status of all certificates in the system
+ * Get certificate status
  *
- * GET /api/certificates/dashboard
+ * GET /api/certificates/status
  * Requires admin role
  */
-router.get(
-  "/dashboard",
-  auth(["admin"]),
-  function(req, res) {
-    // Explicitly define a handler function
-    if (typeof certificateController.getDashboardData === 'function') {
-      return certificateController.getDashboardData(req, res);
-    } else {
-      return res.status(501).json({
-        success: false,
-        message: "Certificate dashboard functionality not implemented yet"
-      });
-    }
+router.get("/status", auth(["admin"]), function (req, res) {
+  // Explicitly define a handler function
+  if (typeof certificateController.getCertificateStatus === "function") {
+    return certificateController.getCertificateStatus(req, res);
+  } else {
+    return res.status(501).json({
+      success: false,
+      message: "Certificate status functionality not implemented yet",
+    });
   }
-);
+});
 
 /**
  * Get certificate metrics
@@ -52,21 +47,17 @@ router.get(
  * GET /api/certificates/metrics
  * Requires admin role
  */
-router.get(
-  "/metrics",
-  auth(["admin"]),
-  function(req, res) {
-    // Explicitly define a handler function
-    if (typeof certificateController.getCertificateMetrics === 'function') {
-      return certificateController.getCertificateMetrics(req, res);
-    } else {
-      return res.status(501).json({
-        success: false,
-        message: "Certificate metrics functionality not implemented yet"
-      });
-    }
+router.get("/metrics", auth(["admin"]), function (req, res) {
+  // Explicitly define a handler function
+  if (typeof certificateController.getCertificateMetrics === "function") {
+    return certificateController.getCertificateMetrics(req, res);
+  } else {
+    return res.status(501).json({
+      success: false,
+      message: "Certificate metrics functionality not implemented yet",
+    });
   }
-);
+});
 
 /**
  * Get historical certificate metrics
