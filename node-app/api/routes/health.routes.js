@@ -55,7 +55,7 @@ router.post(
   "/haproxy/recover",
   authMiddleware.requireAuth,
   authMiddleware.requireAdmin,
-  healthController.recoverHAProxy
+  healthController.recoverHAProxyService
 );
 
 /**
