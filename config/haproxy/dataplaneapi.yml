@@ -1,38 +1,42 @@
 dataplaneapi:
   host: 0.0.0.0
   port: 5555
-  # Schemes: http or https (v3 uses a single value instead of a list)
+  # Use v3 API to match the Node.js app configuration
   scheme: http
 
   # HAProxy configuration
   haproxy:
     config_file: /usr/local/etc/haproxy/haproxy.cfg
     haproxy_bin: /usr/local/sbin/haproxy
+    reload_delay: 5
+    reload_cmd: "kill -SIGUSR2 1"
+    reload_retention: 1
+    config_version: 3
 
-  # User authentication - Adding this to fix the authentication issue
+  # User authentication - Consistent with environment variables
   users:
     - username: admin
       password: admin
       insecure: true
 
-  # Userlist in the HAProxy configuration where credentials are defined
-  userlist:
-    userlist_file: /usr/local/etc/haproxy/haproxy.cfg
-    userlist_name: dataplaneapi
+  # Use proper authentication for API access
+  userlist: dataplaneapi
 
-  # Storage for transactions
+  # Storage for transactions - Increased max transactions for reliability
   transaction:
     transaction_dir: /etc/haproxy/dataplaneapi
+    max_open_transactions: 20
 
-  # Log configuration
+  # Log configuration - Include more debugging information
   log_targets:
     - log_to: stdout
-      log_level: info
+      log_level: debug
 
-  # Automated reload on config change
-  resources:
-    reload_delay: 5
-    reload_cmd: "kill -SIGUSR2 1"
-
-  # HAProxy API version
+  # API version and features
   api_detailed_errors: true
+  
+  # Don't check API versions which can cause compatibility issues
+  disable_version_check: true
+  
+  # Enable debugging for troubleshooting
+  debug: true
