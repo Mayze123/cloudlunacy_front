@@ -119,7 +119,9 @@ class CertificateService {
         await this.provider.initialize();
         logger.info("Certificate provider initialized successfully");
       } catch (providerErr) {
-        logger.warn(`Certificate provider initialization warning: ${providerErr.message}`);
+        logger.warn(
+          `Certificate provider initialization warning: ${providerErr.message}`
+        );
         // Continue even if provider initialization fails, as we can still use basic operations
       }
 

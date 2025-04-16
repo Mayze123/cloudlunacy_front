@@ -126,9 +126,9 @@ class CertificateRenewalService {
    */
   async performRenewalCheck() {
     // Use a lock to prevent multiple simultaneous renewal checks
-    const lock = await FileLock.acquire(RENEWAL_LOCK, 30000);
+    const lockResult = await FileLock.acquire(RENEWAL_LOCK, 30000);
 
-    if (!lock.success) {
+    if (!lockResult.success) {
       logger.info(
         "Another renewal process is already running, skipping this one"
       );
@@ -181,7 +181,7 @@ class CertificateRenewalService {
       };
     } finally {
       // Always release the lock
-      await lock.release();
+      await lockResult.lock.release();
     }
   }
 }
