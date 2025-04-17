@@ -515,9 +515,11 @@ DNS.2 = *.${mongoSubdomain}
    * @returns {Promise<Object>} Result of the operation
    */
   async reloadHAProxy() {
+    let lock = null;
     // Use lock to prevent multiple simultaneous reloads
     try {
-      const lock = await FileLock.acquire(HAPROXY_RELOAD_LOCK, 10000);
+      lock = await FileLock.acquire(HAPROXY_RELOAD_LOCK, 10000);
+
       if (!lock.success) {
         logger.info(
           "HAProxy reload already in progress, skipping duplicate reload"
@@ -545,11 +547,19 @@ DNS.2 = *.${mongoSubdomain}
                 execAsync(
                   `docker exec ${haproxyContainer} haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg`
                 ),
-                new Promise((_, reject) => 
-                  setTimeout(() => reject(new Error("Docker exec command timed out after 15 seconds")), execTimeout)
-                )
+                new Promise((_, reject) =>
+                  setTimeout(
+                    () =>
+                      reject(
+                        new Error(
+                          "Docker exec command timed out after 15 seconds"
+                        )
+                      ),
+                    execTimeout
+                  )
+                ),
               ]);
-              
+
               logger.info("HAProxy configuration validated successfully");
             } catch (validationErr) {
               logger.error(
@@ -565,21 +575,33 @@ DNS.2 = *.${mongoSubdomain}
               execAsync(
                 `docker exec ${haproxyContainer} service haproxy reload`
               ),
-              new Promise((_, reject) => 
-                setTimeout(() => reject(new Error("HAProxy reload command timed out after 15 seconds")), execTimeout)
-              )
+              new Promise((_, reject) =>
+                setTimeout(
+                  () =>
+                    reject(
+                      new Error(
+                        "HAProxy reload command timed out after 15 seconds"
+                      )
+                    ),
+                  execTimeout
+                )
+              ),
             ]);
 
             // Verify that HAProxy is still running after reload with timeout
             const { stdout } = await Promise.race([
-              execAsync(
-                `docker ps -q -f name=${haproxyContainer}`
+              execAsync(`docker ps -q -f name=${haproxyContainer}`),
+              new Promise((_, reject) =>
+                setTimeout(
+                  () =>
+                    reject(
+                      new Error("Docker ps command timed out after 15 seconds")
+                    ),
+                  execTimeout
+                )
               ),
-              new Promise((_, reject) => 
-                setTimeout(() => reject(new Error("Docker ps command timed out after 15 seconds")), execTimeout)
-              )
             ]);
-            
+
             if (!stdout.trim()) {
               throw new Error("HAProxy is not running after reload attempt");
             }
@@ -620,11 +642,23 @@ DNS.2 = *.${mongoSubdomain}
           },
         });
       } finally {
-        // Always release the lock when done
-        await lock.release();
+        // Always release the lock when done, but check if it exists and has release method first
+        if (lock && typeof lock.release === "function") {
+          await lock.release();
+        }
       }
     } catch (err) {
       logger.error(`Failed to reload HAProxy: ${err.message}`);
+      // Final attempt to release the lock if it exists
+      if (lock && typeof lock.release === "function") {
+        try {
+          await lock.release();
+        } catch (releaseErr) {
+          logger.warn(
+            `Failed to release HAProxy reload lock: ${releaseErr.message}`
+          );
+        }
+      }
       return { success: false, error: err.message };
     }
   }
