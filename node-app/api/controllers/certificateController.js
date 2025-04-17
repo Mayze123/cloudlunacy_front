@@ -424,45 +424,21 @@ exports.validateAgentCertificate = asyncHandler(async (req, res) => {
 });
 
 /**
- * Get certificate dashboard data
- * Display status of all certificates in the system
- *
- * GET /api/certificates/dashboard
- * Requires admin role
+ * Get certificate dashboard
+ * Shows status of all certificates in the system
  */
-exports.getCertificateDashboard = asyncHandler(async (req, res) => {
-  // Check if user is authorized (admin only)
-  if (!req.user || req.user.role !== "admin") {
-    throw new AppError("Unauthorized - Admin access required", 403);
-  }
-
-  // Initialize certificate service if needed
-  if (!coreServices.certificateService) {
-    throw new AppError("Certificate service not available", 500);
-  }
-
-  if (!coreServices.certificateService.initialized) {
-    await coreServices.certificateService.initialize();
-  }
-
-  logger.info("Generating certificate dashboard");
-
+exports.getCertificateDashboard = async (req, res) => {
   try {
-    const dashboardData =
-      await coreServices.certificateService.getCertificateDashboard();
-
-    return res.status(200).json({
+    const dashboardData = await certificateService.getDashboardData();
+    res.json({
       success: true,
-      dashboard: dashboardData,
+      data: dashboardData,
     });
   } catch (error) {
-    logger.error(`Certificate dashboard generation error: ${error.message}`);
-    throw new AppError(
-      `Failed to generate certificate dashboard: ${error.message}`,
-      500
-    );
+    logger.error(`Error getting certificate dashboard: ${error.message}`);
+    throw new AppError("Failed to get certificate dashboard", 500);
   }
-});
+};
 
 /**
  * List all certificates in the system
@@ -566,46 +542,6 @@ exports.runRenewalCheck = asyncHandler(async (req, res) => {
 });
 
 /**
- * Get certificate metrics
- * Returns current metrics and trends for certificate management
- *
- * GET /api/certificates/metrics
- * Requires admin role
- */
-exports.getCertificateMetrics = asyncHandler(async (req, res) => {
-  // Check if user is authorized (admin only)
-  if (!req.user || req.user.role !== "admin") {
-    throw new AppError("Unauthorized - Admin access required", 403);
-  }
-
-  // Get metrics service
-  if (!coreServices.certificateMetricsService) {
-    throw new AppError("Certificate metrics service not available", 500);
-  }
-
-  logger.info("Retrieving certificate metrics");
-
-  try {
-    // Take a new snapshot to ensure current data
-    const currentSnapshot =
-      await coreServices.certificateMetricsService.takeMetricsSnapshot();
-    const trends = coreServices.certificateMetricsService.calculateTrends();
-
-    return res.status(200).json({
-      success: true,
-      metrics: currentSnapshot,
-      trends,
-    });
-  } catch (error) {
-    logger.error(`Failed to get certificate metrics: ${error.message}`);
-    throw new AppError(
-      `Failed to get certificate metrics: ${error.message}`,
-      500
-    );
-  }
-});
-
-/**
  * Get historical certificate metrics
  * Returns metrics history for a specific time range
  *
@@ -666,22 +602,13 @@ exports.getMetricsHistory = asyncHandler(async (req, res) => {
  * @param {Object} res - Express response object
  * @param {Function} next - Express next middleware function
  */
-const getCertificateProviderTypes = async (req, res, next) => {
-  try {
-    const providerTypes = CertificateProviderFactory.getSupportedTypes();
-    res.status(200).json({
-      success: true,
-      providerTypes,
-    });
-  } catch (err) {
-    next(
-      new AppError(
-        `Failed to get certificate provider types: ${err.message}`,
-        500
-      )
-    );
-  }
-};
+exports.getCertificateProviderTypes = asyncHandler(async (req, res) => {
+  const providerTypes = CertificateProviderFactory.getSupportedTypes();
+  res.status(200).json({
+    success: true,
+    providerTypes,
+  });
+});
 
 /**
  * Get configuration template for a certificate provider type
@@ -689,28 +616,22 @@ const getCertificateProviderTypes = async (req, res, next) => {
  * @param {Object} res - Express response object
  * @param {Function} next - Express next middleware function
  */
-const getCertificateProviderConfig = async (req, res, next) => {
-  try {
-    const { providerType } = req.params;
+exports.getCertificateProviderConfig = asyncHandler(async (req, res) => {
+  const { providerType } = req.params;
 
-    if (!providerType) {
-      return next(new AppError("Provider type is required", 400));
-    }
-
-    const configTemplate =
-      CertificateProviderFactory.getConfigTemplate(providerType);
-
-    res.status(200).json({
-      success: true,
-      providerType,
-      configTemplate,
-    });
-  } catch (err) {
-    next(
-      new AppError(`Failed to get provider configuration: ${err.message}`, 500)
-    );
+  if (!providerType) {
+    throw new AppError("Provider type is required", 400);
   }
-};
+
+  const configTemplate =
+    CertificateProviderFactory.getConfigTemplate(providerType);
+
+  res.status(200).json({
+    success: true,
+    providerType,
+    configTemplate,
+  });
+});
 
 /**
  * Get current certificate provider capabilities
@@ -718,25 +639,19 @@ const getCertificateProviderConfig = async (req, res, next) => {
  * @param {Object} res - Express response object
  * @param {Function} next - Express next middleware function
  */
-const getCertificateProviderCapabilities = async (req, res, next) => {
-  try {
-    if (!certificateService.initialized) {
-      await certificateService.initialize();
-    }
-
-    const capabilities = certificateService.getProviderCapabilities() || {};
-
-    res.status(200).json({
-      success: true,
-      providerType: process.env.CERT_PROVIDER_TYPE || "self-signed",
-      capabilities,
-    });
-  } catch (err) {
-    next(
-      new AppError(`Failed to get provider capabilities: ${err.message}`, 500)
-    );
+exports.getCertificateProviderCapabilities = asyncHandler(async (req, res) => {
+  if (!certificateService.initialized) {
+    await certificateService.initialize();
   }
-};
+
+  const capabilities = certificateService.getProviderCapabilities() || {};
+
+  res.status(200).json({
+    success: true,
+    providerType: process.env.CERT_PROVIDER_TYPE || "self-signed",
+    capabilities,
+  });
+});
 
 /**
  * Validate certificate provider configuration
@@ -744,33 +659,97 @@ const getCertificateProviderCapabilities = async (req, res, next) => {
  * @param {Object} res - Express response object
  * @param {Function} next - Express next middleware function
  */
-const validateCertificateProviderConfig = async (req, res, next) => {
+exports.validateCertificateProviderConfig = asyncHandler(async (req, res) => {
+  if (!certificateService.initialized) {
+    await certificateService.initialize();
+  }
+
+  const validationResults = await certificateService.validateProviderConfig();
+
+  res.status(200).json({
+    success: true,
+    providerType: process.env.CERT_PROVIDER_TYPE || "self-signed",
+    validationResults,
+  });
+});
+
+/**
+ * Get certificate dashboard data
+ * Display status of all certificates in the system
+ *
+ * GET /api/certificates/dashboard
+ * Requires admin role
+ */
+exports.getDashboardData = asyncHandler(async (req, res) => {
+  // Check if user is authorized (admin only)
+  if (!req.user || req.user.role !== "admin") {
+    throw new AppError("Unauthorized - Admin access required", 403);
+  }
+
+  // Initialize certificate service if needed
+  if (!coreServices.certificateService) {
+    throw new AppError("Certificate service not available", 500);
+  }
+
+  if (!coreServices.certificateService.initialized) {
+    await coreServices.certificateService.initialize();
+  }
+
+  logger.info("Generating certificate dashboard");
+
   try {
-    if (!certificateService.initialized) {
-      await certificateService.initialize();
-    }
+    const dashboardData =
+      await coreServices.certificateService.getCertificateDashboard();
 
-    const validationResults = await certificateService.validateProviderConfig();
-
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      providerType: process.env.CERT_PROVIDER_TYPE || "self-signed",
-      validationResults,
+      dashboard: dashboardData,
     });
-  } catch (err) {
-    next(
-      new AppError(
-        `Failed to validate provider configuration: ${err.message}`,
-        500
-      )
+  } catch (error) {
+    logger.error(`Certificate dashboard generation error: ${error.message}`);
+    throw new AppError(
+      `Failed to generate certificate dashboard: ${error.message}`,
+      500
     );
   }
-};
+});
 
-module.exports = {
-  // ...existing exports...
-  getCertificateProviderTypes,
-  getCertificateProviderConfig,
-  getCertificateProviderCapabilities,
-  validateCertificateProviderConfig,
-};
+/**
+ * Get certificate metrics
+ * Returns current metrics and trends for certificate management
+ *
+ * GET /api/certificates/metrics
+ * Requires admin role
+ */
+exports.getCertificateMetrics = asyncHandler(async (req, res) => {
+  // Check if user is authorized (admin only)
+  if (!req.user || req.user.role !== "admin") {
+    throw new AppError("Unauthorized - Admin access required", 403);
+  }
+
+  // Get metrics service
+  if (!coreServices.certificateMetricsService) {
+    throw new AppError("Certificate metrics service not available", 500);
+  }
+
+  logger.info("Retrieving certificate metrics");
+
+  try {
+    // Take a new snapshot to ensure current data
+    const currentSnapshot =
+      await coreServices.certificateMetricsService.takeMetricsSnapshot();
+    const trends = coreServices.certificateMetricsService.calculateTrends();
+
+    return res.status(200).json({
+      success: true,
+      metrics: currentSnapshot,
+      trends,
+    });
+  } catch (error) {
+    logger.error(`Failed to get certificate metrics: ${error.message}`);
+    throw new AppError(
+      `Failed to get certificate metrics: ${error.message}`,
+      500
+    );
+  }
+});
