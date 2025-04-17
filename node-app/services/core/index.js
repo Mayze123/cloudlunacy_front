@@ -14,6 +14,7 @@ const EnhancedHAProxyService = require("./enhancedHAProxyService");
 const CertificateService = require("./certificateService");
 const CertificateRenewalService = require("./certificateRenewalService");
 const CertificateMetricsService = require("./certificateMetricsService");
+const MongoDBService = require("./databases/mongodbService");
 
 // Create instances of core services
 const certificateService = new CertificateService();
@@ -27,6 +28,8 @@ const enhancedHAProxyService = new EnhancedHAProxyService({
 });
 
 const proxyService = new ProxyService();
+// Initialize MongoDB service with proxy and HAProxy dependencies
+const mongodbService = new MongoDBService(proxyService, enhancedHAProxyService);
 const configService = new ConfigService();
 const certificateRenewalService = new CertificateRenewalService(
   certificateService
@@ -44,8 +47,9 @@ module.exports = {
   proxyService,
   agentService,
   configService,
+  mongodbService,
   haproxyService,
-  enhancedHAProxyService, // Export the enhanced service
+  enhancedHAProxyService,
   certificateService,
   certificateRenewalService,
   certificateMetricsService,

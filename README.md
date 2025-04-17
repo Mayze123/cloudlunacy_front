@@ -281,17 +281,18 @@ curl -X DELETE http://localhost:3005/api/agent/my-agent-id \
 #### Adding a MongoDB Subdomain
 
 ```bash
-curl -X POST http://localhost:3005/api/frontdoor/add-subdomain \
+curl -X POST http://localhost:3005/api/mongodb/register \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "subdomain": "test-db",
+    "agentId": "my-agent-id",
     "targetIp": "192.168.1.100",
-    "agentId": "my-agent-id"
+    "targetPort": 27017,
+    "useTls": true
   }'
 ```
 
-This makes the MongoDB instance accessible at `my-agent-id.mongodb.cloudlunacy.uk:27017`
+This registers the MongoDB instance and makes it accessible at `my-agent-id.mongodb.cloudlunacy.uk:27017`
 
 #### Listing MongoDB Subdomains
 
@@ -544,7 +545,7 @@ Main API endpoints:
 
 - **MongoDB Management:**
 
-  - `POST /api/frontdoor/add-subdomain` - Add MongoDB subdomain
+  - `POST /api/mongodb/register` - Register a MongoDB instance
   - `GET /api/mongodb` - List MongoDB subdomains
   - `DELETE /api/mongodb/:agentId` - Remove subdomain
 
