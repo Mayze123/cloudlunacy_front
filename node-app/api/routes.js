@@ -153,6 +153,12 @@ router.post(
   authMiddleware.requireAuth,
   async (req, res, next) => {
     try {
+      // Add deprecation warning header
+      res.setHeader(
+        "X-Deprecated-API",
+        "This endpoint is deprecated. Please use /api/mongodb/register instead."
+      );
+
       const { agentId, targetHost, targetPort, options } = req.body;
 
       if (!agentId) {
@@ -162,6 +168,9 @@ router.post(
       if (!targetHost) {
         throw new AppError("Target host is required", 400);
       }
+
+      // Log deprecation warning
+      logger.warn(`Deprecated endpoint /api/proxy/mongodb was used for agent ${agentId}. This endpoint will be removed in a future version.`);
 
       const result = await proxyService.addMongoDBRoute(
         agentId,

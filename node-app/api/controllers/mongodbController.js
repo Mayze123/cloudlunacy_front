@@ -8,6 +8,10 @@
 const coreServices = require("../../services/core");
 const logger = require("../../utils/logger").getLogger("mongodbController");
 const { AppError, asyncHandler } = require("../../utils/errorHandler");
+const ProxyService = require("../../services/core/proxyService");
+
+// Initialize ProxyService
+const proxyService = new ProxyService();
 
 /**
  * Register MongoDB
@@ -33,7 +37,7 @@ exports.registerMongoDB = asyncHandler(async (req, res) => {
     }
   );
 
-  // Register the MongoDB instance
+  // Register the MongoDB instance - preserve this functionality
   const result = await coreServices.mongodbService.registerAgent(
     agentId,
     targetIp,
@@ -55,16 +59,21 @@ exports.registerMongoDB = asyncHandler(async (req, res) => {
     useTls ? "tls=true&tlsAllowInvalidCertificates=true" : ""
   }`;
 
-  // Update HAProxy configuration using the enhanced service instead of the legacy manager
+  // Update HAProxy configuration using the ProxyService
   try {
-    // Use enhancedHAProxyService if available, otherwise fall back to standard haproxyService
-    const haproxyService =
-      coreServices.enhancedHAProxyService || coreServices.haproxyService;
-    await haproxyService.addMongoDBRoute(agentId, targetIp, targetPort, {
-      useTls,
-    });
+    // Use ProxyService to add MongoDB route
+    const proxyResult = await proxyService.addMongoDBRoute(
+      agentId,
+      targetIp,
+      targetPort,
+      { useTls }
+    );
 
-    logger.info(`Successfully updated HAProxy for MongoDB agent ${agentId}`);
+    if (!proxyResult.success) {
+      logger.warn(`Proxy registration warning: ${proxyResult.message || proxyResult.error}`);
+    } else {
+      logger.info(`Successfully updated HAProxy for MongoDB agent ${agentId}`);
+    }
   } catch (haproxyErr) {
     logger.error(`Failed to update HAProxy for MongoDB: ${haproxyErr.message}`);
     // Continue anyway - the MongoDB registration was successful
