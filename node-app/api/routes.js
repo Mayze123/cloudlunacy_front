@@ -17,6 +17,9 @@ const mongodbRoutes = require("./routes/mongodb.routes");
 const healthRoutes = require("./routes/health.routes");
 const metricsRoutes = require("./routes/metrics.routes"); // Added metrics routes
 
+// Import controllers
+const agentController = require("./controllers/agentController");
+
 // Import core services
 const ProxyService = require("../services/core/proxyService");
 const AgentService = require("../services/core/agentService");
@@ -49,46 +52,19 @@ router.use("/metrics", metricsRoutes); // Mount metrics routes
 /**
  * Agent Routes
  */
-router.post("/agents/register", async (req, res, next) => {
-  try {
-    const { agentId, agentKey, agentName, targetIp } = req.body;
+// Use the controller implementation for agent registration
+router.post("/agent/register", agentController.registerAgent);
 
-    if (!agentId || !agentKey) {
-      throw new AppError("Agent ID and agent key are required", 400);
-    }
-    
-    // Get target IP from request body or headers if not explicitly provided
-    let effectiveTargetIp = targetIp;
-    if (!effectiveTargetIp) {
-      effectiveTargetIp = 
-        req.headers["x-forwarded-for"] ||
-        req.headers["x-real-ip"] ||
-        req.headers["x-agent-ip"] ||
-        req.connection.remoteAddress ||
-        "127.0.0.1";
-        
-      // Extract first IP if there are multiple IPs in x-forwarded-for
-      effectiveTargetIp = effectiveTargetIp.split(",")[0].trim();
-      
-      // Remove IPv6 prefix if present
-      effectiveTargetIp = effectiveTargetIp.replace(/^::ffff:/, "");
-    }
+// Redirect old endpoint to new one for backward compatibility
+router.post("/agents/register", (req, res) => {
+  // Add a deprecation warning header
+  res.setHeader(
+    "X-Deprecated-API",
+    "This endpoint is deprecated. Please use /api/agent/register instead."
+  );
 
-    const result = await agentService.registerAgent(
-      agentId,
-      effectiveTargetIp,
-      {
-        agentKey,
-        agentName,
-        useTls: true,
-        generateCertificates: true
-      }
-    );
-
-    res.json(result);
-  } catch (err) {
-    next(err);
-  }
+  // Forward to the controller method
+  agentController.registerAgent(req, res);
 });
 
 router.post("/agents/authenticate", async (req, res, next) => {

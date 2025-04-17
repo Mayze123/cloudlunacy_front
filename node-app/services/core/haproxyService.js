@@ -1019,93 +1019,157 @@ class HAProxyService {
    * @returns {Promise<boolean>} Success status
    */
   async ensureMongoDBPort() {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+
+    if (!this.apiAvailable) {
+      logger.warn(
+        "HAProxy API not available, skipping MongoDB port configuration"
+      );
+      return false;
+    }
+
+    logger.info("Ensuring MongoDB port is properly configured");
+
     try {
-      await this._startTransaction();
       const client = this._getApiClient();
 
-      // Check if mongodb_default backend exists
+      // Start a transaction with proper error handling
+      let transactionId = null;
       try {
-        await client.get(
-          `/services/haproxy/configuration/backends/mongodb_default?transaction_id=${this.currentTransaction}`
-        );
-        logger.info("MongoDB backend exists");
-      } catch (err) {
-        if (err.response && err.response.status === 404) {
-          // Create MongoDB backend
-          const backendData = {
-            name: "mongodb_default",
-            mode: "tcp",
-            balance: { algorithm: "roundrobin" },
-          };
-
-          await client.post(
-            `/services/haproxy/configuration/backends?transaction_id=${this.currentTransaction}`,
-            backendData
-          );
-          logger.info("Created MongoDB backend");
-        } else {
-          throw err;
-        }
+        transactionId = await this._startTransaction();
+      } catch (txErr) {
+        logger.error(`Failed to start transaction: ${txErr.message}`);
+        return false;
       }
 
-      // Check if TCP frontend exists
-      try {
-        await client.get(
-          `/services/haproxy/configuration/frontends/tcp-in?transaction_id=${this.currentTransaction}`
+      // If we don't have a transaction ID, we can't proceed
+      if (!transactionId) {
+        logger.error(
+          "No transaction ID available for MongoDB port configuration"
         );
-        logger.info("TCP frontend exists");
-      } catch (err) {
-        if (err.response && err.response.status === 404) {
-          // Check if certificate list exists
-          let certListExists = false;
-          try {
-            await fs.access("/etc/ssl/certs/mongodb-certs.list");
-            certListExists = true;
-            logger.info(
-              "Found certificate list at /etc/ssl/certs/mongodb-certs.list"
-            );
-          } catch (err) {
-            // Ignore error but log warning
-            logger.warn(`Certificate list not found: ${err.code}`);
+        return false;
+      }
+
+      try {
+        // Check if tcp-in frontend exists
+        let tcpFrontendExists = false;
+        try {
+          await client.get(
+            `/services/haproxy/configuration/frontends/tcp-in?transaction_id=${transactionId}`
+          );
+          tcpFrontendExists = true;
+        } catch (frontendErr) {
+          if (frontendErr.response && frontendErr.response.status === 404) {
+            tcpFrontendExists = false;
+          } else {
+            throw frontendErr;
           }
-
-          // Create TCP frontend with certificate list if available
-          const frontendData = {
-            name: "tcp-in",
-            mode: "tcp",
-            default_backend: "mongodb_default",
-            binds: [
-              {
-                name: "mongodb",
-                address: "*",
-                port: 27017,
-                ssl: certListExists
-                  ? {
-                      crt_list: "/etc/ssl/certs/mongodb-certs.list",
-                    }
-                  : undefined,
-              },
-            ],
-          };
-
-          await client.post(
-            `/services/haproxy/configuration/frontends?transaction_id=${this.currentTransaction}`,
-            frontendData
-          );
-          logger.info(
-            `Created TCP frontend for MongoDB ${
-              certListExists ? "with" : "without"
-            } SSL`
-          );
-        } else {
-          throw err;
         }
-      }
 
-      // Make sure default rule exists
-      try {
+        // Create tcp-in frontend if it doesn't exist
+        if (!tcpFrontendExists) {
+          await client.post(
+            `/services/haproxy/configuration/frontends?transaction_id=${transactionId}`,
+            {
+              name: "tcp-in",
+              mode: "tcp",
+              default_backend: "empty_backend",
+            }
+          );
+          logger.info("Created TCP frontend for MongoDB");
+        }
+
+        // Check if empty_backend exists
+        let emptyBackendExists = false;
+        try {
+          await client.get(
+            `/services/haproxy/configuration/backends/empty_backend?transaction_id=${transactionId}`
+          );
+          emptyBackendExists = true;
+        } catch (backendErr) {
+          if (backendErr.response && backendErr.response.status === 404) {
+            emptyBackendExists = false;
+          } else {
+            throw backendErr;
+          }
+        }
+
+        // Create empty backend if it doesn't exist
+        if (!emptyBackendExists) {
+          await client.post(
+            `/services/haproxy/configuration/backends?transaction_id=${transactionId}`,
+            {
+              name: "empty_backend",
+              mode: "tcp",
+            }
+          );
+          logger.info("Created empty backend for MongoDB");
+        }
+
+        // Check if default mongodb backend exists
+        let mongoBackendExists = false;
+        try {
+          await client.get(
+            `/services/haproxy/configuration/backends/mongodb_default?transaction_id=${transactionId}`
+          );
+          mongoBackendExists = true;
+        } catch (mongoErr) {
+          if (mongoErr.response && mongoErr.response.status === 404) {
+            mongoBackendExists = false;
+          } else {
+            throw mongoErr;
+          }
+        }
+
+        // Create default mongodb backend if it doesn't exist
+        if (!mongoBackendExists) {
+          await client.post(
+            `/services/haproxy/configuration/backends?transaction_id=${transactionId}`,
+            {
+              name: "mongodb_default",
+              mode: "tcp",
+              balance: { algorithm: "roundrobin" },
+            }
+          );
+          logger.info("Created MongoDB default backend");
+        }
+
+        // Check if MongoDB binding exists
+        let bindingExists = false;
+        try {
+          const bindsResponse = await client.get(
+            `/services/haproxy/configuration/binds?frontend=tcp-in&transaction_id=${transactionId}`
+          );
+          const binds = bindsResponse.data.data;
+          bindingExists = binds.some(
+            (bind) => parseInt(bind.port, 10) === 27017
+          );
+        } catch (bindErr) {
+          if (bindErr.response && bindErr.response.status === 404) {
+            bindingExists = false;
+          } else {
+            throw bindErr;
+          }
+        }
+
+        // Add binding if it doesn't exist
+        if (!bindingExists) {
+          await client.post(
+            `/services/haproxy/configuration/binds?frontend=tcp-in&transaction_id=${transactionId}`,
+            {
+              name: "mongodb",
+              address: "*",
+              port: 27017,
+            }
+          );
+          logger.info("Added MongoDB binding on port 27017");
+        }
+
+        // Check for TCP rules
         const rules = await client.get(
-          `/services/haproxy/configuration/tcp_request_rules?parent_name=tcp-in&parent_type=frontend&transaction_id=${this.currentTransaction}`
+          `/services/haproxy/configuration/tcp_request_rules?parent_name=tcp-in&parent_type=frontend&transaction_id=${transactionId}`
         );
 
         const defaultRule = rules.data.data.find(
@@ -1120,39 +1184,37 @@ class HAProxyService {
           };
 
           await client.post(
-            `/services/haproxy/configuration/tcp_request_rules?parent_name=tcp-in&parent_type=frontend&transaction_id=${this.currentTransaction}`,
+            `/services/haproxy/configuration/tcp_request_rules?parent_name=tcp-in&parent_type=frontend&transaction_id=${transactionId}`,
             bindingRule
           );
           logger.info("Added default MongoDB routing rule");
         }
+
+        // Commit the transaction
+        await this._commitTransaction(transactionId);
+        logger.info("MongoDB port configuration committed successfully");
+        return true;
       } catch (err) {
-        if (err.response && err.response.status !== 404) {
-          throw err;
+        // Rollback the transaction on any error
+        try {
+          await this._abortTransaction();
+        } catch (abortErr) {
+          logger.error(
+            `Failed to abort transaction after error: ${abortErr.message}`
+          );
         }
 
-        // If 404, no rules exist, add default rule
-        const bindingRule = {
-          name: "default-mongodb",
-          type: "use_backend",
-          backend: "mongodb_default",
-        };
-
-        await client.post(
-          `/services/haproxy/configuration/tcp_request_rules?parent_name=tcp-in&parent_type=frontend&transaction_id=${this.currentTransaction}`,
-          bindingRule
-        );
-        logger.info("Added default MongoDB routing rule");
+        logger.error(`Failed to configure MongoDB port: ${err.message}`, {
+          error: err.message,
+          stack: err.stack,
+        });
+        return false;
       }
-
-      // Commit changes
-      await this._commitTransaction(this.currentTransaction);
-
-      return true;
     } catch (err) {
-      // Abort transaction if an error occurred
-      await this._abortTransaction();
-
-      logger.error(`Failed to ensure MongoDB port: ${err.message}`);
+      logger.error(`MongoDB port configuration error: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+      });
       return false;
     }
   }
