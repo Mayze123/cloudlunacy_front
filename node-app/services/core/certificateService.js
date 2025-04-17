@@ -536,12 +536,20 @@ DNS.2 = *.${mongoSubdomain}
           // First try using Docker command
           try {
             const haproxyContainer = process.env.HAPROXY_CONTAINER || "haproxy";
+            const execTimeout = 15000; // 15-second timeout for Docker commands
 
             // Validate configuration before reloading
             try {
-              await execAsync(
-                `docker exec ${haproxyContainer} haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg`
-              );
+              // Use promises with timeout to avoid hanging
+              await Promise.race([
+                execAsync(
+                  `docker exec ${haproxyContainer} haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg`
+                ),
+                new Promise((_, reject) => 
+                  setTimeout(() => reject(new Error("Docker exec command timed out after 15 seconds")), execTimeout)
+                )
+              ]);
+              
               logger.info("HAProxy configuration validated successfully");
             } catch (validationErr) {
               logger.error(
@@ -552,15 +560,26 @@ DNS.2 = *.${mongoSubdomain}
               );
             }
 
-            // Reload HAProxy
-            await execAsync(
-              `docker exec ${haproxyContainer} service haproxy reload`
-            );
+            // Reload HAProxy with timeout
+            await Promise.race([
+              execAsync(
+                `docker exec ${haproxyContainer} service haproxy reload`
+              ),
+              new Promise((_, reject) => 
+                setTimeout(() => reject(new Error("HAProxy reload command timed out after 15 seconds")), execTimeout)
+              )
+            ]);
 
-            // Verify that HAProxy is still running after reload
-            const { stdout } = await execAsync(
-              `docker ps -q -f name=${haproxyContainer}`
-            );
+            // Verify that HAProxy is still running after reload with timeout
+            const { stdout } = await Promise.race([
+              execAsync(
+                `docker ps -q -f name=${haproxyContainer}`
+              ),
+              new Promise((_, reject) => 
+                setTimeout(() => reject(new Error("Docker ps command timed out after 15 seconds")), execTimeout)
+              )
+            ]);
+            
             if (!stdout.trim()) {
               throw new Error("HAProxy is not running after reload attempt");
             }
