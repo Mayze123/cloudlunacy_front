@@ -383,8 +383,8 @@ DNS.2 = *.${mongoSubdomain}
             throw err;
           }
         },
-        15000
-      ); // 15 second lock timeout
+        60000 // Increased from 15000 to 60000 (60 seconds) to accommodate slower systems
+      );
     } catch (err) {
       if (err.message.includes("Could not acquire lock")) {
         logger.error(
@@ -854,7 +854,7 @@ DNS.2 = *.${mongoSubdomain}
               message: `Certificate updates applied for agent ${agentId}`,
             };
           },
-          20000
+          60000
         ); // 20 second timeout for the lock
       } catch (copyErr) {
         // Clean up temporary file if it exists
