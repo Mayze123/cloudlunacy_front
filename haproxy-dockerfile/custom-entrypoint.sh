@@ -34,11 +34,27 @@ fi
 # Clean up old sockets
 rm -f /var/run/haproxy.sock /tmp/haproxy.sock
 
-# ALWAYS copy the dataplaneapi.yml to ensure the latest config is used
-echo "[Entrypoint] Ensuring latest Data Plane API configuration..."
-cp /etc/haproxy/dataplaneapi.yml /usr/local/etc/haproxy/dataplaneapi.yml
+# Check the Data Plane API configuration
+echo "[Entrypoint] Checking Data Plane API configuration..."
+if [ ! -f "/usr/local/etc/haproxy/dataplaneapi.yml" ]; then
+  echo "[Entrypoint][ERROR] Data Plane API configuration file not found!"
+  exit 1
+fi
+
+# Ensure proper permissions on the configuration file
 chmod 644 /usr/local/etc/haproxy/dataplaneapi.yml
 chown haproxy:haproxy /usr/local/etc/haproxy/dataplaneapi.yml
+
+# Check if ReloadCmd and RestartCmd are set in the configuration
+if ! grep -q "ReloadCmd" /usr/local/etc/haproxy/dataplaneapi.yml; then
+  echo "[Entrypoint][ERROR] 'ReloadCmd' not found in Data Plane API configuration!"
+  exit 1
+fi
+
+if ! grep -q "RestartCmd" /usr/local/etc/haproxy/dataplaneapi.yml; then
+  echo "[Entrypoint][ERROR] 'RestartCmd' not found in Data Plane API configuration!"
+  exit 1
+fi
 
 # Validate configuration before starting
 echo "[Entrypoint] Validating HAProxy configuration..."
@@ -100,7 +116,7 @@ for i in $(seq 1 30); do
     break
   fi
   if ! kill -0 $DATAPLANEAPI_PID 2>/dev/null; then
-    echo "[Entrypoint][ERROR] Data Plane API failed to start. See /var/log/dataplaneapi.log"
+    echo "[Entrypoint][ERROR] Data Plane API failed to start. See logs below:"
     cat /var/log/dataplaneapi.log
     exit 1
   fi

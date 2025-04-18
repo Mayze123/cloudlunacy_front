@@ -21,10 +21,11 @@ haproxy:
   config_file: /usr/local/etc/haproxy/haproxy.cfg
   haproxy_bin: /usr/local/sbin/haproxy
   reload_delay: 5
+  reload_strategy: custom
   # Changed from reload_cmd to ReloadCmd (camelCase as required by Data Plane API)
   ReloadCmd: "kill -SIGUSR2 1"
   # Changed from restart_cmd to RestartCmd (camelCase as required by Data Plane API)
-  RestartCmd: "kill -SIGUSR2 1 && haproxy -D -f /usr/local/etc/haproxy/haproxy.cfg -p /run/haproxy.pid -sf $(cat /run/haproxy.pid)"
+  RestartCmd: "kill -SIGUSR2 1 && /usr/local/sbin/haproxy -D -f /usr/local/etc/haproxy/haproxy.cfg -p /run/haproxy.pid -sf $(cat /run/haproxy.pid || echo 1)"
   reload_retention: 1
   config_version: 3
   master_runtime_api: /var/run/haproxy.sock # Make sure this matches stats socket in haproxy.cfg
