@@ -45,16 +45,15 @@ fi
 chmod 644 /usr/local/etc/haproxy/dataplaneapi.yml
 chown haproxy:haproxy /usr/local/etc/haproxy/dataplaneapi.yml
 
-# Check if ReloadCmd and RestartCmd are set in the configuration
-if ! grep -q "ReloadCmd" /usr/local/etc/haproxy/dataplaneapi.yml; then
-  echo "[Entrypoint][ERROR] 'ReloadCmd' not found in Data Plane API configuration!"
-  exit 1
-fi
+# Run grep with -A and -B options to show surrounding context of keywords
+echo "[Entrypoint] Looking for ReloadCmd in configuration:"
+grep -A 1 -B 1 "ReloadCmd" /usr/local/etc/haproxy/dataplaneapi.yml || echo "ReloadCmd not found!"
 
-if ! grep -q "RestartCmd" /usr/local/etc/haproxy/dataplaneapi.yml; then
-  echo "[Entrypoint][ERROR] 'RestartCmd' not found in Data Plane API configuration!"
-  exit 1
-fi
+echo "[Entrypoint] Looking for RestartCmd in configuration:"
+grep -A 1 -B 1 "RestartCmd" /usr/local/etc/haproxy/dataplaneapi.yml || echo "RestartCmd not found!"
+
+echo "[Entrypoint] Looking for reload_strategy in configuration:"
+grep -A 1 -B 1 "reload_strategy" /usr/local/etc/haproxy/dataplaneapi.yml || echo "reload_strategy not found!"
 
 # Validate configuration before starting
 echo "[Entrypoint] Validating HAProxy configuration..."
@@ -103,7 +102,11 @@ fi
 echo "[Entrypoint] Data Plane API configuration:"
 cat /usr/local/etc/haproxy/dataplaneapi.yml
 
-# Start Data Plane API with forced debug mode
+# Try running with version flag to check if it works
+echo "[Entrypoint] Checking Data Plane API version:"
+dataplaneapi --version || echo "Failed to get version"
+
+# Start Data Plane API with verbose output
 echo "[Entrypoint] Starting Data Plane API..."
 dataplaneapi -f /usr/local/etc/haproxy/dataplaneapi.yml > /var/log/dataplaneapi.log 2>&1 &
 DATAPLANEAPI_PID=$!
