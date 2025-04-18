@@ -34,13 +34,11 @@ fi
 # Clean up old sockets
 rm -f /var/run/haproxy.sock /tmp/haproxy.sock
 
-# Check if dataplaneapi.yml exists and is readable
-if [ ! -f "/usr/local/etc/haproxy/dataplaneapi.yml" ]; then
-  echo "[Entrypoint] Copying dataplaneapi.yml to proper location..."
-  cp /etc/haproxy/dataplaneapi.yml /usr/local/etc/haproxy/dataplaneapi.yml
-  chmod 644 /usr/local/etc/haproxy/dataplaneapi.yml
-  chown haproxy:haproxy /usr/local/etc/haproxy/dataplaneapi.yml
-fi
+# ALWAYS copy the dataplaneapi.yml to ensure the latest config is used
+echo "[Entrypoint] Ensuring latest Data Plane API configuration..."
+cp /etc/haproxy/dataplaneapi.yml /usr/local/etc/haproxy/dataplaneapi.yml
+chmod 644 /usr/local/etc/haproxy/dataplaneapi.yml
+chown haproxy:haproxy /usr/local/etc/haproxy/dataplaneapi.yml
 
 # Validate configuration before starting
 echo "[Entrypoint] Validating HAProxy configuration..."
@@ -85,7 +83,11 @@ else
   echo "[Entrypoint][WARNING] HAProxy socket not found after 30 seconds"
 fi
 
-# Start Data Plane API
+# Debug: Print configuration file before starting Data Plane API
+echo "[Entrypoint] Data Plane API configuration:"
+cat /usr/local/etc/haproxy/dataplaneapi.yml
+
+# Start Data Plane API with forced debug mode
 echo "[Entrypoint] Starting Data Plane API..."
 dataplaneapi -f /usr/local/etc/haproxy/dataplaneapi.yml > /var/log/dataplaneapi.log 2>&1 &
 DATAPLANEAPI_PID=$!
