@@ -5,7 +5,11 @@ echo "[Entrypoint] Starting CloudLunacy HAProxy with Data Plane API..."
 
 # Ensure data directories exist with proper permissions
 mkdir -p /etc/haproxy/dataplaneapi /var/lib/haproxy/backups /var/log/haproxy
-chown -R haproxy:haproxy /etc/haproxy/dataplaneapi /var/lib/haproxy/backups /var/log/haproxy
+mkdir -p /etc/haproxy/maps /etc/haproxy/spoe
+
+# Create all required directories with proper permissions
+chown -R haproxy:haproxy /etc/haproxy/dataplaneapi /var/lib/haproxy/backups /var/log/haproxy 
+chown -R haproxy:haproxy /etc/haproxy/maps /etc/haproxy/spoe
 
 # Prepare log files
 touch /var/log/dataplaneapi.log
@@ -29,6 +33,14 @@ fi
 
 # Clean up old sockets
 rm -f /var/run/haproxy.sock /tmp/haproxy.sock
+
+# Check if dataplaneapi.yml exists and is readable
+if [ ! -f "/usr/local/etc/haproxy/dataplaneapi.yml" ]; then
+  echo "[Entrypoint] Copying dataplaneapi.yml to proper location..."
+  cp /etc/haproxy/dataplaneapi.yml /usr/local/etc/haproxy/dataplaneapi.yml
+  chmod 644 /usr/local/etc/haproxy/dataplaneapi.yml
+  chown haproxy:haproxy /usr/local/etc/haproxy/dataplaneapi.yml
+fi
 
 # Validate configuration before starting
 echo "[Entrypoint] Validating HAProxy configuration..."

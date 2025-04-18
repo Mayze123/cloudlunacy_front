@@ -1,50 +1,57 @@
 # =============================
 # Data Plane API Configuration
 # =============================
-dataplaneapi:
-  host: 0.0.0.0
-  port: 5555
-  schemes:
-    - http
-    # - https  # Uncomment and configure for production
-  api_base_path: /v3
 
-  # TLS Configuration (Uncomment and configure for production)
-  # tls:
-  #   cert_file: /etc/ssl/private/api-cert.pem
-  #   key_file: /etc/ssl/private/api-key.pem
-  #   verify_client: false
+# Note: Moving configuration out of the 'dataplaneapi' section to the root level
 
-  haproxy:
-    config_file: /usr/local/etc/haproxy/haproxy.cfg
-    haproxy_bin: /usr/local/sbin/haproxy
-    reload_delay: 5
-    reload_cmd: "kill -SIGUSR2 1"
-    reload_retention: 1
-    config_version: 3
-    master_runtime_api: /var/run/haproxy.sock # Make sure this matches stats socket in haproxy.cfg
-    connection_timeout: 10 # Increased timeout
+host: 0.0.0.0
+port: 5555
+schemes:
+  - http
+  # - https  # Uncomment and configure for production
+api_base_path: /v3
 
-  # User authentication (use secure credentials in production)
-  users:
-    - username: ${HAPROXY_API_USER:-admin}
-      password: ${HAPROXY_API_PASS:-admin}
-      insecure: true
+# TLS Configuration (Uncomment and configure for production)
+# tls:
+#   cert_file: /etc/ssl/private/api-cert.pem
+#   key_file: /etc/ssl/private/api-key.pem
+#   verify_client: false
 
-  transaction:
-    transaction_dir: /etc/haproxy/dataplaneapi
-    max_open_transactions: 20
-    max_transaction_age: 600
+haproxy:
+  config_file: /usr/local/etc/haproxy/haproxy.cfg
+  haproxy_bin: /usr/local/sbin/haproxy
+  reload_delay: 5
+  reload_cmd: "kill -SIGUSR2 1"
+  reload_retention: 1
+  config_version: 3
+  master_runtime_api: /var/run/haproxy.sock  # Make sure this matches stats socket in haproxy.cfg
+  connection_timeout: 10  # Increased timeout
 
-  log_targets:
-    - log_to: file
-      file_path: /var/log/dataplaneapi.log
-      log_level: info
-    - log_to: stdout
-      log_level: info
+# User authentication (use secure credentials in production)
+users:
+  - username: ${HAPROXY_API_USER:-admin}
+    password: ${HAPROXY_API_PASS:-admin}
+    insecure: true
 
-  api_detailed_errors: true
-  disable_version_check: true
-  debug: true # Enable debug for troubleshooting
+transaction:
+  transaction_dir: /etc/haproxy/dataplaneapi
+  max_open_transactions: 20
+  max_transaction_age: 600
+
+resources:
+  maps_dir: /etc/haproxy/maps
+  ssl_certs_dir: /etc/ssl/private
+  spoe_dir: /etc/haproxy/spoe
+
+log_targets:
+  - log_to: file
+    file_path: /var/log/dataplaneapi.log
+    log_level: info
+  - log_to: stdout
+    log_level: info
+
+api_detailed_errors: true
+disable_version_check: true
+debug: true
 
 # End of configuration
