@@ -22,8 +22,8 @@ dataplaneapi:
     reload_cmd: "kill -SIGUSR2 1"
     reload_retention: 1
     config_version: 3
-    master_runtime_api: /var/run/haproxy.sock
-    connection_timeout: 5
+    master_runtime_api: /var/run/haproxy.sock # Make sure this matches stats socket in haproxy.cfg
+    connection_timeout: 10 # Increased timeout
 
   # User authentication (use secure credentials in production)
   users:
@@ -37,11 +37,14 @@ dataplaneapi:
     max_transaction_age: 600
 
   log_targets:
+    - log_to: file
+      file_path: /var/log/dataplaneapi.log
+      log_level: info
     - log_to: stdout
       log_level: info
 
   api_detailed_errors: true
   disable_version_check: true
-  debug: false # Set to true only for troubleshooting
+  debug: true # Enable debug for troubleshooting
 
 # End of configuration

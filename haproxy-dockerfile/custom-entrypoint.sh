@@ -8,8 +8,8 @@ mkdir -p /etc/haproxy/dataplaneapi /var/lib/haproxy/backups /var/log/haproxy
 chown -R haproxy:haproxy /etc/haproxy/dataplaneapi /var/lib/haproxy/backups /var/log/haproxy
 
 # Prepare log files
-: > /var/log/dataplaneapi.log
-: > /var/log/haproxy-startup.log
+touch /var/log/dataplaneapi.log
+touch /var/log/haproxy-startup.log
 chmod 644 /var/log/dataplaneapi.log /var/log/haproxy-startup.log
 chown haproxy:haproxy /var/log/dataplaneapi.log /var/log/haproxy-startup.log
 
@@ -50,10 +50,27 @@ trap cleanup TERM INT QUIT
 echo "[Entrypoint] Starting HAProxy..."
 haproxy -W -db -f /usr/local/etc/haproxy/haproxy.cfg > /var/log/haproxy-startup.log 2>&1 &
 HAPROXY_PID=$!
-sleep 2
-if ! kill -0 $HAPROXY_PID 2>/dev/null; then
-  echo "[Entrypoint][ERROR] HAProxy failed to start. See /var/log/haproxy-startup.log"
-  exit 1
+
+# Wait for HAProxy to start and create the socket
+echo "[Entrypoint] Waiting for HAProxy socket..."
+for i in $(seq 1 30); do
+  if [ -S /var/run/haproxy.sock ]; then
+    break
+  fi
+  if ! kill -0 $HAPROXY_PID 2>/dev/null; then
+    echo "[Entrypoint][ERROR] HAProxy failed to start. See /var/log/haproxy-startup.log"
+    cat /var/log/haproxy-startup.log
+    exit 1
+  fi
+  sleep 1
+done
+
+# Ensure socket has proper permissions
+if [ -S /var/run/haproxy.sock ]; then
+  chmod 660 /var/run/haproxy.sock
+  chown haproxy:haproxy /var/run/haproxy.sock
+else
+  echo "[Entrypoint][WARNING] HAProxy socket not found after 30 seconds"
 fi
 
 # Start Data Plane API
@@ -62,6 +79,7 @@ dataplaneapi -f /usr/local/etc/haproxy/dataplaneapi.yml > /var/log/dataplaneapi.
 DATAPLANEAPI_PID=$!
 
 # Wait for Data Plane API to become healthy
+echo "[Entrypoint] Waiting for Data Plane API to start..."
 for i in $(seq 1 30); do
   if curl -s -f -o /dev/null http://localhost:5555/v3/health; then
     echo "[Entrypoint] Data Plane API is running."
@@ -69,6 +87,7 @@ for i in $(seq 1 30); do
   fi
   if ! kill -0 $DATAPLANEAPI_PID 2>/dev/null; then
     echo "[Entrypoint][ERROR] Data Plane API failed to start. See /var/log/dataplaneapi.log"
+    cat /var/log/dataplaneapi.log
     exit 1
   fi
   sleep 1
