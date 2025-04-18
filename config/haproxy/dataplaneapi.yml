@@ -42,6 +42,6 @@ dataplaneapi:
 
   api_detailed_errors: true
   disable_version_check: true
-  debug: false  # Set to true only for troubleshooting
+  debug: false # Set to true only for troubleshooting
 
 # End of configuration
