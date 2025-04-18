@@ -1,6 +1,6 @@
 dataplaneapi:
   host: 0.0.0.0
-  port: 5555
+  port: 5556  # Changed from 5555 to 5556 to avoid circular reference in HAProxy
   # Use v3 API to match the Node.js app configuration
   scheme: http
 
