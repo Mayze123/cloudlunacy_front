@@ -2,7 +2,8 @@ dataplaneapi:
   host: 0.0.0.0
   port: 5556  # Changed from 5555 to 5556 to avoid circular reference in HAProxy
   # Use v3 API to match the Node.js app configuration
-  scheme: http
+  schemes:
+    - http
 
   # HAProxy configuration
   haproxy:
@@ -19,8 +20,14 @@ dataplaneapi:
       password: admin
       insecure: true
 
-  # Use proper authentication for API access
-  userlist: dataplaneapi
+  # User list configuration
+  resources:
+    userlist:
+      - name: dataplaneapi
+        users:
+          - name: admin
+            password: "$5$vXxNtfqSVv$GhbBOSukSi/1bPXYf7xnzZc4SCgmXL9qNTHwt6NrF59"
+            secure: true
 
   # Storage for transactions - Increased max transactions for reliability
   transaction:
