@@ -24,8 +24,8 @@ haproxy:
   reload_cmd: "kill -SIGUSR2 1"
   reload_retention: 1
   config_version: 3
-  master_runtime_api: /var/run/haproxy.sock  # Make sure this matches stats socket in haproxy.cfg
-  connection_timeout: 10  # Increased timeout
+  master_runtime_api: /var/run/haproxy.sock # Make sure this matches stats socket in haproxy.cfg
+  connection_timeout: 10 # Increased timeout
 
 # User authentication (use secure credentials in production)
 users:
@@ -53,5 +53,4 @@ log_targets:
 api_detailed_errors: true
 disable_version_check: true
 debug: true
-
 # End of configuration
