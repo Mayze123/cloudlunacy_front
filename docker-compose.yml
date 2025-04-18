@@ -27,6 +27,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /var/log/haproxy:/var/log/haproxy
       - ./config/haproxy/errors:/etc/haproxy/errors:ro
+    entrypoint: ["/usr/local/bin/custom-entrypoint.sh"]
     env_file:
       - ./.env
     environment:
