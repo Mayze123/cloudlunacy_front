@@ -25,6 +25,115 @@ const HAProxyMetricsManager = require("../../utils/haproxyMetricsManager");
 const HAProxyLoadOptimizer = require("../../utils/haproxyLoadOptimizer");
 
 /**
+ * Create an enhanced API client for HAProxy Data Plane API with better error handling
+ * @param {string} baseURL - Base URL for the API
+ * @param {string} username - Username for authentication
+ * @param {string} password - Password for authentication
+ * @param {Object} options - Additional options
+ * @returns {Object} Configured axios instance
+ */
+function createDataPlaneApiClient(baseURL, username, password, options = {}) {
+  const client = axios.create({
+    baseURL,
+    auth: {
+      username,
+      password,
+    },
+    timeout: options.timeout || 15000,
+    headers: {
+      "Content-Type": "application/json",
+    },
+    ...(options.useTls && {
+      httpsAgent: new https.Agent({
+        rejectUnauthorized: process.env.NODE_ENV === "production",
+      }),
+    }),
+  });
+
+  // Add request interceptor for logging
+  client.interceptors.request.use(
+    (config) => {
+      const redactedConfig = { ...config };
+      if (redactedConfig.auth) {
+        redactedConfig.auth = {
+          username: redactedConfig.auth.username,
+          password: "****",
+        };
+      }
+      logger.debug(`API Request: ${config.method.toUpperCase()} ${config.url}`);
+      return config;
+    },
+    (error) => {
+      logger.error(`API Request Error: ${error.message}`);
+      return Promise.reject(error);
+    }
+  );
+
+  // Add response interceptor for better error handling
+  client.interceptors.response.use(
+    (response) => {
+      // Log successful response status
+      logger.debug(`API Response: ${response.status} ${response.statusText}`);
+      return response;
+    },
+    (error) => {
+      // Extract detailed error information
+      const errorDetails = {
+        message: error.message,
+        code: error.code,
+      };
+
+      if (error.response) {
+        // The server responded with a status code outside of 2xx
+        errorDetails.status = error.response.status;
+        errorDetails.statusText = error.response.statusText;
+        errorDetails.data = error.response.data;
+
+        logger.error(
+          `API Error ${errorDetails.status} (${
+            errorDetails.statusText
+          }): ${error.config.method.toUpperCase()} ${
+            error.config.url
+          } - ${JSON.stringify(errorDetails.data)}`
+        );
+
+        // Enhance error object with useful properties
+        error.status = error.response.status;
+        error.isAuthError =
+          error.response.status === 401 || error.response.status === 403;
+        error.isNotFoundError = error.response.status === 404;
+        error.isServerError = error.response.status >= 500;
+        error.isClientError =
+          error.response.status >= 400 && error.response.status < 500;
+      } else if (error.request) {
+        // The request was made but no response was received
+        errorDetails.requestError = true;
+
+        logger.error(
+          `API No Response: ${error.config.method.toUpperCase()} ${
+            error.config.url
+          } - ${error.message}`
+        );
+
+        // Enhance error object
+        error.isNetworkError = true;
+      } else {
+        // Something happened in setting up the request
+        logger.error(`API Setup Error: ${error.message}`);
+        error.isSetupError = true;
+      }
+
+      // Add timestamp
+      error.timestamp = new Date().toISOString();
+
+      return Promise.reject(error);
+    }
+  );
+
+  return client;
+}
+
+/**
  * Enhanced HAProxy Service providing a unified interface with
  * resilience features like circuit breaker, transaction management,
  * and enhanced monitoring
@@ -243,17 +352,11 @@ class EnhancedHAProxyService {
    * @private
    */
   _createApiClient() {
-    return axios.create({
-      baseURL: this.apiBaseUrl,
-      auth: {
-        username: this.apiUsername,
-        password: this.apiPassword,
-      },
-      timeout: 15000,
-      headers: {
-        "Content-Type": "application/json",
-      },
-    });
+    return createDataPlaneApiClient(
+      this.apiBaseUrl,
+      this.apiUsername,
+      this.apiPassword
+    );
   }
 
   /**
@@ -288,7 +391,7 @@ class EnhancedHAProxyService {
 
       // Load backends to find HTTP routes
       const backendsResponse = await this.apiClient.get(
-        "/configuration/backends"
+        "/v3/services/haproxy/configuration/backends"
       );
       const backends = backendsResponse.data.data || [];
 
@@ -337,7 +440,7 @@ class EnhancedHAProxyService {
       // Load MongoDB routes
       try {
         const mongoBackendResponse = await this.apiClient.get(
-          "/services/haproxy/configuration/backends/mongodb_default"
+          "/v3/services/haproxy/configuration/backends/mongodb_default"
         );
         const mongoBackend = mongoBackendResponse.data.data;
 
@@ -441,7 +544,7 @@ class EnhancedHAProxyService {
                 // Backend may already exist, try to delete it first
                 try {
                   await this.apiClient.delete(
-                    `/services/haproxy/configuration/backends/${backendName}?transaction_id=${transaction.id}`
+                    `/v3/services/haproxy/configuration/backends/${backendName}?transaction_id=${transaction.id}`
                   );
                   logger.debug(`Deleted existing backend: ${backendName}`);
                 } catch (err) {
@@ -453,7 +556,7 @@ class EnhancedHAProxyService {
 
                 // Create backend
                 await this.apiClient.post(
-                  `/services/haproxy/configuration/backends?transaction_id=${transaction.id}`,
+                  `/v3/services/haproxy/configuration/backends?transaction_id=${transaction.id}`,
                   {
                     name: backendName,
                     mode: "http",
@@ -464,7 +567,7 @@ class EnhancedHAProxyService {
 
                 // Add server to backend
                 await this.apiClient.post(
-                  `/services/haproxy/configuration/servers?backend=${backendName}&transaction_id=${transaction.id}`,
+                  `/v3/services/haproxy/configuration/servers?backend=${backendName}&transaction_id=${transaction.id}`,
                   {
                     name: serverName,
                     address: targetHost,
@@ -477,7 +580,7 @@ class EnhancedHAProxyService {
 
                 // Add binding rule to frontend
                 await this.apiClient.post(
-                  `/services/haproxy/configuration/http_request_rules?parent_name=https-in&parent_type=frontend&transaction_id=${transaction.id}`,
+                  `/v3/services/haproxy/configuration/http_request_rules?parent_name=https-in&parent_type=frontend&transaction_id=${transaction.id}`,
                   {
                     name: `host-${agentId}-${subdomain}`,
                     cond: "if",
@@ -571,7 +674,7 @@ class EnhancedHAProxyService {
             let backendExists = false;
             try {
               await this.apiClient.get(
-                `/services/haproxy/configuration/backends/${backendName}?transaction_id=${transaction.id}`
+                `/v3/services/haproxy/configuration/backends/${backendName}?transaction_id=${transaction.id}`
               );
               backendExists = true;
             } catch (err) {
@@ -585,7 +688,7 @@ class EnhancedHAProxyService {
             // Create or update backend
             if (backendExists) {
               await this.apiClient.put(
-                `/services/haproxy/configuration/backends/${backendName}?transaction_id=${transaction.id}`,
+                `/v3/services/haproxy/configuration/backends/${backendName}?transaction_id=${transaction.id}`,
                 {
                   mode: "tcp",
                   balance: { algorithm: "roundrobin" },
@@ -593,7 +696,7 @@ class EnhancedHAProxyService {
               );
             } else {
               await this.apiClient.post(
-                `/services/haproxy/configuration/backends?transaction_id=${transaction.id}`,
+                `/v3/services/haproxy/configuration/backends?transaction_id=${transaction.id}`,
                 {
                   name: backendName,
                   mode: "tcp",
@@ -606,7 +709,7 @@ class EnhancedHAProxyService {
             let serverExists = false;
             try {
               await this.apiClient.get(
-                `/services/haproxy/configuration/servers/${serverName}?backend=${backendName}&transaction_id=${transaction.id}`
+                `/v3/services/haproxy/configuration/servers/${serverName}?backend=${backendName}&transaction_id=${transaction.id}`
               );
               serverExists = true;
             } catch (err) {
@@ -627,12 +730,12 @@ class EnhancedHAProxyService {
 
             if (serverExists) {
               await this.apiClient.put(
-                `/services/haproxy/configuration/servers/${serverName}?backend=${backendName}&transaction_id=${transaction.id}`,
+                `/v3/services/haproxy/configuration/servers/${serverName}?backend=${backendName}&transaction_id=${transaction.id}`,
                 serverData
               );
             } else {
               await this.apiClient.post(
-                `/services/haproxy/configuration/servers?backend=${backendName}&transaction_id=${transaction.id}`,
+                `/v3/services/haproxy/configuration/servers?backend=${backendName}&transaction_id=${transaction.id}`,
                 serverData
               );
             }
@@ -643,7 +746,7 @@ class EnhancedHAProxyService {
 
             try {
               await this.apiClient.get(
-                `/services/haproxy/configuration/servers/${defaultServerName}?backend=mongodb_default&transaction_id=${transaction.id}`
+                `/v3/services/haproxy/configuration/servers/${defaultServerName}?backend=mongodb_default&transaction_id=${transaction.id}`
               );
               defaultServerExists = true;
             } catch (err) {
@@ -657,12 +760,12 @@ class EnhancedHAProxyService {
             // Create or update server in default backend
             if (defaultServerExists) {
               await this.apiClient.put(
-                `/services/haproxy/configuration/servers/${defaultServerName}?backend=mongodb_default&transaction_id=${transaction.id}`,
+                `/v3/services/haproxy/configuration/servers/${defaultServerName}?backend=mongodb_default&transaction_id=${transaction.id}`,
                 serverData
               );
             } else {
               await this.apiClient.post(
-                `/services/haproxy/configuration/servers?backend=mongodb_default&transaction_id=${transaction.id}`,
+                `/v3/services/haproxy/configuration/servers?backend=mongodb_default&transaction_id=${transaction.id}`,
                 serverData
               );
             }
@@ -675,7 +778,7 @@ class EnhancedHAProxyService {
 
               try {
                 const rules = await this.apiClient.get(
-                  `/services/haproxy/configuration/tcp_request_rules?parent_name=tcp-in&parent_type=frontend&transaction_id=${transaction.id}`
+                  `/v3/services/haproxy/configuration/tcp_request_rules?parent_name=tcp-in&parent_type=frontend&transaction_id=${transaction.id}`
                 );
 
                 ruleExists = rules.data.data.some(
@@ -689,7 +792,7 @@ class EnhancedHAProxyService {
 
               if (!ruleExists) {
                 await this.apiClient.post(
-                  `/services/haproxy/configuration/tcp_request_rules?parent_name=tcp-in&parent_type=frontend&transaction_id=${transaction.id}`,
+                  `/v3/services/haproxy/configuration/tcp_request_rules?parent_name=tcp-in&parent_type=frontend&transaction_id=${transaction.id}`,
                   {
                     name: aclName,
                     type: "use_backend",
@@ -810,7 +913,7 @@ class EnhancedHAProxyService {
               // Find and remove binding rule
               try {
                 const rulesResponse = await this.apiClient.get(
-                  `/services/haproxy/configuration/http_request_rules?parent_name=https-in&parent_type=frontend&transaction_id=${transaction.id}`
+                  `/v3/services/haproxy/configuration/http_request_rules?parent_name=https-in&parent_type=frontend&transaction_id=${transaction.id}`
                 );
 
                 const rule = rulesResponse.data.data.find(
@@ -818,7 +921,7 @@ class EnhancedHAProxyService {
                 );
                 if (rule) {
                   await this.apiClient.delete(
-                    `/services/haproxy/configuration/http_request_rules/${rule.index}?parent_name=https-in&parent_type=frontend&transaction_id=${transaction.id}`
+                    `/v3/services/haproxy/configuration/http_request_rules/${rule.index}?parent_name=https-in&parent_type=frontend&transaction_id=${transaction.id}`
                   );
                   logger.debug(`Removed HTTP rule: ${ruleName}`);
                 }
@@ -829,7 +932,7 @@ class EnhancedHAProxyService {
               // Remove backend
               try {
                 await this.apiClient.delete(
-                  `/services/haproxy/configuration/backends/${backendName}?transaction_id=${transaction.id}`
+                  `/v3/services/haproxy/configuration/backends/${backendName}?transaction_id=${transaction.id}`
                 );
                 logger.debug(`Removed backend: ${backendName}`);
               } catch (err) {
@@ -872,7 +975,7 @@ class EnhancedHAProxyService {
               // Remove TCP rule if it exists
               try {
                 const rulesResponse = await this.apiClient.get(
-                  `/services/haproxy/configuration/tcp_request_rules?parent_name=tcp-in&parent_type=frontend&transaction_id=${transaction.id}`
+                  `/v3/services/haproxy/configuration/tcp_request_rules?parent_name=tcp-in&parent_type=frontend&transaction_id=${transaction.id}`
                 );
 
                 const rule = rulesResponse.data.data.find(
@@ -880,7 +983,7 @@ class EnhancedHAProxyService {
                 );
                 if (rule) {
                   await this.apiClient.delete(
-                    `/services/haproxy/configuration/tcp_request_rules/${rule.index}?parent_name=tcp-in&parent_type=frontend&transaction_id=${transaction.id}`
+                    `/v3/services/haproxy/configuration/tcp_request_rules/${rule.index}?parent_name=tcp-in&parent_type=frontend&transaction_id=${transaction.id}`
                   );
                   logger.debug(`Removed TCP rule: ${ruleName}`);
                 }
@@ -891,7 +994,7 @@ class EnhancedHAProxyService {
               // Remove server from default MongoDB backend
               try {
                 await this.apiClient.delete(
-                  `/services/haproxy/configuration/servers/${serverName}?backend=mongodb_default&transaction_id=${transaction.id}`
+                  `/v3/services/haproxy/configuration/servers/${serverName}?backend=mongodb_default&transaction_id=${transaction.id}`
                 );
                 logger.debug(
                   `Removed server ${serverName} from mongodb_default backend`
@@ -907,7 +1010,7 @@ class EnhancedHAProxyService {
               // Remove agent-specific MongoDB backend if it exists
               try {
                 await this.apiClient.delete(
-                  `/services/haproxy/configuration/backends/${backendName}?transaction_id=${transaction.id}`
+                  `/v3/services/haproxy/configuration/backends/${backendName}?transaction_id=${transaction.id}`
                 );
                 logger.debug(`Removed backend: ${backendName}`);
               } catch (err) {
@@ -1168,7 +1271,7 @@ class EnhancedHAProxyService {
 
     try {
       return await this.circuitBreaker.execute(async () => {
-        const response = await this.apiClient.get("/services/haproxy/stats");
+        const response = await this.apiClient.get("/v3/services/haproxy/stats");
 
         if (response.status !== 200 || !response.data) {
           throw new Error("Failed to fetch HAProxy stats");
@@ -1295,7 +1398,7 @@ class EnhancedHAProxyService {
                 // Update the server in the backend
                 try {
                   await this.apiClient.put(
-                    `/services/haproxy/configuration/servers/${serverName}?backend=${backendName}&transaction_id=${transaction.id}`,
+                    `/v3/services/haproxy/configuration/servers/${serverName}?backend=${backendName}&transaction_id=${transaction.id}`,
                     {
                       address: targetHost,
                       port: parseInt(targetPort, 10),
@@ -1342,7 +1445,7 @@ class EnhancedHAProxyService {
                 const serverName = `mongodb-agent-${agentId}`;
                 try {
                   await this.apiClient.put(
-                    `/services/haproxy/configuration/servers/${serverName}?backend=mongodb_default&transaction_id=${transaction.id}`,
+                    `/v3/services/haproxy/configuration/servers/${serverName}?backend=mongodb_default&transaction_id=${transaction.id}`,
                     {
                       address: targetHost,
                       port: parseInt(targetPort || 27017, 10),
@@ -1353,12 +1456,12 @@ class EnhancedHAProxyService {
                   const backendName = `${agentId}-mongodb-backend`;
                   try {
                     await this.apiClient.get(
-                      `/services/haproxy/configuration/backends/${backendName}?transaction_id=${transaction.id}`
+                      `/v3/services/haproxy/configuration/backends/${backendName}?transaction_id=${transaction.id}`
                     );
 
                     // Backend exists, update its server
                     await this.apiClient.put(
-                      `/services/haproxy/configuration/servers/${serverName}?backend=${backendName}&transaction_id=${transaction.id}`,
+                      `/v3/services/haproxy/configuration/servers/${serverName}?backend=${backendName}&transaction_id=${transaction.id}`,
                       {
                         address: targetHost,
                         port: parseInt(targetPort || 27017, 10),

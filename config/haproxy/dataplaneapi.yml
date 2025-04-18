@@ -1,8 +1,17 @@
 dataplaneapi:
   host: 0.0.0.0
-  port: 5555  # Use the same port to avoid confusion
+  port: 5555 # Use the same port to avoid confusion
   schemes:
     - http
+    # Uncomment the following line in production to use HTTPS
+    # - https
+  api_base_path: /v3
+
+  # TLS Configuration (Uncomment in production)
+  # tls:
+  #   cert_file: /etc/ssl/private/api-cert.pem
+  #   key_file: /etc/ssl/private/api-key.pem
+  #   verify_client: false
 
   # HAProxy configuration
   haproxy:
@@ -13,27 +22,28 @@ dataplaneapi:
     reload_retention: 1
     config_version: 3
 
-  # User authentication
+  # User authentication - in production, replace with secure credentials
   users:
-    - username: admin
-      password: admin
+    - username: ${HAPROXY_API_USER:-admin}
+      password: ${HAPROXY_API_PASS:-admin}
       insecure: true
 
   # Storage for transactions
   transaction:
     transaction_dir: /etc/haproxy/dataplaneapi
     max_open_transactions: 20
+    max_transaction_age: 600 # 10 minutes
 
   # Log configuration
   log_targets:
     - log_to: stdout
-      log_level: debug
+      log_level: info
 
   # API version and features
   api_detailed_errors: true
-  
+
   # Don't check API versions which can cause compatibility issues
   disable_version_check: true
 
-  # Enable debugging for troubleshooting
-  debug: true
+  # Enable debugging for troubleshooting - set to true only when needed
+  debug: false

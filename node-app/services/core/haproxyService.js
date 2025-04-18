@@ -8,6 +8,7 @@
  */
 
 const axios = require("axios");
+const https = require("https");
 const logger = require("../../utils/logger").getLogger("haproxyService");
 const { AppError } = require("../../utils/errorHandler");
 const pathManager = require("../../utils/pathManager");
