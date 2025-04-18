@@ -114,9 +114,19 @@ frontend dataplane_api
     http-request auth realm dataplane_api if !authenticated
     http-request use-service prometheus-exporter if { path /metrics }
     http-request return status 200 content-type "text/plain" string "healthy" if { path /health }
-    http-request return status 200 content-type "application/json" string "{\"status\":\"OK\"}" if { path_beg /v1 } authenticated
-    http-request return status 200 content-type "application/json" string "{\"status\":\"OK\"}" if { path_beg /v2 } authenticated
-    http-request return status 200 content-type "application/json" string "{\"status\":\"OK\"}" if { path_beg /v3 } authenticated
+    
+    # Forward API requests to Data Plane API backend instead of returning static responses
+    default_backend dataplane_api_backend
+    
+    # Return 401 for unauthenticated requests
+    http-request return status 401 content-type "application/json" string "{\"status\":\"Error\",\"message\":\"Authentication required\"}" if { path_beg /v1 } !authenticated
+    http-request return status 401 content-type "application/json" string "{\"status\":\"Error\",\"message\":\"Authentication required\"}" if { path_beg /v2 } !authenticated
+    http-request return status 401 content-type "application/json" string "{\"status\":\"Error\",\"message\":\"Authentication required\"}" if { path_beg /v3 } !authenticated
+
+# Data Plane API Backend
+backend dataplane_api_backend
+    mode http
+    server dpapi 127.0.0.1:5556 check
 EOF
 fi
 
@@ -200,9 +210,19 @@ frontend dataplane_api
     http-request auth realm dataplane_api if !authenticated
     http-request use-service prometheus-exporter if { path /metrics }
     http-request return status 200 content-type "text/plain" string "healthy" if { path /health }
-    http-request return status 200 content-type "application/json" string "{\"status\":\"OK\"}" if { path_beg /v1 } authenticated
-    http-request return status 200 content-type "application/json" string "{\"status\":\"OK\"}" if { path_beg /v2 } authenticated
-    http-request return status 200 content-type "application/json" string "{\"status\":\"OK\"}" if { path_beg /v3 } authenticated
+    
+    # Forward API requests to Data Plane API backend
+    default_backend dataplane_api_backend
+    
+    # Return 401 for unauthenticated requests
+    http-request return status 401 content-type "application/json" string "{\"status\":\"Error\",\"message\":\"Authentication required\"}" if { path_beg /v1 } !authenticated
+    http-request return status 401 content-type "application/json" string "{\"status\":\"Error\",\"message\":\"Authentication required\"}" if { path_beg /v2 } !authenticated
+    http-request return status 401 content-type "application/json" string "{\"status\":\"Error\",\"message\":\"Authentication required\"}" if { path_beg /v3 } !authenticated
+
+# Data Plane API Backend
+backend dataplane_api_backend
+    mode http
+    server dpapi 127.0.0.1:5556 check
 
 frontend app
     bind *:80
@@ -218,21 +238,25 @@ EOF
     cp /tmp/haproxy-minimal.cfg /tmp/haproxy.cfg
 fi
 
-# Start Data Plane API in the background with the correct configuration file path
-echo "Starting Data Plane API..."
-dataplaneapi -f /usr/local/etc/haproxy/dataplaneapi.yml &
+# Create a wrapper script to start both processes
+cat > /tmp/start-services.sh << 'EOF'
+#!/bin/sh
+
+# Start Data Plane API in the background
+echo "Starting Data Plane API on port 5556..."
+dataplaneapi -f /usr/local/etc/haproxy/dataplaneapi.yml > /var/log/dataplaneapi.log 2>&1 &
 DATA_PLANE_PID=$!
 
-# Wait for Data Plane API to initialize with retry logic
+# Wait for Data Plane API to initialize
 echo "Waiting for Data Plane API to become available..."
-MAX_RETRIES=5
+MAX_RETRIES=10
 RETRY_COUNT=0
 API_READY=false
 
 while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-    sleep 3
-    if curl -s -f -u "admin:admin" http://localhost:5555/v3/info > /dev/null 2>&1; then
-        echo "Data Plane API is available!"
+    sleep 2
+    if curl -s -f -u "admin:admin" http://localhost:5556/v2/info > /dev/null 2>&1; then
+        echo "Data Plane API is available on port 5556!"
         API_READY=true
         break
     fi
@@ -241,9 +265,23 @@ while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
 done
 
 if [ "$API_READY" = false ]; then
-    echo "WARNING: Data Plane API did not become available after $MAX_RETRIES attempts. Continuing anyway..."
+    echo "WARNING: Data Plane API did not become available after $MAX_RETRIES attempts."
+    echo "Checking DataPlane API logs:"
+    tail -n 20 /var/log/dataplaneapi.log
 fi
 
-# Run the original HAProxy entrypoint with our config
+# Start HAProxy in the foreground
 echo "Starting HAProxy..."
-exec docker-entrypoint.sh haproxy -f /tmp/haproxy.cfg "$@" 
+haproxy -f /tmp/haproxy.cfg -d
+
+# We should never reach this point, but just in case
+echo "HAProxy exited. Stopping Data Plane API..."
+kill $DATA_PLANE_PID
+EOF
+
+# Make the script executable
+chmod +x /tmp/start-services.sh
+
+# Run the script to start both services
+echo "Starting both HAProxy and Data Plane API..."
+exec /tmp/start-services.sh
