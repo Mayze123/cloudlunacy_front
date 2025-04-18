@@ -6,12 +6,14 @@ echo "Starting CloudLunacy HAProxy with Data Plane API..."
 # Ensure data directories exist with proper permissions
 mkdir -p /etc/haproxy/dataplaneapi
 mkdir -p /var/lib/haproxy/backups
-chown -R haproxy:haproxy /etc/haproxy/dataplaneapi /var/lib/haproxy/backups
+mkdir -p /var/log/haproxy
+chown -R haproxy:haproxy /etc/haproxy/dataplaneapi /var/lib/haproxy/backups /var/log/haproxy
 
 # Log file preparation
 touch /var/log/dataplaneapi.log
 touch /var/log/haproxy-startup.log
 chmod 644 /var/log/dataplaneapi.log /var/log/haproxy-startup.log
+chown haproxy:haproxy /var/log/dataplaneapi.log /var/log/haproxy-startup.log
 
 # Ensure errors directory exists
 if [ ! -d "/etc/haproxy/errors" ]; then
@@ -49,6 +51,12 @@ Content-Type: text/html
 EOF
 fi
 
+# Make sure the HAProxy socket is accessible
+mkdir -p /var/run
+chmod 755 /var/run
+rm -f /var/run/haproxy.sock
+rm -f /tmp/haproxy.sock
+
 # Validate configuration first before starting anything
 echo "Validating HAProxy configuration..."
 if ! haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg; then
@@ -77,6 +85,20 @@ cleanup() {
 
 # Set up signal handling for clean shutdown
 trap cleanup TERM INT QUIT
+
+# Start HAProxy first because Data Plane API needs the sockets
+echo "Starting HAProxy first..."
+haproxy -W -db -f /usr/local/etc/haproxy/haproxy.cfg > /var/log/haproxy-startup.log 2>&1 &
+HAPROXY_PID=$!
+echo "HAProxy started with PID $HAPROXY_PID"
+
+# Wait briefly to ensure HAProxy creates its sockets
+sleep 3
+if ! kill -0 $HAPROXY_PID 2>/dev/null; then
+  echo "ERROR: HAProxy failed to start. Check logs:"
+  tail -n 20 /var/log/haproxy-startup.log
+  exit 1
+fi
 
 # Start Data Plane API in the background
 echo "Starting Data Plane API..."
@@ -113,35 +135,11 @@ if [ $attempt -ge $max_attempts ]; then
   exit 1
 fi
 
-# Start HAProxy with appropriate flags
-echo "Starting HAProxy..."
-haproxy -W -db -f /usr/local/etc/haproxy/haproxy.cfg > /var/log/haproxy-startup.log 2>&1 &
-HAPROXY_PID=$!
-echo "HAProxy started with PID $HAPROXY_PID"
-
-# Wait briefly to check if HAProxy started correctly
-sleep 2
-if ! kill -0 $HAPROXY_PID 2>/dev/null; then
-  echo "ERROR: HAProxy failed to start. Check logs:"
-  tail -n 20 /var/log/haproxy-startup.log
-  # Clean up Data Plane API before exiting
-  kill -TERM $DATAPLANEAPI_PID 2>/dev/null || true
-  exit 1
-fi
-
 echo "HAProxy and Data Plane API are running"
 
 # Monitor processes and restart them if they fail
 while true; do
   sleep 5
-  
-  # Check if Data Plane API is running
-  if ! kill -0 $DATAPLANEAPI_PID 2>/dev/null; then
-    echo "WARNING: Data Plane API is not running. Restarting..."
-    dataplaneapi -f /usr/local/etc/haproxy/dataplaneapi.yml > /var/log/dataplaneapi.log 2>&1 &
-    DATAPLANEAPI_PID=$!
-    echo "Data Plane API restarted with PID $DATAPLANEAPI_PID"
-  fi
   
   # Check if HAProxy is running
   if ! kill -0 $HAPROXY_PID 2>/dev/null; then
@@ -149,5 +147,13 @@ while true; do
     haproxy -W -db -f /usr/local/etc/haproxy/haproxy.cfg > /var/log/haproxy-startup.log 2>&1 &
     HAPROXY_PID=$!
     echo "HAProxy restarted with PID $HAPROXY_PID"
+  fi
+  
+  # Check if Data Plane API is running
+  if ! kill -0 $DATAPLANEAPI_PID 2>/dev/null; then
+    echo "WARNING: Data Plane API is not running. Restarting..."
+    dataplaneapi -f /usr/local/etc/haproxy/dataplaneapi.yml > /var/log/dataplaneapi.log 2>&1 &
+    DATAPLANEAPI_PID=$!
+    echo "Data Plane API restarted with PID $DATAPLANEAPI_PID"
   fi
 done

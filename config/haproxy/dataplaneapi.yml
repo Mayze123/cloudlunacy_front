@@ -21,6 +21,9 @@ dataplaneapi:
     reload_cmd: "kill -SIGUSR2 1"
     reload_retention: 1
     config_version: 3
+    # Additional options for more stability
+    master_runtime_api: /var/run/haproxy.sock
+    connection_timeout: 5
 
   # User authentication - in production, replace with secure credentials
   users:
@@ -45,5 +48,5 @@ dataplaneapi:
   # Don't check API versions which can cause compatibility issues
   disable_version_check: true
 
-  # Enable debugging for troubleshooting - set to true only when needed
-  debug: false
+  # Enable debugging to help identify the issue
+  debug: true
