@@ -170,7 +170,9 @@ router.post(
       }
 
       // Log deprecation warning
-      logger.warn(`Deprecated endpoint /api/proxy/mongodb was used for agent ${agentId}. This endpoint will be removed in a future version.`);
+      logger.warn(
+        `Deprecated endpoint /api/proxy/mongodb was used for agent ${agentId}. This endpoint will be removed in a future version.`
+      );
 
       const result = await proxyService.addMongoDBRoute(
         agentId,

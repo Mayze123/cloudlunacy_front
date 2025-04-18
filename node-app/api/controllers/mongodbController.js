@@ -70,7 +70,11 @@ exports.registerMongoDB = asyncHandler(async (req, res) => {
     );
 
     if (!proxyResult.success) {
-      logger.warn(`Proxy registration warning: ${proxyResult.message || proxyResult.error}`);
+      logger.warn(
+        `Proxy registration warning: ${
+          proxyResult.message || proxyResult.error
+        }`
+      );
     } else {
       logger.info(`Successfully updated HAProxy for MongoDB agent ${agentId}`);
     }
