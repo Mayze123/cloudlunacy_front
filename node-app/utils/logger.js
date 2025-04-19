@@ -8,7 +8,7 @@ require("winston-daily-rotate-file");
 class Logger {
   constructor() {
     // Define log directory - ensure it exists
-    this.logDir = process.env.LOG_DIR || "/var/log/cloudlunacy";
+    this.logDir = process.env.LOG_DIR || "/app/logs";
     this.ensureLogDirectory();
 
     // Create the base logger
@@ -19,16 +19,55 @@ class Logger {
   }
 
   ensureLogDirectory() {
-    if (!fs.existsSync(this.logDir)) {
-      try {
+    try {
+      // First try to use the configured directory
+      if (!fs.existsSync(this.logDir)) {
         fs.mkdirSync(this.logDir, { recursive: true });
-        // Set proper permissions
         fs.chmodSync(this.logDir, 0o755);
-      } catch (err) {
-        console.error(`Failed to create log directory at ${this.logDir}:`, err);
-        // Fallback to a directory we should be able to write to
-        this.logDir = "/tmp/cloudlunacy-logs";
-        fs.mkdirSync(this.logDir, { recursive: true });
+        console.log(`Created log directory at ${this.logDir}`);
+      }
+      
+      // Verify we can write to this directory
+      const testFile = path.join(this.logDir, '.write_test');
+      fs.writeFileSync(testFile, 'test');
+      fs.unlinkSync(testFile);
+    } catch (err) {
+      console.error(`Failed to use log directory at ${this.logDir}:`, err);
+      
+      // Try alternate locations in order of preference
+      const alternateLocations = [
+        "/app/logs",
+        process.env.HOME ? path.join(process.env.HOME, "logs") : null,
+        "/tmp/cloudlunacy-logs"
+      ].filter(Boolean);
+      
+      let success = false;
+      
+      for (const altDir of alternateLocations) {
+        if (altDir === this.logDir) continue; // Skip if same as original
+        
+        try {
+          if (!fs.existsSync(altDir)) {
+            fs.mkdirSync(altDir, { recursive: true });
+          }
+          
+          // Verify we can write to this directory
+          const testFile = path.join(altDir, '.write_test');
+          fs.writeFileSync(testFile, 'test');
+          fs.unlinkSync(testFile);
+          
+          this.logDir = altDir;
+          console.log(`Using alternate log directory: ${this.logDir}`);
+          success = true;
+          break;
+        } catch (altErr) {
+          console.error(`Failed to use alternate log directory ${altDir}:`, altErr);
+        }
+      }
+      
+      if (!success) {
+        console.error("CRITICAL: Couldn't find a writable log directory, logs will only be sent to console");
+        this.logsDisabled = true;
       }
     }
   }
@@ -71,32 +110,39 @@ class Logger {
       handleExceptions: true,
     });
 
-    // Rotating file transport for all logs
-    const fileTransport = new transports.DailyRotateFile({
-      level: logLevel,
-      filename: path.join(this.logDir, "app-%DATE%.log"),
-      datePattern: "YYYY-MM-DD",
-      maxSize: "20m",
-      maxFiles: "14d",
-      format: customFormat,
-    });
+    const allTransports = [consoleTransport];
 
-    // Error-specific transport with longer retention
-    const errorTransport = new transports.DailyRotateFile({
-      level: "error",
-      filename: path.join(this.logDir, "error-%DATE%.log"),
-      datePattern: "YYYY-MM-DD",
-      maxSize: "20m",
-      maxFiles: "30d",
-      format: customFormat,
-    });
+    // Only add file transports if logging to files is enabled
+    if (!this.logsDisabled) {
+      // Rotating file transport for all logs
+      const fileTransport = new transports.DailyRotateFile({
+        level: logLevel,
+        filename: path.join(this.logDir, "app-%DATE%.log"),
+        datePattern: "YYYY-MM-DD",
+        maxSize: "20m",
+        maxFiles: "14d",
+        format: customFormat,
+      });
+
+      // Error-specific transport with longer retention
+      const errorTransport = new transports.DailyRotateFile({
+        level: "error",
+        filename: path.join(this.logDir, "error-%DATE%.log"),
+        datePattern: "YYYY-MM-DD",
+        maxSize: "20m",
+        maxFiles: "30d",
+        format: customFormat,
+      });
+
+      allTransports.push(fileTransport, errorTransport);
+    }
 
     // Create the logger
     return createLogger({
       level: logLevel,
       format: customFormat,
       defaultMeta: { service: "cloudlunacy-front" },
-      transports: [consoleTransport, fileTransport, errorTransport],
+      transports: allTransports,
       exitOnError: false,
     });
   }

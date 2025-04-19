@@ -84,10 +84,13 @@ services:
     ports:
       - "${NODE_PORT:-3005}:3005"
     volumes:
-      - ./config:/app/config
-      - ./logs:/app/logs
-      - ./node-app/scripts:/app/scripts
+      - ./config:/app/config:rw
+      - ./logs:/app/logs:rw
+      - ./node-app/scripts:/app/scripts:ro
+      - ./config/certs:/app/config/certs:rw
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - node-app-data:/opt/cloudlunacy_front
+    user: "node"
     env_file:
       - ./.env
     environment:
@@ -102,6 +105,7 @@ services:
       - NODE_ENV=production
       - NODE_DEBUG=
       - HAPROXY_OPTIONAL=true
+      - LOG_DIR=/app/logs
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3005/health"]
       interval: 30s
@@ -113,6 +117,7 @@ volumes:
   node-data:
   certbot-data:
   haproxy-data:
+  node-app-data:
 
 networks:
   frontend:

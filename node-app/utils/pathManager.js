@@ -7,11 +7,12 @@
 
 const path = require("path");
 const fs = require("fs").promises;
+const fsSync = require("fs");
 const logger = require("./logger").getLogger("pathManager");
 
 class PathManager {
   constructor() {
-    // Base paths
+    // Base paths - use volume-mounted directories by default
     this.basePaths = {
       app: process.env.APP_BASE_PATH || "/app",
       config: process.env.CONFIG_BASE_PATH || "/app/config",
@@ -19,6 +20,8 @@ class PathManager {
       certs: process.env.CERTS_BASE_PATH || "/app/config/certs",
       scripts: process.env.SCRIPTS_BASE_PATH || "/app/scripts",
       certbot: process.env.CERTBOT_BASE_PATH || "/app/config/certbot",
+      // Use mounted volume instead of hardcoded path
+      frontendRoot: process.env.FRONTEND_ROOT_PATH || "/opt/cloudlunacy_front",
     };
 
     // Derived paths
@@ -51,6 +54,9 @@ class PathManager {
 
     // Initialize path resolution status
     this.initialized = false;
+    
+    // Flag to track permission issues
+    this.permissionIssues = false;
   }
 
   /**
@@ -61,14 +67,21 @@ class PathManager {
     try {
       logger.info("Initializing path manager");
 
-      // Ensure critical directories exist
-      await this.ensureDirectories([
-        this.basePaths.config,
-        this.basePaths.logs,
-        this.basePaths.certs,
-        this.derivedPaths.certsAgents,
-        this.derivedPaths.agentsConfig,
-        this.derivedPaths.configBackups,
+      // Test if frontendRoot is writable, otherwise switch to app path
+      if (!await this.isWritable(this.basePaths.frontendRoot)) {
+        logger.warn(`Frontend root path ${this.basePaths.frontendRoot} is not writable, using app path instead`);
+        this.basePaths.frontendRoot = this.basePaths.app;
+        this.permissionIssues = true;
+      }
+
+      // Ensure critical directories exist with fallbacks if needed
+      await this.ensureDirectoriesWithFallbacks([
+        { primary: this.basePaths.config, fallback: path.join(this.basePaths.app, "config") },
+        { primary: this.basePaths.logs, fallback: path.join(this.basePaths.app, "logs") },
+        { primary: this.basePaths.certs, fallback: path.join(this.basePaths.app, "certs") },
+        { primary: this.derivedPaths.certsAgents, fallback: path.join(this.basePaths.app, "certs/agents") },
+        { primary: this.derivedPaths.agentsConfig, fallback: path.join(this.basePaths.app, "config/agents") },
+        { primary: this.derivedPaths.configBackups, fallback: path.join(this.basePaths.app, "backups") },
       ]);
 
       this.initialized = true;
@@ -79,7 +92,77 @@ class PathManager {
         error: err.message,
         stack: err.stack,
       });
+      // Even if initialization fails, we'll continue with default paths
+      // to allow the application to work with limited functionality
+      this.initialized = true;
+      this.permissionIssues = true;
       return false;
+    }
+  }
+
+  /**
+   * Ensure directories exist with fallbacks if primary fails
+   * @param {Array<Object>} directoryConfigs - Array of {primary, fallback} paths
+   */
+  async ensureDirectoriesWithFallbacks(directoryConfigs) {
+    for (const config of directoryConfigs) {
+      try {
+        // First try to create the primary directory
+        await this.ensureDirectory(config.primary);
+      } catch (err) {
+        logger.warn(`Failed to ensure primary directory ${config.primary}: ${err.message}`);
+        
+        if (config.fallback) {
+          try {
+            // Try the fallback directory
+            await this.ensureDirectory(config.fallback);
+            
+            // Update the corresponding path in our config
+            this.updatePathToFallback(config.primary, config.fallback);
+            logger.info(`Using fallback directory ${config.fallback} instead of ${config.primary}`);
+          } catch (fallbackErr) {
+            logger.error(`Failed to ensure fallback directory ${config.fallback}: ${fallbackErr.message}`);
+            // Mark that we have permission issues but don't throw
+            this.permissionIssues = true;
+          }
+        } else {
+          logger.error(`No fallback directory configured for ${config.primary}`);
+          this.permissionIssues = true;
+        }
+      }
+    }
+    return true;
+  }
+  
+  /**
+   * Update a path in all collections to use fallback
+   * @param {string} originalPath - The original path that failed
+   * @param {string} fallbackPath - The fallback path to use instead
+   */
+  updatePathToFallback(originalPath, fallbackPath) {
+    // Update in basePaths
+    for (const [key, value] of Object.entries(this.basePaths)) {
+      if (value === originalPath) {
+        this.basePaths[key] = fallbackPath;
+      }
+    }
+    
+    // Update in derivedPaths
+    for (const [key, value] of Object.entries(this.derivedPaths)) {
+      if (value === originalPath) {
+        this.derivedPaths[key] = fallbackPath;
+      } else if (value.startsWith(originalPath + '/')) {
+        // Handle nested paths
+        const relativePath = value.substring(originalPath.length);
+        this.derivedPaths[key] = path.join(fallbackPath, relativePath);
+      }
+    }
+    
+    // Update in externalPaths
+    for (const [key, value] of Object.entries(this.externalPaths)) {
+      if (value === originalPath) {
+        this.externalPaths[key] = fallbackPath;
+      }
     }
   }
 
@@ -90,8 +173,7 @@ class PathManager {
   async ensureDirectories(directories) {
     for (const dir of directories) {
       try {
-        await fs.mkdir(dir, { recursive: true });
-        logger.debug(`Ensured directory exists: ${dir}`);
+        await this.ensureDirectory(dir);
       } catch (err) {
         logger.error(`Failed to create directory ${dir}: ${err.message}`);
         throw err;
@@ -207,7 +289,7 @@ class PathManager {
         logger.error(
           `Failed to create directory ${dirPath}: ${mkdirErr.message}`
         );
-        return false;
+        throw mkdirErr;
       }
     }
   }
@@ -219,6 +301,18 @@ class PathManager {
    */
   async isWritable(filePath) {
     try {
+      // First check if path exists
+      try {
+        await fs.access(filePath);
+      } catch (err) {
+        // Try to create the directory
+        try {
+          await fs.mkdir(filePath, { recursive: true });
+        } catch (mkdirErr) {
+          return false;
+        }
+      }
+      
       // Try to write a temporary file
       const testPath = path.join(
         path.dirname(filePath),
