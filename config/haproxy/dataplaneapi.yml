@@ -31,11 +31,10 @@ dataplaneapi:
 
   resources:
     maps_dir: /etc/haproxy/maps
-    ssl_certs_dir:
-      - /etc/ssl/certs
-      - /etc/ssl/private
-      - /tmp/certs/certs
-      - /tmp/certs/private
+    # Fixed: Data Plane API expects ssl_certs_dir to be a string, not an array
+    # We'll use a single directory and rely on the sync-certificates.sh script
+    # to copy all certificates to this central location
+    ssl_certs_dir: /tmp/certs/certs
     spoe_dir: /etc/haproxy/spoe
 
   log_targets:
