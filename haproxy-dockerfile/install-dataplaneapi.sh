@@ -77,8 +77,10 @@ port: 5555
 haproxy:
   config_file: /usr/local/etc/haproxy/haproxy.cfg
   haproxy_bin: /usr/local/sbin/haproxy
-  reload_cmd: kill -SIGUSR2 1
+  reload_cmd: "kill -SIGUSR2 1"
+  restart_cmd: "haproxy -D -f /usr/local/etc/haproxy/haproxy.cfg -p /var/run/haproxy.pid -sf \$(cat /var/run/haproxy.pid)"
   reload_delay: 5
+  reload_strategy: custom
   config_version: 2
   transaction_dir: ${DPAPI_TRANSACTION_DIR}
 resources:
@@ -105,7 +107,9 @@ cat > "${DPAPI_CONFIG_JSON}" << EOF
     "config_file": "/usr/local/etc/haproxy/haproxy.cfg",
     "haproxy_bin": "/usr/local/sbin/haproxy",
     "reload_cmd": "kill -SIGUSR2 1",
+    "restart_cmd": "haproxy -D -f /usr/local/etc/haproxy/haproxy.cfg -p /var/run/haproxy.pid -sf $(cat /var/run/haproxy.pid)",
     "reload_delay": 5,
+    "reload_strategy": "custom",
     "config_version": 2,
     "transaction_dir": "${DPAPI_TRANSACTION_DIR}"
   },
