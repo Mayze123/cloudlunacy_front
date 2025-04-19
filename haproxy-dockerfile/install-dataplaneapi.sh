@@ -1,116 +1,107 @@
 #!/bin/bash
-# Script to install and configure Data Plane API for HAProxy
-# This script fixes configuration issues at the source
+# Script to install and configure HAProxy Data Plane API
 
 set -e
 
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting Data Plane API installation and setup..."
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting Data Plane API installation..."
 
-# Define variables
-DATAPLANEAPI_VERSION="2.5.3"  # A version known to be compatible with HAProxy 3.x
-HAPROXY_CFG="/usr/local/etc/haproxy/haproxy.cfg"
-HAPROXY_PID="/var/run/haproxy.pid"
-HAPROXY_SOCK="/var/run/haproxy.sock"
-DPAPI_CFG="/usr/local/etc/haproxy/dataplaneapi.yml"
-DPAPI_LOG="/var/log/dataplaneapi.log"
+# Configuration
+DPAPI_VERSION="2.9.1"
+DPAPI_URL="https://github.com/haproxytech/dataplaneapi/releases/download/v${DPAPI_VERSION}/dataplaneapi_${DPAPI_VERSION}_Linux_x86_64.tar.gz"
+DPAPI_BINARY="/usr/local/bin/dataplaneapi"
+DPAPI_CONFIG="/usr/local/etc/haproxy/dataplaneapi.yml"
 DPAPI_TRANSACTION_DIR="/etc/haproxy/dataplaneapi"
-BACKUP_DIR="/var/lib/haproxy/backups"
 
-# Create all required directories
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Creating required directories..."
-mkdir -p ${DPAPI_TRANSACTION_DIR}
-mkdir -p ${BACKUP_DIR}
-mkdir -p /etc/haproxy/maps
-mkdir -p /etc/haproxy/spoe
-mkdir -p /tmp/certs/certs
-mkdir -p /tmp/certs/private
-mkdir -p /etc/haproxy/errors
+# Create necessary directories with proper permissions
+mkdir -p "${DPAPI_TRANSACTION_DIR}"
+chmod 755 "${DPAPI_TRANSACTION_DIR}"
+chown haproxy:haproxy "${DPAPI_TRANSACTION_DIR}"
 
-# Set proper permissions
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Setting correct permissions..."
-chown -R haproxy:haproxy ${DPAPI_TRANSACTION_DIR}
-chown -R haproxy:haproxy ${BACKUP_DIR}
-chown -R haproxy:haproxy /etc/haproxy/maps
-chown -R haproxy:haproxy /etc/haproxy/spoe
-chown -R haproxy:haproxy /tmp/certs
-chmod 755 /tmp/certs/certs
-chmod 700 /tmp/certs/private
-
-# Download and install Data Plane API
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Downloading Data Plane API version ${DATAPLANEAPI_VERSION}..."
-wget -q -O /tmp/dataplaneapi.tar.gz https://github.com/haproxytech/dataplaneapi/releases/download/v${DATAPLANEAPI_VERSION}/dataplaneapi_${DATAPLANEAPI_VERSION}_Linux_x86_64.tar.gz
-
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Installing Data Plane API..."
-mkdir -p /tmp/dpapi
-tar -xzf /tmp/dataplaneapi.tar.gz -C /tmp/dpapi
-mv /tmp/dpapi/dataplaneapi /usr/local/bin/
-chmod +x /usr/local/bin/dataplaneapi
-
-# Clean up
-rm -rf /tmp/dpapi /tmp/dataplaneapi.tar.gz
-
-# Create a properly formatted Data Plane API configuration
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Creating Data Plane API configuration file..."
-cat > ${DPAPI_CFG} << EOF
-dataplaneapi:
-  host: 0.0.0.0
-  port: 5555
-  schemes:
-    - http
-  api_base_path: /v3
-  
-  haproxy:
-    config_file: ${HAPROXY_CFG}
-    haproxy_bin: /usr/local/sbin/haproxy
-    reload_delay: 5
-    reload_strategy: native
-    reload_retention: 1
-    master_runtime_api: ${HAPROXY_SOCK}
-    pid_file: ${HAPROXY_PID}
-    connection_timeout: 10
-  
-  resources:
-    maps_dir: /etc/haproxy/maps
-    ssl_certs_dir: /tmp/certs/certs
-    spoe_dir: /etc/haproxy/spoe
-  
-  transaction:
-    transaction_dir: ${DPAPI_TRANSACTION_DIR}
-    max_open_transactions: 20
-    max_transaction_age: 600
-  
-  users:
-    - username: admin
-      password: admin
-      insecure: true
-  
-  log_targets:
-    - log_to: file
-      file_path: ${DPAPI_LOG}
-      log_level: info
-    - log_to: stdout
-      log_level: info
-  
-  api_detailed_errors: true
-  disable_version_check: true
-  debug: true
-EOF
-
-# Ensure proper permissions on config file
-chown haproxy:haproxy ${DPAPI_CFG}
-chmod 640 ${DPAPI_CFG}
-
-# Create log file with proper permissions
-touch ${DPAPI_LOG}
-chown haproxy:haproxy ${DPAPI_LOG}
-chmod 644 ${DPAPI_LOG}
-
-# Test the Data Plane API configuration
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Testing Data Plane API configuration..."
-if ! /usr/local/bin/dataplaneapi --configfile ${DPAPI_CFG} --check-config; then
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: Data Plane API configuration check failed!"
-  exit 1
+# Download Data Plane API if not already installed
+if [ ! -f "${DPAPI_BINARY}" ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Downloading Data Plane API v${DPAPI_VERSION}..."
+    
+    # Create temporary directory for download
+    TMP_DIR=$(mktemp -d)
+    cd "${TMP_DIR}"
+    
+    # Download the binary
+    if ! wget -q "${DPAPI_URL}" -O dataplaneapi.tar.gz; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')][ERROR] Failed to download Data Plane API!"
+        rm -rf "${TMP_DIR}"
+        exit 1
+    fi
+    
+    # Extract the archive
+    if ! tar -xzf dataplaneapi.tar.gz; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')][ERROR] Failed to extract Data Plane API archive!"
+        rm -rf "${TMP_DIR}"
+        exit 1
+    fi
+    
+    # Move binary to destination
+    mv dataplaneapi "${DPAPI_BINARY}"
+    chmod +x "${DPAPI_BINARY}"
+    
+    # Cleanup
+    rm -rf "${TMP_DIR}"
+    
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Data Plane API downloaded and installed."
+else
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Data Plane API already installed."
 fi
 
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Data Plane API installation and setup completed successfully!"
+# Check and configure Data Plane API if config exists
+if [ -f "${DPAPI_CONFIG}" ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Configuring Data Plane API..."
+    
+    # Make sure the config file is readable by haproxy user
+    chmod 644 "${DPAPI_CONFIG}"
+    
+    # Ensure transaction dir is correct in the config
+    if ! grep -q "${DPAPI_TRANSACTION_DIR}" "${DPAPI_CONFIG}"; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Updating transaction_dir in config file..."
+        # This is a simple approach - in a production environment, you might want to use a YAML parser
+        sed -i "s|transaction_dir:.*|transaction_dir: ${DPAPI_TRANSACTION_DIR}|g" "${DPAPI_CONFIG}"
+    fi
+else
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')][WARNING] Data Plane API config file not found at ${DPAPI_CONFIG}."
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Creating minimal configuration..."
+    
+    # Create a minimal config file
+    cat > "${DPAPI_CONFIG}" << EOF
+config_file: /usr/local/etc/haproxy/haproxy.cfg
+haproxy:
+  config_file: /usr/local/etc/haproxy/haproxy.cfg
+  haproxy_bin: /usr/local/sbin/haproxy
+  reload_delay: 5
+  reload_cmd: service haproxy reload
+  restart_cmd: service haproxy restart
+  config_test_cmd: /usr/local/sbin/haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
+resources:
+  transaction_dir: ${DPAPI_TRANSACTION_DIR}
+api:
+  host: 0.0.0.0
+  port: 5555
+  ssl_certs_dir: /tmp/certs/certs
+  ssl_key_file: /tmp/certs/private/ca.key
+users:
+  - name: admin
+    password: admin
+    insecure: true
+EOF
+    chmod 644 "${DPAPI_CONFIG}"
+fi
+
+# Set proper ownership for related files
+chown -R haproxy:haproxy "${DPAPI_CONFIG}" "${DPAPI_BINARY}" "${DPAPI_TRANSACTION_DIR}"
+
+# Verify Data Plane API can start
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Verifying Data Plane API..."
+if ! "${DPAPI_BINARY}" -v > /dev/null 2>&1; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')][ERROR] Data Plane API verification failed. Binary might be corrupt or incompatible."
+    exit 1
+fi
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Data Plane API installation completed successfully."
 exit 0

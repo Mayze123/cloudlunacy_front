@@ -20,6 +20,7 @@ services:
       - ./config/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:rw
       - ./config/haproxy/dataplaneapi.yml:/usr/local/etc/haproxy/dataplaneapi.yml:rw
       - ./haproxy-dockerfile/custom-entrypoint.sh:/usr/local/bin/custom-entrypoint.sh:ro
+      - ./haproxy-dockerfile/install-dataplaneapi.sh:/usr/local/bin/install-dataplaneapi.sh:ro
       - ./config/haproxy/docker-entrypoint-wrapper.sh:/usr/local/bin/docker-entrypoint-wrapper.sh:ro
       # Certificate management tools
       - ./config/haproxy/certificate-precheck.sh:/usr/local/etc/haproxy/certificate-precheck.sh:ro
