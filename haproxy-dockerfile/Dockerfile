@@ -1,34 +1,42 @@
-FROM haproxy:3.1
+FROM haproxytech/haproxy:3.1
 
-# Install required tools
-USER root
-RUN apk add --no-cache curl wget unzip jq bash procps ca-certificates
+# Install required packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    wget \
+    unzip \
+    jq \
+    vim \
+    bash \
+    procps \
+    openssl \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install a specific version of Data Plane API that's compatible with HAProxy 3.1
-RUN wget -q -O /tmp/dataplaneapi.zip https://github.com/haproxytech/dataplaneapi/releases/download/v2.8.3/dataplaneapi_2.8.3_linux_amd64.zip && \
-    unzip -q /tmp/dataplaneapi.zip -d /usr/local/bin/ && \
-    chmod +x /usr/local/bin/dataplaneapi && \
-    rm /tmp/dataplaneapi.zip
+# Create necessary directories with proper permissions
+RUN mkdir -p /etc/haproxy/errors /etc/haproxy/maps /etc/haproxy/spoe \
+    && mkdir -p /tmp/certs/certs /tmp/certs/private /tmp/certs/agents \
+    && mkdir -p /var/log \
+    && touch /var/log/dataplaneapi.log \
+    && chown -R haproxy:haproxy /etc/haproxy /tmp/certs /var/log/dataplaneapi.log \
+    && chmod 644 /var/log/dataplaneapi.log
 
-# Create necessary directories
-RUN mkdir -p /etc/haproxy/dataplaneapi /var/lib/haproxy/backups /var/log/haproxy /etc/haproxy/errors \
-    /etc/haproxy/maps /etc/haproxy/spoe /tmp/certs/certs /tmp/certs/private /tmp/certs/agents
-
-# Set proper permissions for Data Plane API
-RUN chown -R haproxy:haproxy /etc/haproxy/dataplaneapi /var/lib/haproxy && \
-    chmod 755 /etc/haproxy/dataplaneapi /var/lib/haproxy
-
-# Copy sync-certificates script
+# Copy custom scripts
+COPY install-dataplaneapi.sh /usr/local/bin/install-dataplaneapi.sh
 COPY sync-certificates.sh /usr/local/bin/sync-certificates.sh
-RUN chmod +x /usr/local/bin/sync-certificates.sh
-
-# Copy custom entrypoint
 COPY custom-entrypoint.sh /usr/local/bin/custom-entrypoint.sh
-RUN chmod +x /usr/local/bin/custom-entrypoint.sh
 
-# Expose only necessary ports
-EXPOSE 80 443 8081 5555 27017
+# Make scripts executable
+RUN chmod +x /usr/local/bin/install-dataplaneapi.sh \
+    && chmod +x /usr/local/bin/sync-certificates.sh \
+    && chmod +x /usr/local/bin/custom-entrypoint.sh
 
-# Set entrypoint and default command
+# Expose ports
+EXPOSE 80 443 5555
+
+# Set entrypoint
 ENTRYPOINT ["/usr/local/bin/custom-entrypoint.sh"]
-CMD []
+
+# Health check to verify HAProxy is running properly
+HEALTHCHECK --interval=5s --timeout=3s --retries=3 \
+  CMD curl -f http://localhost:5555/v3/health || exit 1

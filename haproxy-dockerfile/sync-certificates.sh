@@ -1,204 +1,115 @@
 #!/bin/bash
-# Certificate synchronization script for HAProxy
-# Works with read-only mounted certificate directories by synchronizing certificates
-# from the actual mounted directories to a temporary directory that HAProxy can access
+# Script to synchronize certificates for HAProxy and Data Plane API
 
-# Logging function
-log() {
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
-}
+set -e
 
-log "Starting certificate synchronization..."
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting certificate synchronization..."
 
-# Define paths
-TEMP_DIR="/tmp/cert-sync"
-HAPROXY_TEMP_DIR="/tmp/certs"
+# Directories
+CERT_SRC_DIR="/etc/ssl/certs"
+CERT_PRIVATE_SRC_DIR="/etc/ssl/private"
+CERT_MONGODB_SRC_DIR="${CERT_SRC_DIR}/mongodb"
+CERT_AGENTS_SRC_DIR="${CERT_SRC_DIR}/agents"
+CERT_DEST_DIR="/tmp/certs/certs"
+CERT_PRIVATE_DEST_DIR="/tmp/certs/private"
+CERT_AGENTS_DEST_DIR="/tmp/certs/agents"
+CONFIG_FILE="/tmp/certs/cert-paths.cfg"
 
-# Define both potential source directories 
-# We'll check both the Node.js app container path and the mounted path in HAProxy
-SOURCE_DIRS=(
-  "/app/certs"              # Node.js container path
-  "/etc/ssl/certs"          # HAProxy mounted path
-)
+# Create directories if they don't exist
+mkdir -p "${CERT_DEST_DIR}" "${CERT_PRIVATE_DEST_DIR}" "${CERT_AGENTS_DEST_DIR}"
+chmod 755 "${CERT_DEST_DIR}" 
+chmod 700 "${CERT_PRIVATE_DEST_DIR}"
+chmod 755 "${CERT_AGENTS_DEST_DIR}"
 
-# Create temp directories
-mkdir -p $TEMP_DIR
-mkdir -p $HAPROXY_TEMP_DIR/certs
-mkdir -p $HAPROXY_TEMP_DIR/private
-mkdir -p $HAPROXY_TEMP_DIR/agents
+# Find and copy CA certificates
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Finding and copying CA certificates..."
 
-# Find the CA certificate and key, checking all potential locations
-find_file() {
-  local filename="$1"
-  local result=""
-  
-  # Check standard locations first
-  for dir in "${SOURCE_DIRS[@]}"; do
-    if [ -f "$dir/$filename" ]; then
-      result="$dir/$filename"
-      break
+# Copy CA certificate and key if they exist
+if [ -f "${CERT_SRC_DIR}/ca.crt" ]; then
+    cp "${CERT_SRC_DIR}/ca.crt" "${CERT_DEST_DIR}/ca.crt"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Copied ${CERT_SRC_DIR}/ca.crt to ${CERT_DEST_DIR}/ca.crt"
+    
+    # Check for MongoDB CA certificate, use standard CA if not found
+    if [ -f "${CERT_SRC_DIR}/mongodb-ca.crt" ]; then
+        cp "${CERT_SRC_DIR}/mongodb-ca.crt" "${CERT_DEST_DIR}/mongodb-ca.crt"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Copied ${CERT_SRC_DIR}/mongodb-ca.crt to ${CERT_DEST_DIR}/mongodb-ca.crt"
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] No specific MongoDB CA certificate found, using CA certificate"
+        cp "${CERT_SRC_DIR}/ca.crt" "${CERT_DEST_DIR}/mongodb-ca.crt"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Copied ${CERT_SRC_DIR}/ca.crt to ${CERT_DEST_DIR}/mongodb-ca.crt"
     fi
-  done
-  
-  # If not found in standard locations, search more broadly
-  if [ -z "$result" ]; then
-    result=$(find /etc/ssl -name "$filename" -type f 2>/dev/null | head -n 1)
-  fi
-  
-  echo "$result"
-}
-
-# Copy a file if it exists
-copy_if_exists() {
-  local src="$1"
-  local dest="$2"
-  
-  if [ -n "$src" ] && [ -f "$src" ]; then
-    mkdir -p "$(dirname "$dest")" 2>/dev/null
-    cp "$src" "$dest" 2>/dev/null && log "Copied $src to $dest" || log "Failed to copy $src to $dest"
-    return 0
-  fi
-  return 1
-}
-
-# Create combined PEM file (key + cert)
-create_pem() {
-  local key="$1"
-  local cert="$2"
-  local pem="$3"
-  
-  if [ -f "$key" ] && [ -f "$cert" ]; then
-    cat "$key" "$cert" > "$pem" 2>/dev/null && log "Created PEM file $pem" || log "Failed to create PEM file $pem"
-    chmod 600 "$pem" 2>/dev/null
-    return 0
-  fi
-  return 1
-}
-
-log "Finding and copying CA certificates..."
-
-# Find CA certificate and key
-CA_CERT=$(find_file "ca.crt")
-CA_KEY=$(find_file "ca.key")
-MONGODB_CA_CERT=$(find_file "mongodb-ca.crt")
-
-# Use CA cert as MongoDB CA if no specific MongoDB CA exists
-if [ -z "$MONGODB_CA_CERT" ] && [ -n "$CA_CERT" ]; then
-  log "No specific MongoDB CA certificate found, using CA certificate"
-  MONGODB_CA_CERT="$CA_CERT"
+    
+    # Copy CA key if it exists
+    if [ -f "${CERT_SRC_DIR}/ca.key" ]; then
+        cp "${CERT_SRC_DIR}/ca.key" "${CERT_PRIVATE_DEST_DIR}/ca.key"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Copied ${CERT_SRC_DIR}/ca.key to ${CERT_PRIVATE_DEST_DIR}/ca.key"
+    fi
 fi
-
-# Copy CA certificate and key to temporary directory
-if [ -n "$CA_CERT" ]; then
-  copy_if_exists "$CA_CERT" "$HAPROXY_TEMP_DIR/certs/ca.crt"
-else
-  log "Warning: Could not find CA certificate"
-fi
-
-if [ -n "$MONGODB_CA_CERT" ]; then
-  copy_if_exists "$MONGODB_CA_CERT" "$HAPROXY_TEMP_DIR/certs/mongodb-ca.crt"
-else
-  log "Warning: Could not find MongoDB CA certificate"
-fi
-
-if [ -n "$CA_KEY" ]; then
-  copy_if_exists "$CA_KEY" "$HAPROXY_TEMP_DIR/private/ca.key"
-else
-  log "Warning: Could not find CA key"
-fi
-
-# Prepare certificate config file
-CERT_CONFIG_FILE="$HAPROXY_TEMP_DIR/cert-paths.cfg"
-echo "# Certificate paths configuration" > $CERT_CONFIG_FILE
-echo "# Generated by sync-certificates.sh on $(date)" >> $CERT_CONFIG_FILE
-echo "" >> $CERT_CONFIG_FILE
-
-# Add CA certificate paths if found
-if [ -f "$HAPROXY_TEMP_DIR/certs/ca.crt" ]; then
-  echo "ca_cert = $HAPROXY_TEMP_DIR/certs/ca.crt" >> $CERT_CONFIG_FILE
-fi
-
-if [ -f "$HAPROXY_TEMP_DIR/certs/mongodb-ca.crt" ]; then
-  echo "mongodb_ca_cert = $HAPROXY_TEMP_DIR/certs/mongodb-ca.crt" >> $CERT_CONFIG_FILE
-fi
-
-if [ -f "$HAPROXY_TEMP_DIR/private/ca.key" ]; then
-  echo "ca_key = $HAPROXY_TEMP_DIR/private/ca.key" >> $CERT_CONFIG_FILE
-fi
-
-echo "" >> $CERT_CONFIG_FILE
 
 # Find and process agent certificates
-log "Finding and processing agent certificates..."
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Finding and processing agent certificates..."
 
-# Look for agent certificates in various locations
-for agent_id in $(find /etc/ssl -name "*.pem" -type f 2>/dev/null | grep -v "default.pem" | grep -v "mongodb.pem" | xargs -I{} basename {} .pem); do
-  log "Found agent: $agent_id"
-  
-  # Create agent directory
-  mkdir -p "$HAPROXY_TEMP_DIR/agents/$agent_id" 2>/dev/null
-  
-  # Find agent files
-  AGENT_PEM=$(find /etc/ssl -name "${agent_id}.pem" -type f 2>/dev/null | head -n 1)
-  AGENT_KEY=$(find /etc/ssl -name "${agent_id}.key" -type f 2>/dev/null | head -n 1)
-  AGENT_CERT=$(find /etc/ssl -name "${agent_id}.crt" -type f 2>/dev/null | head -n 1)
-  
-  # Copy PEM file if found
-  if [ -n "$AGENT_PEM" ]; then
-    copy_if_exists "$AGENT_PEM" "$HAPROXY_TEMP_DIR/private/${agent_id}.pem"
-    echo "agent_cert_$agent_id = $HAPROXY_TEMP_DIR/private/${agent_id}.pem" >> $CERT_CONFIG_FILE
-  else
-    # If no PEM but have key and cert, create PEM
-    if [ -n "$AGENT_KEY" ] && [ -n "$AGENT_CERT" ]; then
-      copy_if_exists "$AGENT_KEY" "$HAPROXY_TEMP_DIR/agents/${agent_id}/server.key"
-      copy_if_exists "$AGENT_CERT" "$HAPROXY_TEMP_DIR/agents/${agent_id}/server.crt"
-      
-      create_pem "$HAPROXY_TEMP_DIR/agents/${agent_id}/server.key" \
-                "$HAPROXY_TEMP_DIR/agents/${agent_id}/server.crt" \
-                "$HAPROXY_TEMP_DIR/private/${agent_id}.pem"
-                
-      echo "agent_cert_$agent_id = $HAPROXY_TEMP_DIR/private/${agent_id}.pem" >> $CERT_CONFIG_FILE
-    fi
-  fi
-done
+# Track certificates for HAProxy configuration
+cert_paths=()
 
-# Add instruction comments to the config file
-cat >> $CERT_CONFIG_FILE << EOF
-
-# Instructions for HAProxy:
-# 1. To use these certificates, add the following to your global section:
-#    ssl-default-bind-ciphersuites TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256
-#    ssl-default-bind-options ssl-min-ver TLSv1.2 no-tls-tickets
-
-# 2. In your server definitions, use:
-#    server mongo ssl verify ca-file $HAPROXY_TEMP_DIR/certs/mongodb-ca.crt
-
-# 3. For agent-specific backends:
-#    bind *:27017 ssl crt $HAPROXY_TEMP_DIR/private/{agent-id}.pem ca-file $HAPROXY_TEMP_DIR/certs/ca.crt verify optional
-EOF
-
-log "Certificate configuration file created at $CERT_CONFIG_FILE"
-
-# Update Data Plane API configuration to use the temp directories
-if [ -f "/usr/local/etc/haproxy/dataplaneapi.yml" ]; then
-  log "Checking Data Plane API configuration..."
-  
-  # Create backup of original config
-  cp /usr/local/etc/haproxy/dataplaneapi.yml /usr/local/etc/haproxy/dataplaneapi.yml.bak 2>/dev/null
-  
-  # Check if our temp directories are already in the config
-  if ! grep -q "$HAPROXY_TEMP_DIR/certs" /usr/local/etc/haproxy/dataplaneapi.yml; then
-    log "Note: To prevent Data Plane API crashes, add these directories to ssl_certs_dir in dataplaneapi.yml:"
-    log "  - $HAPROXY_TEMP_DIR/certs"
-    log "  - $HAPROXY_TEMP_DIR/private"
-    
-    # We can't directly modify the file if it's read-only, so we'll just log it
-  else
-    log "Data Plane API configuration already includes the temporary directories"
-  fi
+# Process MongoDB certificates if they exist
+if [ -d "${CERT_MONGODB_SRC_DIR}" ]; then
+    for cert in "${CERT_MONGODB_SRC_DIR}"/*.pem; do
+        if [ -f "$cert" ]; then
+            agent_id=$(basename "$cert" .pem)
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Found agent: ${agent_id}"
+            cp "$cert" "${CERT_PRIVATE_DEST_DIR}/$(basename "$cert")"
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Copied ${cert} to ${CERT_PRIVATE_DEST_DIR}/$(basename "$cert")"
+            cert_paths+=("${CERT_PRIVATE_DEST_DIR}/$(basename "$cert")")
+        fi
+    done
 fi
 
-# Clean up temporary directory
-rm -rf $TEMP_DIR
-log "Certificate synchronization completed"
+# Process agent certificates if they exist
+if [ -d "${CERT_AGENTS_SRC_DIR}" ]; then
+    for agent_dir in "${CERT_AGENTS_SRC_DIR}"/*; do
+        if [ -d "$agent_dir" ]; then
+            agent_id=$(basename "$agent_dir")
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Found agent: ${agent_id}"
+            
+            # Create agent directory in destination
+            mkdir -p "${CERT_AGENTS_DEST_DIR}/${agent_id}"
+            
+            # Copy all certificates for this agent
+            for cert in "${agent_dir}"/*.pem; do
+                if [ -f "$cert" ]; then
+                    cert_name=$(basename "$cert")
+                    cp "$cert" "${CERT_PRIVATE_DEST_DIR}/${cert_name}"
+                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Copied ${cert} to ${CERT_PRIVATE_DEST_DIR}/${cert_name}"
+                    cert_paths+=("${CERT_PRIVATE_DEST_DIR}/${cert_name}")
+                fi
+            done
+        fi
+    done
+fi
+
+# Create certificate configuration file for HAProxy
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Certificate configuration file created at ${CONFIG_FILE}"
+printf "%s\n" "${cert_paths[@]}" > "${CONFIG_FILE}"
+
+# Check if Data Plane API configuration already includes the temporary directories
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Checking Data Plane API configuration..."
+
+DPAPI_CONFIG="/usr/local/etc/haproxy/dataplaneapi.yml"
+
+if [ -f "${DPAPI_CONFIG}" ]; then
+    # Check if config contains our temporary directory
+    if grep -q "${CERT_DEST_DIR}" "${DPAPI_CONFIG}"; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Data Plane API configuration already includes the temporary directories"
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Updating Data Plane API configuration to use temporary directories"
+        # This is a simplistic approach; in a real environment, you'd use a YAML parser
+        sed -i "s|ssl_certs_dir:.*|ssl_certs_dir: ${CERT_DEST_DIR}|g" "${DPAPI_CONFIG}"
+    fi
+fi
+
+# Set proper permissions
+chown -R haproxy:haproxy "${CERT_DEST_DIR}" "${CERT_PRIVATE_DEST_DIR}" "${CERT_AGENTS_DEST_DIR}" "${CONFIG_FILE}"
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Certificate synchronization completed"
 exit 0
