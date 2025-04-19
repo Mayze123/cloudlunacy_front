@@ -22,7 +22,7 @@ services:
       - ./haproxy-dockerfile/custom-entrypoint.sh:/usr/local/bin/custom-entrypoint.sh:ro
       - ./config/haproxy/docker-entrypoint-wrapper.sh:/usr/local/bin/docker-entrypoint-wrapper.sh:ro
       - ./config/certs:/etc/ssl/certs:ro
-      - ./config/certs:/etc/ssl/private:ro
+      - ./config/certs/private:/etc/ssl/private:ro
       - haproxy-data:/etc/haproxy/dataplaneapi
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /var/log/haproxy:/var/log/haproxy

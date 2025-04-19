@@ -11,6 +11,7 @@ DPAPI_CFG="/usr/local/etc/haproxy/dataplaneapi.yml"
 DPAPI_LOG="/var/log/dataplaneapi.log"
 HAPROXY_STARTUP_LOG="/var/log/haproxy-startup.log"
 DPAPI_HEALTH_URL="http://127.0.0.1:5555/v3/health" # Use loopback for health check
+CERT_PRECHECK="/usr/local/etc/haproxy/certificate-precheck.sh"
 
 # Ensure data directories exist with proper permissions
 mkdir -p /etc/haproxy/dataplaneapi /var/lib/haproxy/backups /var/log /run
@@ -40,6 +41,29 @@ fi
 # Clean up old sockets/pid files
 rm -f "$HAPROXY_SOCK" "$HAPROXY_PID"
 
+# Run certificate pre-check script if it exists
+if [ -f "$CERT_PRECHECK" ]; then
+  echo "[Entrypoint] Running certificate pre-check..."
+  chmod +x "$CERT_PRECHECK"
+  "$CERT_PRECHECK"
+else
+  echo "[Entrypoint] Certificate pre-check script not found at $CERT_PRECHECK, skipping."
+  # Perform minimal directory checks for certificates
+  for dir in "/etc/ssl/certs" "/etc/ssl/private"; do
+    if [ ! -d "$dir" ]; then
+      echo "[Entrypoint] Creating certificate directory: $dir"
+      mkdir -p "$dir"
+      chmod 755 "$dir"
+    fi
+  done
+fi
+
+# Sync certificates if available
+if [ -x "/usr/local/bin/sync-certificates.sh" ]; then
+  echo "[Entrypoint] Syncing certificates from Node.js application..."
+  /usr/local/bin/sync-certificates.sh
+fi
+
 # Check the Data Plane API configuration file exists
 if [ ! -f "$DPAPI_CFG" ]; then
   echo "[Entrypoint][ERROR] Data Plane API configuration file '$DPAPI_CFG' not found!"
@@ -57,12 +81,12 @@ echo "[Entrypoint] HAProxy configuration validated successfully."
 # Handle shutdown
 cleanup() {
   echo "[Entrypoint] Shutting down..."
-  if [ -n "$DATAPLANEAPI_PID" ] && kill -0 "$DATAPLANEAPI_PID" >/dev/null 2>&1; then
-    kill -TERM "$DATAPLANEAPI_PID"
+  if [ -n "$DATAPLANEAPI_PID" ] && kill -0 "$DATAPLANEAPI_PID" 2>/dev/null; then
+    kill -TERM "$DATAPLANEAPI_PID" 2>/dev/null || true
     wait "$DATAPLANEAPI_PID" 2>/dev/null || true
   fi
-   if [ -n "$HAPROXY_PID" ] && kill -0 "$HAPROXY_PID" >/dev/null 2>&1; then
-    kill -TERM "$HAPROXY_PID"
+   if [ -n "$HAPROXY_PID" ] && kill -0 "$HAPROXY_PID" 2>/dev/null; then
+    kill -TERM "$HAPROXY_PID" 2>/dev/null || true
     wait "$HAPROXY_PID" 2>/dev/null || true
   fi
   echo "[Entrypoint] Shutdown complete."
@@ -109,53 +133,91 @@ if [ $SECONDS -ge $WAIT_TIMEOUT ]; then
   exit 1
 fi
 
-# Start Data Plane API
+# Start Data Plane API with retry mechanism
 echo "[Entrypoint] Starting Data Plane API..."
-# Run DPAPI as haproxy user for better security, if possible and paths allow
-# Consider: su-exec haproxy dataplaneapi -f "$DPAPI_CFG" > "$DPAPI_LOG" 2>&1 &
-# For now, run as root (default) which should have access after chown
-dataplaneapi -f "$DPAPI_CFG" >> "$DPAPI_LOG" 2>&1 &
-DATAPLANEAPI_PID=$!
+# Track retries and whether DPAPI started successfully
+DPAPI_RETRIES=3
+DPAPI_SUCCESS=false
 
-# Wait for Data Plane API to become healthy
-echo "[Entrypoint] Waiting for Data Plane API at '$DPAPI_HEALTH_URL'..."
-WAIT_TIMEOUT=30
-SECONDS=0
-HEALTHY=false
-while [ $SECONDS -lt $WAIT_TIMEOUT ]; do
-  # Use curl with loopback address, fail silently, short timeout
-  if curl --fail -s -o /dev/null --max-time 2 "$DPAPI_HEALTH_URL"; then
-    echo "[Entrypoint] Data Plane API is running and healthy."
-    HEALTHY=true
-    break
+while [ $DPAPI_RETRIES -gt 0 ] && [ "$DPAPI_SUCCESS" != "true" ]; do
+  # Run DPAPI
+  dataplaneapi -f "$DPAPI_CFG" >> "$DPAPI_LOG" 2>&1 &
+  DATAPLANEAPI_PID=$!
+
+  # Wait for Data Plane API to become healthy
+  echo "[Entrypoint] Waiting for Data Plane API at '$DPAPI_HEALTH_URL'..."
+  WAIT_TIMEOUT=15
+  SECONDS=0
+  HEALTHY=false
+  while [ $SECONDS -lt $WAIT_TIMEOUT ]; do
+    # Use curl with loopback address, fail silently, short timeout
+    if curl --fail -s -o /dev/null --max-time 2 "$DPAPI_HEALTH_URL"; then
+      echo "[Entrypoint] Data Plane API is running and healthy."
+      HEALTHY=true
+      DPAPI_SUCCESS=true
+      break
+    fi
+    # Check if DPAPI process died
+    if ! kill -0 $DATAPLANEAPI_PID 2>/dev/null; then
+       echo "[Entrypoint][WARNING] Data Plane API failed to start."
+       break # Exit loop, will retry
+    fi
+    sleep 1
+    SECONDS=$((SECONDS + 1))
+  done
+
+  if [ "$HEALTHY" != "true" ]; then
+    DPAPI_RETRIES=$((DPAPI_RETRIES - 1))
+    echo "[Entrypoint][WARNING] Data Plane API did not become healthy after $WAIT_TIMEOUT seconds. Retries left: $DPAPI_RETRIES"
+    echo "--- Data Plane API Log ($DPAPI_LOG) ---"
+    tail -n 50 "$DPAPI_LOG" || echo "Log file empty or not readable."
+    echo "--- End Data Plane API Log ---"
+    
+    # Kill the process if it's still running
+    if kill -0 $DATAPLANEAPI_PID 2>/dev/null; then
+      kill -TERM $DATAPLANEAPI_PID 2>/dev/null || true
+      wait $DATAPLANEAPI_PID 2>/dev/null || true
+    fi
+    
+    if [ $DPAPI_RETRIES -gt 0 ]; then
+      echo "[Entrypoint] Retrying Data Plane API startup in 5 seconds..."
+      sleep 5
+    fi
   fi
-  # Check if DPAPI process died
-  if ! kill -0 $DATAPLANEAPI_PID > /dev/null 2>&1; then
-     echo "[Entrypoint][ERROR] Data Plane API failed to start."
-     break # Exit loop, will report error below
-  fi
-  sleep 1
-  SECONDS=$((SECONDS + 1))
 done
 
-if [ "$HEALTHY" != "true" ]; then
-  echo "[Entrypoint][ERROR] Data Plane API did not become healthy after $WAIT_TIMEOUT seconds or failed to start."
-  echo "--- Data Plane API Log ($DPAPI_LOG) ---"
-  cat "$DPAPI_LOG" || echo "Log file empty or not readable."
-  echo "--- End Data Plane API Log ---"
-  # Attempt to kill potentially lingering DPAPI process before exiting
-  kill -TERM $DATAPLANEAPI_PID 2>/dev/null || true
-  exit 1
+# Continue even if Data Plane API failed
+if [ "$DPAPI_SUCCESS" != "true" ]; then
+  echo "[Entrypoint][WARNING] Data Plane API failed to start after multiple attempts."
+  echo "[Entrypoint][WARNING] Continuing with HAProxy only. Some dynamic configuration features will be unavailable."
+  echo "[Entrypoint][WARNING] HAProxy will continue to function with its current configuration."
+  
+  # We continue without DPAPI - HAProxy will still work, but without dynamic reconfiguration
+  DATAPLANEAPI_PID=""
+  
+  # Create a flag file to indicate DPAPI failure for monitoring
+  touch /var/run/dpapi_failed
+else
+  # Remove the flag file if it exists
+  rm -f /var/run/dpapi_failed
 fi
 
-echo "[Entrypoint] HAProxy and Data Plane API started successfully. Monitoring processes."
+echo "[Entrypoint] HAProxy started successfully. Monitoring processes."
 
-# Wait indefinitely for either process to exit
-# Use wait -n in bash 4.3+ for cleaner exit, or loop+sleep for older sh
-# Simple wait for both PIDs:
-wait $HAPROXY_PID_BG $DATAPLANEAPI_PID
-EXIT_CODE=$?
-echo "[Entrypoint] A process exited with code $EXIT_CODE. Initiating shutdown..."
+# If DPAPI started, monitor both processes, otherwise just HAProxy
+if [ -n "$DATAPLANEAPI_PID" ]; then
+  # Wait for either process to exit
+  # Use simple loop to check both processes since wait -n may not be available in all shell versions
+  while kill -0 $HAPROXY_PID_BG 2>/dev/null && kill -0 $DATAPLANEAPI_PID 2>/dev/null; do
+    sleep 5
+  done
+  
+  echo "[Entrypoint] A process exited. Initiating shutdown..."
+else
+  # Just wait for HAProxy to exit
+  wait $HAPROXY_PID_BG
+  echo "[Entrypoint] HAProxy exited. Initiating shutdown..."
+fi
 
 # Call cleanup explicitly in case wait finishes before signal trap
 cleanup
