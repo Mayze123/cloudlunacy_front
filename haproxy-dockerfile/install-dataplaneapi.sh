@@ -17,6 +17,11 @@ mkdir -p "${DPAPI_TRANSACTION_DIR}"
 chmod 755 "${DPAPI_TRANSACTION_DIR}"
 chown haproxy:haproxy "${DPAPI_TRANSACTION_DIR}"
 
+# Create other required directories
+mkdir -p "/etc/haproxy/maps" "/etc/haproxy/spoe" "/tmp/certs/certs" "/tmp/certs/private" "/var/log"
+chmod 755 "/etc/haproxy/maps" "/etc/haproxy/spoe" "/tmp/certs/certs" "/tmp/certs/private" "/var/log"
+chown -R haproxy:haproxy "/etc/haproxy/maps" "/etc/haproxy/spoe" "/tmp/certs"
+
 # Download Data Plane API if not already installed
 if [ ! -f "${DPAPI_BINARY}" ]; then
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Downloading Data Plane API v${DPAPI_VERSION}..."
@@ -68,30 +73,58 @@ else
     echo "[$(date '+%Y-%m-%d %H:%M:%S')][WARNING] Data Plane API config file not found at ${DPAPI_CONFIG}."
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Creating minimal configuration..."
     
-    # Create a minimal config file
+    # Create a minimal config file that matches the expected format
     cat > "${DPAPI_CONFIG}" << EOF
-config_file: /usr/local/etc/haproxy/haproxy.cfg
-haproxy:
-  config_file: /usr/local/etc/haproxy/haproxy.cfg
-  haproxy_bin: /usr/local/sbin/haproxy
-  reload_delay: 5
-  reload_cmd: service haproxy reload
-  restart_cmd: service haproxy restart
-  config_test_cmd: /usr/local/sbin/haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
-resources:
-  transaction_dir: ${DPAPI_TRANSACTION_DIR}
-api:
+dataplaneapi:
   host: 0.0.0.0
   port: 5555
-  ssl_certs_dir: /tmp/certs/certs
-  ssl_key_file: /tmp/certs/private/ca.key
-users:
-  - name: admin
-    password: admin
-    insecure: true
+  schemes:
+    - http
+  api_base_path: /v3
+
+  haproxy:
+    config_file: /usr/local/etc/haproxy/haproxy.cfg
+    haproxy_bin: /usr/local/sbin/haproxy
+    reload_delay: 5
+    reload_strategy: native
+    reload_retention: 1
+    master_runtime_api: /var/run/haproxy.sock
+    pid_file: /var/run/haproxy.pid
+    connection_timeout: 10
+
+  users:
+    - username: admin
+      password: admin
+      insecure: true
+
+  transaction:
+    transaction_dir: ${DPAPI_TRANSACTION_DIR}
+    max_open_transactions: 20
+    max_transaction_age: 600
+
+  resources:
+    maps_dir: /etc/haproxy/maps
+    ssl_certs_dir: /tmp/certs/certs
+    spoe_dir: /etc/haproxy/spoe
+
+  log_targets:
+    - log_to: file
+      file_path: /var/log/dataplaneapi.log
+      log_level: info
+    - log_to: stdout
+      log_level: info
+
+  api_detailed_errors: true
+  disable_version_check: true
+  debug: true
 EOF
     chmod 644 "${DPAPI_CONFIG}"
 fi
+
+# Create an empty log file if it doesn't exist
+touch /var/log/dataplaneapi.log
+chmod 644 /var/log/dataplaneapi.log
+chown haproxy:haproxy /var/log/dataplaneapi.log
 
 # Set proper ownership for related files
 chown -R haproxy:haproxy "${DPAPI_CONFIG}" "${DPAPI_BINARY}" "${DPAPI_TRANSACTION_DIR}"

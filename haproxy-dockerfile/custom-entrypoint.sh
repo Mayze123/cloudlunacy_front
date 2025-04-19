@@ -17,7 +17,7 @@ CERT_SYNC="/usr/local/bin/sync-certificates.sh"
 DPAPI_INSTALL="/usr/local/bin/install-dataplaneapi.sh"
 
 # Ensure data directories exist with proper permissions
-mkdir -p /var/log /run
+mkdir -p /var/log /run /var/run
 
 # Create log files with proper permissions
 touch "$DPAPI_LOG"
@@ -107,6 +107,27 @@ chmod 660 "$HAPROXY_SOCK" 2>/dev/null || true
 
 echo "[Entrypoint] HAProxy started successfully."
 
+# Verify config file exists and has the right permissions
+if [ ! -f "$DPAPI_CFG" ]; then
+  echo "[Entrypoint][ERROR] Data Plane API config file not found at $DPAPI_CFG!"
+  exit 1
+fi
+
+# Make sure the config is readable
+chmod 644 "$DPAPI_CFG"
+chown haproxy:haproxy "$DPAPI_CFG"
+
+# Verify correct transaction directory exists
+TRANSACTION_DIR=$(grep -o 'transaction_dir:.*' "$DPAPI_CFG" | awk '{print $2}')
+if [ -z "$TRANSACTION_DIR" ]; then
+  echo "[Entrypoint][WARNING] transaction_dir not found in config, using default: /etc/haproxy/dataplaneapi"
+  TRANSACTION_DIR="/etc/haproxy/dataplaneapi"
+fi
+
+mkdir -p "$TRANSACTION_DIR"
+chmod 755 "$TRANSACTION_DIR"
+chown haproxy:haproxy "$TRANSACTION_DIR"
+
 # Start Data Plane API with retry mechanism
 echo "[Entrypoint] Starting Data Plane API..."
 DPAPI_MAX_RETRIES=3
@@ -115,14 +136,33 @@ DPAPI_RETRY_COUNT=0
 DPAPI_HEALTHY=false
 
 while [ $DPAPI_RETRY_COUNT -lt $DPAPI_MAX_RETRIES ]; do
-  # Start Data Plane API as haproxy user
+  # Truncate log file to avoid confusion with previous errors
+  : > "$DPAPI_LOG"
+  
+  # Start Data Plane API explicitly with the config file
+  echo "[Entrypoint] Starting Data Plane API (attempt $((DPAPI_RETRY_COUNT+1))/${DPAPI_MAX_RETRIES})..."
   su -s /bin/bash haproxy -c "/usr/local/bin/dataplaneapi -f $DPAPI_CFG >> $DPAPI_LOG 2>&1 &"
   DATAPLANEAPI_PID=$!
   
+  # Wait a moment for process to initialize
+  sleep 2
+  
+  # Check if process started successfully
+  if ! kill -0 $DATAPLANEAPI_PID 2>/dev/null; then
+    echo "[Entrypoint][ERROR] Data Plane API process failed to start."
+    cat "$DPAPI_LOG"
+    DPAPI_RETRY_COUNT=$((DPAPI_RETRY_COUNT+1))
+    if [ $DPAPI_RETRY_COUNT -lt $DPAPI_MAX_RETRIES ]; then
+      echo "[Entrypoint] Retrying in $DPAPI_RETRY_INTERVAL seconds..."
+      sleep $DPAPI_RETRY_INTERVAL
+    fi
+    continue
+  fi
+  
   # Wait for Data Plane API to become healthy
   echo "[Entrypoint] Waiting for Data Plane API to become healthy..."
-  HEALTH_RETRIES=10
-  HEALTH_RETRY_INTERVAL=1
+  HEALTH_RETRIES=15
+  HEALTH_RETRY_INTERVAL=2
   HEALTH_COUNTER=0
   
   while [ $HEALTH_COUNTER -lt $HEALTH_RETRIES ]; do
@@ -135,9 +175,11 @@ while [ $DPAPI_RETRY_COUNT -lt $DPAPI_MAX_RETRIES ]; do
     # Check if Data Plane API process is still running
     if ! kill -0 $DATAPLANEAPI_PID 2>/dev/null; then
       echo "[Entrypoint][WARNING] Data Plane API process exited unexpectedly!"
+      cat "$DPAPI_LOG"
       break
     fi
     
+    echo "[Entrypoint] Waiting for API to start... (${HEALTH_COUNTER}/${HEALTH_RETRIES})"
     sleep $HEALTH_RETRY_INTERVAL
     HEALTH_COUNTER=$((HEALTH_COUNTER+1))
   done
@@ -150,16 +192,17 @@ while [ $DPAPI_RETRY_COUNT -lt $DPAPI_MAX_RETRIES ]; do
   
   # If this wasn't the last attempt, kill the process and retry
   if [ $DPAPI_RETRY_COUNT -lt $DPAPI_MAX_RETRIES ]; then
-    echo "[Entrypoint][WARNING] Data Plane API not healthy after $HEALTH_RETRIES seconds. Retrying..."
+    echo "[Entrypoint][WARNING] Data Plane API not healthy after $HEALTH_RETRIES attempts. Retrying..."
     
     # Dump logs for debugging
     echo "--- Data Plane API Log ---"
-    tail -n 20 "$DPAPI_LOG"
+    cat "$DPAPI_LOG"
     echo "--- End Data Plane API Log ---"
     
     # Kill process if still running
     if kill -0 $DATAPLANEAPI_PID 2>/dev/null; then
       kill -TERM $DATAPLANEAPI_PID
+      sleep 1
     fi
     
     # Run certificate sync again before retry
@@ -175,7 +218,7 @@ if [ "$DPAPI_HEALTHY" != "true" ]; then
   
   # Dump logs for debugging
   echo "--- Data Plane API Log ---"
-  tail -n 50 "$DPAPI_LOG"
+  cat "$DPAPI_LOG"
   echo "--- End Data Plane API Log ---"
   
   # HAProxy needs to exit too so the container will restart
