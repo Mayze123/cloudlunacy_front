@@ -54,7 +54,7 @@ class PathManager {
 
     // Initialize path resolution status
     this.initialized = false;
-    
+
     // Flag to track permission issues
     this.permissionIssues = false;
   }
@@ -68,20 +68,40 @@ class PathManager {
       logger.info("Initializing path manager");
 
       // Test if frontendRoot is writable, otherwise switch to app path
-      if (!await this.isWritable(this.basePaths.frontendRoot)) {
-        logger.warn(`Frontend root path ${this.basePaths.frontendRoot} is not writable, using app path instead`);
+      if (!(await this.isWritable(this.basePaths.frontendRoot))) {
+        logger.warn(
+          `Frontend root path ${this.basePaths.frontendRoot} is not writable, using app path instead`
+        );
         this.basePaths.frontendRoot = this.basePaths.app;
         this.permissionIssues = true;
       }
 
       // Ensure critical directories exist with fallbacks if needed
       await this.ensureDirectoriesWithFallbacks([
-        { primary: this.basePaths.config, fallback: path.join(this.basePaths.app, "config") },
-        { primary: this.basePaths.logs, fallback: path.join(this.basePaths.app, "logs") },
-        { primary: this.basePaths.certs, fallback: path.join(this.basePaths.app, "certs") },
-        { primary: this.derivedPaths.certsAgents, fallback: path.join(this.basePaths.app, "certs/agents") },
-        { primary: this.derivedPaths.agentsConfig, fallback: path.join(this.basePaths.app, "config/agents") },
-        { primary: this.derivedPaths.configBackups, fallback: path.join(this.basePaths.app, "backups") },
+        {
+          primary: this.basePaths.config,
+          fallback: path.join(this.basePaths.app, "config"),
+        },
+        {
+          primary: this.basePaths.logs,
+          fallback: path.join(this.basePaths.app, "logs"),
+        },
+        {
+          primary: this.basePaths.certs,
+          fallback: path.join(this.basePaths.app, "certs"),
+        },
+        {
+          primary: this.derivedPaths.certsAgents,
+          fallback: path.join(this.basePaths.app, "certs/agents"),
+        },
+        {
+          primary: this.derivedPaths.agentsConfig,
+          fallback: path.join(this.basePaths.app, "config/agents"),
+        },
+        {
+          primary: this.derivedPaths.configBackups,
+          fallback: path.join(this.basePaths.app, "backups"),
+        },
       ]);
 
       this.initialized = true;
@@ -110,30 +130,38 @@ class PathManager {
         // First try to create the primary directory
         await this.ensureDirectory(config.primary);
       } catch (err) {
-        logger.warn(`Failed to ensure primary directory ${config.primary}: ${err.message}`);
-        
+        logger.warn(
+          `Failed to ensure primary directory ${config.primary}: ${err.message}`
+        );
+
         if (config.fallback) {
           try {
             // Try the fallback directory
             await this.ensureDirectory(config.fallback);
-            
+
             // Update the corresponding path in our config
             this.updatePathToFallback(config.primary, config.fallback);
-            logger.info(`Using fallback directory ${config.fallback} instead of ${config.primary}`);
+            logger.info(
+              `Using fallback directory ${config.fallback} instead of ${config.primary}`
+            );
           } catch (fallbackErr) {
-            logger.error(`Failed to ensure fallback directory ${config.fallback}: ${fallbackErr.message}`);
+            logger.error(
+              `Failed to ensure fallback directory ${config.fallback}: ${fallbackErr.message}`
+            );
             // Mark that we have permission issues but don't throw
             this.permissionIssues = true;
           }
         } else {
-          logger.error(`No fallback directory configured for ${config.primary}`);
+          logger.error(
+            `No fallback directory configured for ${config.primary}`
+          );
           this.permissionIssues = true;
         }
       }
     }
     return true;
   }
-  
+
   /**
    * Update a path in all collections to use fallback
    * @param {string} originalPath - The original path that failed
@@ -146,18 +174,18 @@ class PathManager {
         this.basePaths[key] = fallbackPath;
       }
     }
-    
+
     // Update in derivedPaths
     for (const [key, value] of Object.entries(this.derivedPaths)) {
       if (value === originalPath) {
         this.derivedPaths[key] = fallbackPath;
-      } else if (value.startsWith(originalPath + '/')) {
+      } else if (value.startsWith(originalPath + "/")) {
         // Handle nested paths
         const relativePath = value.substring(originalPath.length);
         this.derivedPaths[key] = path.join(fallbackPath, relativePath);
       }
     }
-    
+
     // Update in externalPaths
     for (const [key, value] of Object.entries(this.externalPaths)) {
       if (value === originalPath) {
@@ -312,7 +340,7 @@ class PathManager {
           return false;
         }
       }
-      
+
       // Try to write a temporary file
       const testPath = path.join(
         path.dirname(filePath),

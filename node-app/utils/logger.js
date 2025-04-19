@@ -26,47 +26,52 @@ class Logger {
         fs.chmodSync(this.logDir, 0o755);
         console.log(`Created log directory at ${this.logDir}`);
       }
-      
+
       // Verify we can write to this directory
-      const testFile = path.join(this.logDir, '.write_test');
-      fs.writeFileSync(testFile, 'test');
+      const testFile = path.join(this.logDir, ".write_test");
+      fs.writeFileSync(testFile, "test");
       fs.unlinkSync(testFile);
     } catch (err) {
       console.error(`Failed to use log directory at ${this.logDir}:`, err);
-      
+
       // Try alternate locations in order of preference
       const alternateLocations = [
         "/app/logs",
         process.env.HOME ? path.join(process.env.HOME, "logs") : null,
-        "/tmp/cloudlunacy-logs"
+        "/tmp/cloudlunacy-logs",
       ].filter(Boolean);
-      
+
       let success = false;
-      
+
       for (const altDir of alternateLocations) {
         if (altDir === this.logDir) continue; // Skip if same as original
-        
+
         try {
           if (!fs.existsSync(altDir)) {
             fs.mkdirSync(altDir, { recursive: true });
           }
-          
+
           // Verify we can write to this directory
-          const testFile = path.join(altDir, '.write_test');
-          fs.writeFileSync(testFile, 'test');
+          const testFile = path.join(altDir, ".write_test");
+          fs.writeFileSync(testFile, "test");
           fs.unlinkSync(testFile);
-          
+
           this.logDir = altDir;
           console.log(`Using alternate log directory: ${this.logDir}`);
           success = true;
           break;
         } catch (altErr) {
-          console.error(`Failed to use alternate log directory ${altDir}:`, altErr);
+          console.error(
+            `Failed to use alternate log directory ${altDir}:`,
+            altErr
+          );
         }
       }
-      
+
       if (!success) {
-        console.error("CRITICAL: Couldn't find a writable log directory, logs will only be sent to console");
+        console.error(
+          "CRITICAL: Couldn't find a writable log directory, logs will only be sent to console"
+        );
         this.logsDisabled = true;
       }
     }
