@@ -45,8 +45,8 @@ rm -f "$HAPROXY_SOCK" "$HAPROXY_PID"
 # Run certificate pre-check script if it exists
 if [ -f "$CERT_PRECHECK" ]; then
   echo "[Entrypoint] Running certificate pre-check..."
-  chmod +x "$CERT_PRECHECK"
-  "$CERT_PRECHECK"
+  # Don't try to chmod the file if it's mounted as read-only
+  bash "$CERT_PRECHECK"
 else
   echo "[Entrypoint] Certificate pre-check script not found at $CERT_PRECHECK, skipping."
   # Perform minimal directory checks for certificates
@@ -54,7 +54,7 @@ else
     if [ ! -d "$dir" ]; then
       echo "[Entrypoint] Creating certificate directory: $dir"
       mkdir -p "$dir"
-      chmod 755 "$dir"
+      chmod 755 "$dir" 2>/dev/null || true
     fi
   done
 fi
@@ -62,8 +62,8 @@ fi
 # Run certificate sync script if it exists
 if [ -f "$CERT_SYNC" ]; then
   echo "[Entrypoint] Running certificate sync..."
-  chmod +x "$CERT_SYNC"
-  "$CERT_SYNC"
+  # Don't try to chmod the file if it's mounted as read-only
+  bash "$CERT_SYNC"
 else
   echo "[Entrypoint] Certificate sync script not found at $CERT_SYNC, skipping."
 fi
@@ -195,7 +195,7 @@ while [ $DPAPI_RETRIES -gt 0 ] && [ "$DPAPI_SUCCESS" != "true" ]; do
       # Run certificate sync again before retrying (this can fix certificate issues)
       if [ -f "$CERT_SYNC" ]; then
         echo "[Entrypoint] Re-running certificate sync before retry..."
-        "$CERT_SYNC"
+        bash "$CERT_SYNC"
       fi
     fi
   fi
@@ -227,7 +227,7 @@ if [ -n "$DATAPLANEAPI_PID" ]; then
     # Run certificate sync periodically to ensure up-to-date certificates
     if [ -f "$CERT_SYNC" ] && [ -f "/var/run/haproxy.pid" ]; then
       echo "[Entrypoint] Running periodic certificate sync..."
-      "$CERT_SYNC" > /dev/null 2>&1
+      bash "$CERT_SYNC" > /dev/null 2>&1
     fi
     sleep 300  # Run certificate sync every 5 minutes
   done
