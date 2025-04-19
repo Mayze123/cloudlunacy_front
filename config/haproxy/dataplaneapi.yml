@@ -9,12 +9,14 @@ dataplaneapi:
     config_file: /usr/local/etc/haproxy/haproxy.cfg
     haproxy_bin: /usr/local/sbin/haproxy
     reload_delay: 5
-    reload_strategy: custom
-    ReloadCmd: "kill -SIGUSR2 1"
-    RestartCmd: "/usr/local/sbin/haproxy -D -f /usr/local/etc/haproxy/haproxy.cfg -p /run/haproxy.pid -sf $(cat /run/haproxy.pid 2>/dev/null || echo 1)"
+    # Use a native strategy, remove custom commands
+    reload_strategy: native
+    # ReloadCmd: ... (REMOVED)
+    # RestartCmd: ... (REMOVED)
     reload_retention: 1
-    config_version: 3
-    master_runtime_api: /var/run/haproxy.sock
+    # config_version: 3 # Optional, DPAPI usually detects this
+    master_runtime_api: /var/run/haproxy.sock # Path matches haproxy.cfg global section
+    pid_file: /var/run/haproxy.pid # Explicitly tell DPAPI where the PID file is
     connection_timeout: 10
 
   users:
