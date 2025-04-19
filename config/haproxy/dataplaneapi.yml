@@ -31,7 +31,11 @@ dataplaneapi:
 
   resources:
     maps_dir: /etc/haproxy/maps
-    ssl_certs_dir: /etc/ssl/private
+    ssl_certs_dir:
+      - /etc/ssl/certs
+      - /etc/ssl/private
+      - /tmp/certs/certs
+      - /tmp/certs/private
     spoe_dir: /etc/haproxy/spoe
 
   log_targets:
