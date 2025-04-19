@@ -10,14 +10,16 @@ HAPROXY_CFG="/usr/local/etc/haproxy/haproxy.cfg"
 HAPROXY_PID="/var/run/haproxy.pid"
 HAPROXY_SOCK="/var/run/haproxy.sock"
 DPAPI_CFG="/usr/local/etc/haproxy/dataplaneapi.yml"
+DPAPI_CFG_JSON="/usr/local/etc/haproxy/dataplaneapi.json"
 DPAPI_LOG="/var/log/dataplaneapi.log"
-DPAPI_HEALTH_URL="http://127.0.0.1:5555/v3/health"
+DPAPI_HEALTH_URL="http://127.0.0.1:5555/health"
 CERT_PRECHECK="/usr/local/etc/haproxy/certificate-precheck.sh"
 CERT_SYNC="/usr/local/bin/sync-certificates.sh"
 DPAPI_INSTALL="/usr/local/bin/install-dataplaneapi.sh"
 
 # Ensure data directories exist with proper permissions
-mkdir -p /var/log /run /var/run
+mkdir -p /var/log /run /var/run 
+chmod 755 /var/run 2>/dev/null || true
 
 # Create log files with proper permissions
 touch "$DPAPI_LOG"
@@ -93,7 +95,7 @@ while [ ! -S "$HAPROXY_SOCK" ]; do
   
   # Check if HAProxy process is still running
   if ! kill -0 $HAPROXY_PID_VALUE 2>/dev/null; then
-    echo "[Entrypoint][ERROR] HAProxy process exited unexpectedly!"
+    echo "[Entrypint][ERROR] HAProxy process exited unexpectedly!"
     exit 1
   fi
   
@@ -107,26 +109,22 @@ chmod 660 "$HAPROXY_SOCK" 2>/dev/null || true
 
 echo "[Entrypoint] HAProxy started successfully."
 
-# Verify config file exists and has the right permissions
-if [ ! -f "$DPAPI_CFG" ]; then
-  echo "[Entrypoint][ERROR] Data Plane API config file not found at $DPAPI_CFG!"
+# Verify config files exist
+if [ ! -f "$DPAPI_CFG" ] && [ ! -f "$DPAPI_CFG_JSON" ]; then
+  echo "[Entrypoint][ERROR] No Data Plane API config files found!"
   exit 1
 fi
 
-# Make sure the config is readable
-chmod 644 "$DPAPI_CFG"
-chown haproxy:haproxy "$DPAPI_CFG"
-
-# Verify correct transaction directory exists
-TRANSACTION_DIR=$(grep -o 'transaction_dir:.*' "$DPAPI_CFG" | awk '{print $2}')
-if [ -z "$TRANSACTION_DIR" ]; then
-  echo "[Entrypoint][WARNING] transaction_dir not found in config, using default: /etc/haproxy/dataplaneapi"
-  TRANSACTION_DIR="/etc/haproxy/dataplaneapi"
+# Make sure config is readable
+if [ -f "$DPAPI_CFG" ]; then
+  chmod 644 "$DPAPI_CFG"
+  chown haproxy:haproxy "$DPAPI_CFG"
 fi
 
-mkdir -p "$TRANSACTION_DIR"
-chmod 755 "$TRANSACTION_DIR"
-chown haproxy:haproxy "$TRANSACTION_DIR"
+if [ -f "$DPAPI_CFG_JSON" ]; then
+  chmod 644 "$DPAPI_CFG_JSON"
+  chown haproxy:haproxy "$DPAPI_CFG_JSON"
+fi
 
 # Start Data Plane API with retry mechanism
 echo "[Entrypoint] Starting Data Plane API..."
@@ -139,18 +137,37 @@ while [ $DPAPI_RETRY_COUNT -lt $DPAPI_MAX_RETRIES ]; do
   # Truncate log file to avoid confusion with previous errors
   : > "$DPAPI_LOG"
   
-  # Start Data Plane API explicitly with the config file
-  echo "[Entrypoint] Starting Data Plane API (attempt $((DPAPI_RETRY_COUNT+1))/${DPAPI_MAX_RETRIES})..."
-  su -s /bin/bash haproxy -c "/usr/local/bin/dataplaneapi -f $DPAPI_CFG >> $DPAPI_LOG 2>&1 &"
+  # Start Data Plane API - try YAML config first, fall back to JSON if it fails
+  if [ -f "$DPAPI_CFG" ]; then
+    echo "[Entrypoint] Starting Data Plane API with YAML config (attempt $((DPAPI_RETRY_COUNT+1))/${DPAPI_MAX_RETRIES})..."
+    su -s /bin/bash haproxy -c "/usr/local/bin/dataplaneapi -f $DPAPI_CFG >> $DPAPI_LOG 2>&1 &"
+  else
+    echo "[Entrypoint] Starting Data Plane API with JSON config (attempt $((DPAPI_RETRY_COUNT+1))/${DPAPI_MAX_RETRIES})..."
+    su -s /bin/bash haproxy -c "/usr/local/bin/dataplaneapi -c $DPAPI_CFG_JSON >> $DPAPI_LOG 2>&1 &"
+  fi
   DATAPLANEAPI_PID=$!
   
   # Wait a moment for process to initialize
-  sleep 2
+  sleep 3
   
   # Check if process started successfully
   if ! kill -0 $DATAPLANEAPI_PID 2>/dev/null; then
     echo "[Entrypoint][ERROR] Data Plane API process failed to start."
     cat "$DPAPI_LOG"
+    
+    # If YAML config failed, try JSON as fallback
+    if [ -f "$DPAPI_CFG_JSON" ] && [ -f "$DPAPI_CFG" ]; then
+      echo "[Entrypoint] Trying with JSON config as fallback..."
+      su -s /bin/bash haproxy -c "/usr/local/bin/dataplaneapi -c $DPAPI_CFG_JSON >> $DPAPI_LOG 2>&1 &"
+      DATAPLANEAPI_PID=$!
+      sleep 3
+      
+      if ! kill -0 $DATAPLANEAPI_PID 2>/dev/null; then
+        echo "[Entrypoint][ERROR] Data Plane API process failed to start with JSON config too."
+        cat "$DPAPI_LOG"
+      fi
+    fi
+    
     DPAPI_RETRY_COUNT=$((DPAPI_RETRY_COUNT+1))
     if [ $DPAPI_RETRY_COUNT -lt $DPAPI_MAX_RETRIES ]; then
       echo "[Entrypoint] Retrying in $DPAPI_RETRY_INTERVAL seconds..."
@@ -161,7 +178,7 @@ while [ $DPAPI_RETRY_COUNT -lt $DPAPI_MAX_RETRIES ]; do
   
   # Wait for Data Plane API to become healthy
   echo "[Entrypoint] Waiting for Data Plane API to become healthy..."
-  HEALTH_RETRIES=15
+  HEALTH_RETRIES=20
   HEALTH_RETRY_INTERVAL=2
   HEALTH_COUNTER=0
   
@@ -204,6 +221,10 @@ while [ $DPAPI_RETRY_COUNT -lt $DPAPI_MAX_RETRIES ]; do
       kill -TERM $DATAPLANEAPI_PID
       sleep 1
     fi
+    
+    # Re-run install to ensure clean setup for next attempt
+    echo "[Entrypoint] Re-running Data Plane API installation before retry..."
+    bash "$DPAPI_INSTALL"
     
     # Run certificate sync again before retry
     echo "[Entrypoint] Re-running certificate sync before retry..."
