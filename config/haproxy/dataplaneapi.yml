@@ -9,14 +9,10 @@ dataplaneapi:
     config_file: /usr/local/etc/haproxy/haproxy.cfg
     haproxy_bin: /usr/local/sbin/haproxy
     reload_delay: 5
-    # Use a native strategy, remove custom commands
     reload_strategy: native
-    # ReloadCmd: ... (REMOVED)
-    # RestartCmd: ... (REMOVED)
     reload_retention: 1
-    # config_version: 3 # Optional, DPAPI usually detects this
-    master_runtime_api: /var/run/haproxy.sock # Path matches haproxy.cfg global section
-    pid_file: /var/run/haproxy.pid # Explicitly tell DPAPI where the PID file is
+    master_runtime_api: /var/run/haproxy.sock
+    pid_file: /var/run/haproxy.pid
     connection_timeout: 10
 
   users:
@@ -31,9 +27,7 @@ dataplaneapi:
 
   resources:
     maps_dir: /etc/haproxy/maps
-    # Fixed: Data Plane API expects ssl_certs_dir to be a string, not an array
-    # We'll use a single directory and rely on the sync-certificates.sh script
-    # to copy all certificates to this central location
+    # Single directory path instead of an array to avoid YAML parsing errors
     ssl_certs_dir: /tmp/certs/certs
     spoe_dir: /etc/haproxy/spoe
 

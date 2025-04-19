@@ -18,6 +18,14 @@ CERT_SYNC="/usr/local/bin/sync-certificates.sh"
 mkdir -p /etc/haproxy/dataplaneapi /var/lib/haproxy/backups /var/log /run
 mkdir -p /etc/haproxy/maps /etc/haproxy/spoe /etc/haproxy/errors
 
+# Create temporary certificate directories that Data Plane API can write to
+mkdir -p /tmp/certs/certs /tmp/certs/private /tmp/certs/agents
+chmod 755 /tmp/certs
+chmod 755 /tmp/certs/certs
+chmod 700 /tmp/certs/private
+chmod 755 /tmp/certs/agents
+chown -R haproxy:haproxy /tmp/certs
+
 # Create/chown essential files and directories
 touch "$DPAPI_LOG" "$HAPROXY_STARTUP_LOG"
 chown -R haproxy:haproxy /etc/haproxy /var/lib/haproxy /var/log
@@ -68,15 +76,57 @@ else
   echo "[Entrypoint] Certificate sync script not found at $CERT_SYNC, skipping."
 fi
 
-# Setup temporary certificate directories to ensure Data Plane API has writeable locations
-mkdir -p /tmp/certs/certs /tmp/certs/private /tmp/certs/agents
-chmod 755 /tmp/certs/certs
-chmod 700 /tmp/certs/private
-
-# Check the Data Plane API configuration file exists
+# Verify Data Plane API configuration exists
 if [ ! -f "$DPAPI_CFG" ]; then
-  echo "[Entrypoint][ERROR] Data Plane API configuration file '$DPAPI_CFG' not found!"
-  exit 1
+  echo "[Entrypoint][WARNING] Data Plane API configuration file '$DPAPI_CFG' not found!"
+  echo "[Entrypoint] Creating default Data Plane API configuration..."
+  # Create a minimal working configuration
+  cat > "$DPAPI_CFG" << EOF
+dataplaneapi:
+  host: 0.0.0.0
+  port: 5555
+  schemes: 
+    - http
+  api_base_path: /v3
+  
+  haproxy:
+    config_file: $HAPROXY_CFG
+    haproxy_bin: /usr/local/sbin/haproxy
+    reload_delay: 5
+    reload_strategy: native
+    reload_retention: 1
+    master_runtime_api: $HAPROXY_SOCK
+    pid_file: $HAPROXY_PID
+    connection_timeout: 10
+  
+  resources:
+    maps_dir: /etc/haproxy/maps
+    ssl_certs_dir: /tmp/certs/certs
+    spoe_dir: /etc/haproxy/spoe
+  
+  transaction:
+    transaction_dir: /etc/haproxy/dataplaneapi
+    max_open_transactions: 20
+    max_transaction_age: 600
+  
+  users:
+    - username: admin
+      password: admin
+      insecure: true
+  
+  log_targets:
+    - log_to: file
+      file_path: $DPAPI_LOG
+      log_level: info
+    - log_to: stdout
+      log_level: info
+  
+  api_detailed_errors: true
+  disable_version_check: true
+  debug: true
+EOF
+  chown haproxy:haproxy "$DPAPI_CFG"
+  chmod 640 "$DPAPI_CFG"
 fi
 
 # Validate HAProxy configuration before starting
@@ -116,10 +166,9 @@ SECONDS=0
 while [ $SECONDS -lt $WAIT_TIMEOUT ]; do
   if [ -S "$HAPROXY_SOCK" ] && [ -f "$HAPROXY_PID" ]; then
      echo "[Entrypoint] HAProxy socket and PID file found."
-     # HAProxy should create these with correct permissions due to 'user' directive
-     # Optionally, enforce permissions:
-     # chmod 660 "$HAPROXY_SOCK"
-     # chown haproxy:haproxy "$HAPROXY_SOCK" "$HAPROXY_PID"
+     # Ensure socket has proper permissions for Data Plane API
+     chown haproxy:haproxy "$HAPROXY_SOCK" "$HAPROXY_PID" 2>/dev/null || true
+     chmod 660 "$HAPROXY_SOCK" 2>/dev/null || true
      break
   fi
   # Check if HAProxy process died
