@@ -70,17 +70,15 @@ fi
 # Create a new configuration file with a simpler format
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Creating Data Plane API configuration..."
 
-# Create a simpler YAML configuration format
+# Create a simpler YAML configuration format - switching to a simpler reload strategy
 cat > "${DPAPI_CONFIG}" << EOF
 host: 0.0.0.0
 port: 5555
 haproxy:
   config_file: /usr/local/etc/haproxy/haproxy.cfg
   haproxy_bin: /usr/local/sbin/haproxy
-  reload_cmd: "kill -SIGUSR2 1"
-  restart_cmd: "haproxy -D -f /usr/local/etc/haproxy/haproxy.cfg -p /var/run/haproxy.pid -sf \$(cat /var/run/haproxy.pid)"
   reload_delay: 5
-  reload_strategy: custom
+  reload_strategy: native
   config_version: 2
   transaction_dir: ${DPAPI_TRANSACTION_DIR}
 resources:
@@ -106,10 +104,8 @@ cat > "${DPAPI_CONFIG_JSON}" << EOF
   "haproxy": {
     "config_file": "/usr/local/etc/haproxy/haproxy.cfg",
     "haproxy_bin": "/usr/local/sbin/haproxy",
-    "reload_cmd": "kill -SIGUSR2 1",
-    "restart_cmd": "haproxy -D -f /usr/local/etc/haproxy/haproxy.cfg -p /var/run/haproxy.pid -sf $(cat /var/run/haproxy.pid)",
     "reload_delay": 5,
-    "reload_strategy": "custom",
+    "reload_strategy": "native",
     "config_version": 2,
     "transaction_dir": "${DPAPI_TRANSACTION_DIR}"
   },
