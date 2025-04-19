@@ -18,7 +18,7 @@ mkdir -p /etc/haproxy/maps /etc/haproxy/spoe /etc/haproxy/errors
 
 # Create/chown essential files and directories
 touch "$DPAPI_LOG" "$HAPROXY_STARTUP_LOG"
-chown -R haproxy:haproxy /etc/haproxy /var/lib/haproxy /var/log /run
+chown -R haproxy:haproxy /etc/haproxy /var/lib/haproxy /var/log
 chmod 640 "$DPAPI_LOG" "$HAPROXY_STARTUP_LOG" # Slightly more secure
 chmod 640 "$DPAPI_CFG" # Config file permissions
 
