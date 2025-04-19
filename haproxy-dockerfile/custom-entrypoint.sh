@@ -12,6 +12,7 @@ DPAPI_LOG="/var/log/dataplaneapi.log"
 HAPROXY_STARTUP_LOG="/var/log/haproxy-startup.log"
 DPAPI_HEALTH_URL="http://127.0.0.1:5555/v3/health" # Use loopback for health check
 CERT_PRECHECK="/usr/local/etc/haproxy/certificate-precheck.sh"
+CERT_SYNC="/usr/local/bin/sync-certificates.sh"
 
 # Ensure data directories exist with proper permissions
 mkdir -p /etc/haproxy/dataplaneapi /var/lib/haproxy/backups /var/log /run
@@ -58,11 +59,19 @@ else
   done
 fi
 
-# Sync certificates if available
-if [ -x "/usr/local/bin/sync-certificates.sh" ]; then
-  echo "[Entrypoint] Syncing certificates from Node.js application..."
-  /usr/local/bin/sync-certificates.sh
+# Run certificate sync script if it exists
+if [ -f "$CERT_SYNC" ]; then
+  echo "[Entrypoint] Running certificate sync..."
+  chmod +x "$CERT_SYNC"
+  "$CERT_SYNC"
+else
+  echo "[Entrypoint] Certificate sync script not found at $CERT_SYNC, skipping."
 fi
+
+# Setup temporary certificate directories to ensure Data Plane API has writeable locations
+mkdir -p /tmp/certs/certs /tmp/certs/private /tmp/certs/agents
+chmod 755 /tmp/certs/certs
+chmod 700 /tmp/certs/private
 
 # Check the Data Plane API configuration file exists
 if [ ! -f "$DPAPI_CFG" ]; then
@@ -182,6 +191,12 @@ while [ $DPAPI_RETRIES -gt 0 ] && [ "$DPAPI_SUCCESS" != "true" ]; do
     if [ $DPAPI_RETRIES -gt 0 ]; then
       echo "[Entrypoint] Retrying Data Plane API startup in 5 seconds..."
       sleep 5
+      
+      # Run certificate sync again before retrying (this can fix certificate issues)
+      if [ -f "$CERT_SYNC" ]; then
+        echo "[Entrypoint] Re-running certificate sync before retry..."
+        "$CERT_SYNC"
+      fi
     fi
   fi
 done
@@ -209,7 +224,12 @@ if [ -n "$DATAPLANEAPI_PID" ]; then
   # Wait for either process to exit
   # Use simple loop to check both processes since wait -n may not be available in all shell versions
   while kill -0 $HAPROXY_PID_BG 2>/dev/null && kill -0 $DATAPLANEAPI_PID 2>/dev/null; do
-    sleep 5
+    # Run certificate sync periodically to ensure up-to-date certificates
+    if [ -f "$CERT_SYNC" ] && [ -f "/var/run/haproxy.pid" ]; then
+      echo "[Entrypoint] Running periodic certificate sync..."
+      "$CERT_SYNC" > /dev/null 2>&1
+    fi
+    sleep 300  # Run certificate sync every 5 minutes
   done
   
   echo "[Entrypoint] A process exited. Initiating shutdown..."

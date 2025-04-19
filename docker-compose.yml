@@ -21,6 +21,10 @@ services:
       - ./config/haproxy/dataplaneapi.yml:/usr/local/etc/haproxy/dataplaneapi.yml:rw
       - ./haproxy-dockerfile/custom-entrypoint.sh:/usr/local/bin/custom-entrypoint.sh:ro
       - ./config/haproxy/docker-entrypoint-wrapper.sh:/usr/local/bin/docker-entrypoint-wrapper.sh:ro
+      # Certificate management tools
+      - ./config/haproxy/certificate-precheck.sh:/usr/local/etc/haproxy/certificate-precheck.sh:ro
+      - ./haproxy-dockerfile/sync-certificates.sh:/usr/local/bin/sync-certificates.sh:ro
+      # Certificate directories
       - ./config/certs:/etc/ssl/certs:ro
       - ./config/certs/private:/etc/ssl/private:ro
       - haproxy-data:/etc/haproxy/dataplaneapi
