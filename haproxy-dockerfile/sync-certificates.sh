@@ -46,6 +46,20 @@ if [ -f "${CERT_SRC_DIR}/ca.crt" ]; then
     fi
 fi
 
+# Copy the MongoDB certificate to writable location with proper permissions
+if [ -f "${CERT_SRC_DIR}/mongodb.pem" ]; then
+    cp "${CERT_SRC_DIR}/mongodb.pem" "/tmp/certs/mongodb.pem"
+    chmod 644 "/tmp/certs/mongodb.pem"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Copied ${CERT_SRC_DIR}/mongodb.pem to /tmp/certs/mongodb.pem with proper permissions"
+else
+    # If mongodb.pem doesn't exist, create a fallback using CA certificate
+    if [ -f "${CERT_DEST_DIR}/mongodb-ca.crt" ]; then
+        cat "${CERT_DEST_DIR}/mongodb-ca.crt" > "/tmp/certs/mongodb.pem"
+        chmod 644 "/tmp/certs/mongodb.pem"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Created fallback mongodb.pem from CA certificate"
+    fi
+fi
+
 # Find and process agent certificates
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Finding and processing agent certificates..."
 
@@ -88,6 +102,11 @@ if [ -d "${CERT_AGENTS_SRC_DIR}" ]; then
     done
 fi
 
+# Add mongodb.pem to cert paths if it exists
+if [ -f "/tmp/certs/mongodb.pem" ]; then
+    cert_paths+=("/tmp/certs/mongodb.pem")
+fi
+
 # Create certificate configuration file for HAProxy
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Certificate configuration file created at ${CONFIG_FILE}"
 printf "%s\n" "${cert_paths[@]}" > "${CONFIG_FILE}"
@@ -109,7 +128,7 @@ if [ -f "${DPAPI_CONFIG}" ]; then
 fi
 
 # Set proper permissions
-chown -R haproxy:haproxy "${CERT_DEST_DIR}" "${CERT_PRIVATE_DEST_DIR}" "${CERT_AGENTS_DEST_DIR}" "${CONFIG_FILE}"
+chown -R haproxy:haproxy "${CERT_DEST_DIR}" "${CERT_PRIVATE_DEST_DIR}" "${CERT_AGENTS_DEST_DIR}" "${CONFIG_FILE}" "/tmp/certs/mongodb.pem"
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Certificate synchronization completed"
 exit 0

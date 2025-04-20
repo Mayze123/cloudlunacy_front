@@ -16,6 +16,8 @@ DPAPI_HEALTH_URL="http://127.0.0.1:5555/health"
 CERT_PRECHECK="/usr/local/etc/haproxy/certificate-precheck.sh"
 CERT_SYNC="/usr/local/bin/sync-certificates.sh"
 DPAPI_INSTALL="/usr/local/bin/install-dataplaneapi.sh"
+MONGODB_CERT="/etc/ssl/certs/mongodb.pem"
+MONGODB_CERT_TMP="/tmp/certs/mongodb.pem"
 
 # Ensure data directories exist with proper permissions
 mkdir -p /var/log /run /var/run 
@@ -52,6 +54,61 @@ if [ -f "$CERT_SYNC" ]; then
 else
   echo "[Entrypoint][ERROR] Certificate sync script not found at $CERT_SYNC!"
   exit 1
+fi
+
+# Handle mongodb.pem certificate with read-only filesystem
+echo "[Entrypoint] Checking readability of SSL certificate $MONGODB_CERT for user haproxy..."
+if [ -f "$MONGODB_CERT" ]; then
+  if su -s /bin/bash haproxy -c "test -r $MONGODB_CERT"; then
+    echo "[Entrypoint] Certificate $MONGODB_CERT is readable by haproxy user."
+  else
+    echo "[Entrypoint][ERROR] SSL certificate $MONGODB_CERT is not readable by user haproxy!"
+    ls -l "$MONGODB_CERT"
+    
+    echo "[Entrypoint] Creating a readable copy in a writable location..."
+    # Create a copy of the certificate in the temporary writable directory
+    cp "$MONGODB_CERT" "$MONGODB_CERT_TMP" 2>/dev/null
+    
+    # Try to set permissions on the copy
+    if [ -f "$MONGODB_CERT_TMP" ]; then
+      chmod 644 "$MONGODB_CERT_TMP" 2>/dev/null
+      chown haproxy:haproxy "$MONGODB_CERT_TMP" 2>/dev/null
+      
+      # Verify if the copy is readable
+      if su -s /bin/bash haproxy -c "test -r $MONGODB_CERT_TMP"; then
+        echo "[Entrypoint] Successfully created readable copy at $MONGODB_CERT_TMP"
+        
+        # Create a symlink if possible to maintain compatibility with scripts looking for the original path
+        if [ -w "$(dirname "$MONGODB_CERT")" ]; then
+          ln -sf "$MONGODB_CERT_TMP" "$MONGODB_CERT" 2>/dev/null || true
+        fi
+        
+        # Update the HAProxy configuration to use the new certificate path
+        sed -i "s|$MONGODB_CERT|$MONGODB_CERT_TMP|g" "$HAPROXY_CFG" 2>/dev/null || true
+      else
+        echo "[Entrypoint][ERROR] Failed to create a readable certificate copy!"
+      fi
+    else
+      echo "[Entrypoint][ERROR] Failed to copy certificate to writable location!"
+    fi
+  fi
+else
+  echo "[Entrypoint] MongoDB certificate $MONGODB_CERT does not exist, creating a dummy certificate..."
+  
+  # If mongodb.pem doesn't exist, create a symlink to the CA certificate as a fallback
+  if [ -f "/etc/ssl/certs/ca.crt" ] && [ -f "/tmp/certs/certs/mongodb-ca.crt" ]; then
+    # Create a temporary combined file in writable location
+    cat "/tmp/certs/certs/mongodb-ca.crt" > "$MONGODB_CERT_TMP" 2>/dev/null
+    chmod 644 "$MONGODB_CERT_TMP" 2>/dev/null
+    chown haproxy:haproxy "$MONGODB_CERT_TMP" 2>/dev/null
+    
+    echo "[Entrypoint] Created fallback certificate at $MONGODB_CERT_TMP"
+    
+    # Update the HAProxy configuration to use the new certificate path
+    sed -i "s|$MONGODB_CERT|$MONGODB_CERT_TMP|g" "$HAPROXY_CFG" 2>/dev/null || true
+  else
+    echo "[Entrypoint][WARN] No CA certificate found to create fallback mongodb.pem"
+  fi
 fi
 
 # Install Data Plane API
