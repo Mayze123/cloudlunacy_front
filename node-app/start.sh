@@ -4,6 +4,13 @@
 # Create necessary directories
 mkdir -p /app/scripts /app/config /app/config/agents
 
+# Ensure logs directory exists and has proper permissions
+mkdir -p /app/logs
+chmod 777 /app/logs
+# Also create an alternate logs directory in case mounted directory has permission issues
+mkdir -p /home/node/logs
+chmod 777 /home/node/logs
+
 # Create symlinks if needed
 if [ -d "/node-app/scripts" ]; then
   ln -sf /node-app/scripts/* /app/scripts/ 2>/dev/null || true
@@ -32,8 +39,6 @@ if [ $? -ne 0 ]; then
   # Try to reinstall dependencies
   echo "Reinstalling dependencies..."
   npm ci
-  
-
   
   if [ $? -ne 0 ]; then
     echo "Failed to fix issues automatically. Please check the logs and fix manually."

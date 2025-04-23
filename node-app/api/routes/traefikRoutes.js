@@ -5,47 +5,55 @@
 const express = require("express");
 const router = express.Router();
 const traefikController = require("../controllers/traefikController");
-const { authMiddleware, adminMiddleware } = require("../middleware/auth");
+const authMiddleware = require("../middleware/auth");
 
 // Public routes (for health checking)
 router.get("/traefik/health", traefikController.getHealth);
 
 // Protected routes (require authentication)
-router.get("/traefik/routes", authMiddleware, traefikController.getAllRoutes);
+router.get(
+  "/traefik/routes",
+  authMiddleware.requireAuth,
+  traefikController.getAllRoutes
+);
 router.get(
   "/traefik/routes/:agentId",
-  authMiddleware,
+  authMiddleware.requireAuth,
   traefikController.getAgentRoutes
 );
 router.post(
   "/traefik/routes/http",
-  authMiddleware,
+  authMiddleware.requireAuth,
   traefikController.addHttpRoute
 );
 router.post(
   "/traefik/routes/mongodb",
-  authMiddleware,
+  authMiddleware.requireAuth,
   traefikController.addMongoDBRoute
 );
-router.delete("/traefik/routes", authMiddleware, traefikController.removeRoute);
+router.delete(
+  "/traefik/routes",
+  authMiddleware.requireAuth,
+  traefikController.removeRoute
+);
 
 // Admin-only routes
 router.get(
   "/traefik/stats",
-  authMiddleware,
-  adminMiddleware,
+  authMiddleware.requireAuth,
+  authMiddleware.requireAdmin,
   traefikController.getStats
 );
 router.post(
   "/traefik/validate",
-  authMiddleware,
-  adminMiddleware,
+  authMiddleware.requireAuth,
+  authMiddleware.requireAdmin,
   traefikController.validateConfig
 );
 router.post(
   "/traefik/recover",
-  authMiddleware,
-  adminMiddleware,
+  authMiddleware.requireAuth,
+  authMiddleware.requireAdmin,
   traefikController.recoverService
 );
 

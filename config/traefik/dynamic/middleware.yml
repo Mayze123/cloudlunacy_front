@@ -8,12 +8,12 @@ http:
     auth-admin:
       basicAuth:
         users:
-          - "admin:$apr1$ruca84Hq$mbjdMZBAG.KWn7vfN/SNK/"  # Password: adminpass
-    
+          - "admin:$apr1$ruca84Hq$mbjdMZBAG.KWn7vfN/SNK/" # Password: adminpass
+
     # Compression middleware
     compress:
       compress: {}
-    
+
     # CORS headers middleware
     cors-headers:
       headers:
@@ -29,7 +29,7 @@ http:
         accessControlAllowCredentials: true
         accessControlMaxAge: 100
         addVaryHeader: true
-    
+
     # Security headers middleware
     secure-headers:
       headers:
