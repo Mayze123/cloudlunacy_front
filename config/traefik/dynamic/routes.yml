@@ -1,0 +1,14 @@
+# Dynamic routes configuration for Traefik
+# This file is managed by the CloudLunacy Front API
+
+http:
+  routers:
+    # Routes will be added here dynamically by the API
+  services:
+    # Services will be added here dynamically by the API
+
+tcp:
+  routers:
+    # MongoDB routes will be added here dynamically by the API
+  services:
+    # MongoDB services will be added here dynamically by the API

@@ -20,7 +20,8 @@ class TraefikService {
     this.initialized = false;
     this.certificateService = certificateService;
     this.traefikContainer = process.env.TRAEFIK_CONTAINER || "traefik";
-    this.configPath = process.env.TRAEFIK_CONFIG_PATH || "/etc/traefik";
+    // Use a path that the node user has permission to write to
+    this.configPath = process.env.TRAEFIK_CONFIG_PATH || "/app/config/traefik";
     this.dynamicConfigPath = path.join(this.configPath, "dynamic");
     this.routesConfigPath = path.join(this.dynamicConfigPath, "routes.yml");
     this.mongoDomain = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
@@ -505,7 +506,8 @@ class TraefikService {
         try {
           await withRetry(
             async () => {
-              await axios.get("http://localhost:8081/ping");
+              // Use traefik container name instead of localhost
+              await axios.get(`http://${this.traefikContainer}:8081/ping`);
               return true;
             },
             { maxRetries: 2, initialDelay: 500 }
