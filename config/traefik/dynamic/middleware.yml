@@ -1,7 +1,8 @@
 ## Traefik Dynamic Configuration
 
-# Middleware definitions
+# Combined HTTP configuration
 http:
+  # Middleware definitions
   middlewares:
     # Basic authentication for the dashboard
     auth-admin:
@@ -40,8 +41,7 @@ http:
         stsPreload: true
         stsSeconds: 31536000
 
-# Dashboard configuration
-http:
+  # Dashboard configuration
   routers:
     dashboard:
       rule: "Host(`traefik.localhost`)"
