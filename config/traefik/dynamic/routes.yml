@@ -1,6 +1,7 @@
 # Dynamic routes configuration for Traefik
 # This file is managed by the CloudLunacy Front API
 
+# Dynamic Configuration
 http:
   routers: {}
   services: {}

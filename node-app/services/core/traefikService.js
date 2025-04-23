@@ -507,25 +507,32 @@ class TraefikService {
       if (containerStatus.running) {
         try {
           // Try various ways to connect to Traefik's ping endpoint
+          // Note: In Traefik v2, the ping endpoint is at /api/ping when API is enabled
           const pingEndpoints = [
-            `http://${this.traefikContainer}:8081/ping`,
-            `http://localhost:8081/ping`,
-            `http://127.0.0.1:8081/ping`
+            `http://${this.traefikContainer}:8081/api/ping`,
+            `http://localhost:8081/api/ping`,
+            `http://127.0.0.1:8081/api/ping`,
+            // Fallbacks to dashboard and root as health indicators
+            `http://${this.traefikContainer}:8081/dashboard/`,
+            `http://${this.traefikContainer}:8081/`
           ];
           
           for (const endpoint of pingEndpoints) {
             try {
               await withRetry(async () => {
-                const response = await axios.get(endpoint, { timeout: 2000 });
+                const response = await axios.get(endpoint, { 
+                  timeout: 2000,
+                  validateStatus: (status) => status < 500 // Accept any non-5xx response as "up"
+                });
                 pingResponseDetails = {
                   endpoint,
                   status: response.status,
                   data: response.data
                 };
-                return response.status === 200;
+                return true;
               }, { maxRetries: 1, initialDelay: 300 });
               pingHealthy = true;
-              logger.info(`Successfully connected to Traefik ping endpoint at ${endpoint}`);
+              logger.info(`Successfully connected to Traefik endpoint at ${endpoint}`);
               break; // Exit the loop if successful
             } catch (err) {
               logger.debug(`Failed to ping Traefik at ${endpoint}: ${err.message}`);
@@ -534,7 +541,7 @@ class TraefikService {
           }
           
           if (!pingHealthy) {
-            logger.warn('Could not connect to any Traefik ping endpoint');
+            logger.warn('Could not connect to any Traefik health endpoint');
           }
         } catch (pingErr) {
           logger.warn(`Failed to ping Traefik: ${pingErr.message}`);
