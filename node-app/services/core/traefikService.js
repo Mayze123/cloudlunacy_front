@@ -502,6 +502,8 @@ class TraefikService {
       
       // Check if Traefik ping endpoint is accessible
       let pingHealthy = false;
+      let pingResponseDetails = null;
+      
       if (containerStatus.running) {
         try {
           // Try various ways to connect to Traefik's ping endpoint
@@ -515,6 +517,11 @@ class TraefikService {
             try {
               await withRetry(async () => {
                 const response = await axios.get(endpoint, { timeout: 2000 });
+                pingResponseDetails = {
+                  endpoint,
+                  status: response.status,
+                  data: response.data
+                };
                 return response.status === 200;
               }, { maxRetries: 1, initialDelay: 300 });
               pingHealthy = true;
@@ -535,17 +542,8 @@ class TraefikService {
         }
       }
 
-      // Check if config is valid - but don't fail health check on config validation error
-      let configValid = { success: false, message: 'Not attempted' };
-      try {
-        configValid = await this.validateConfig();
-      } catch (err) {
-        logger.warn(`Config validation error: ${err.message}`);
-        configValid = { 
-          success: false, 
-          message: `Validation error: ${err.message}`
-        };
-      }
+      // Don't fail initialization if Traefik isn't ready yet
+      // Instead, mark it as degraded but still allow the app to function
       
       // Update health status
       this.healthStatus = {
@@ -557,7 +555,7 @@ class TraefikService {
         details: {
           containerRunning: containerStatus.running,
           pingHealthy,
-          configValid: configValid.success,
+          pingResponse: pingResponseDetails,
           containerDetails: containerStatus,
           message: pingHealthy ? 'Traefik is functioning normally' : 
                    (containerStatus.running ? 'Traefik container is running but API is not responding' : 
@@ -674,18 +672,35 @@ class TraefikService {
         };
       }
 
-      // Run the healthcheck command
-      const { stdout, stderr } = await exec(
-        `docker exec ${this.traefikContainer} traefik healthcheck`
-      );
-      return {
-        success: true,
-        message: "Traefik configuration is valid",
-        details: {
-          output: stdout.trim(),
-          warnings: stderr.trim(),
-        },
-      };
+      try {
+        // Run the healthcheck command
+        const { stdout, stderr } = await exec(
+          `docker exec ${this.traefikContainer} traefik healthcheck`
+        );
+        return {
+          success: true,
+          message: "Traefik configuration is valid",
+          details: {
+            output: stdout.trim(),
+            warnings: stderr.trim(),
+          },
+        };
+      } catch (err) {
+        // Don't treat this as a fatal error - just log it and return a degraded status
+        logger.warn(`Config validation warning: ${err.message}`, {
+          error: err.message,
+          stderr: err.stderr,
+        });
+        
+        return {
+          success: false,
+          message: `Traefik configuration validation warning: ${err.message}`,
+          details: {
+            error: err.message,
+            stderr: err.stderr,
+          },
+        };
+      }
     } catch (err) {
       logger.error(`Failed to validate Traefik configuration: ${err.message}`, {
         error: err.message,
@@ -792,12 +807,17 @@ class TraefikService {
       }
 
       const [name, status, ports] = stdout.trim().split(",");
+      const isRunning = status.includes("Up") && !status.includes("(unhealthy)") && !status.includes("(Restarting)");
 
       return {
-        running: status.includes("Up"),
+        running: isRunning,
         name,
         status,
         ports,
+        restartStatus: status.includes("Restarting") ? "restarting" : "normal",
+        healthStatus: status.includes("(healthy)") ? "healthy" : 
+                     status.includes("(unhealthy)") ? "unhealthy" : 
+                     status.includes("(health: starting)") ? "starting" : "unknown"
       };
     } catch (err) {
       logger.error(`Failed to check Traefik container: ${err.message}`, {
