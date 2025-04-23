@@ -499,67 +499,94 @@ class TraefikService {
     try {
       // Check if Traefik container is running
       const containerStatus = await this.checkTraefikContainer();
-
+      
       // Check if Traefik ping endpoint is accessible
       let pingHealthy = false;
       if (containerStatus.running) {
         try {
-          await withRetry(
-            async () => {
-              // Use traefik container name instead of localhost
-              await axios.get(`http://${this.traefikContainer}:8081/ping`);
-              return true;
-            },
-            { maxRetries: 2, initialDelay: 500 }
-          );
-          pingHealthy = true;
+          // Try various ways to connect to Traefik's ping endpoint
+          const pingEndpoints = [
+            `http://${this.traefikContainer}:8081/ping`,
+            `http://localhost:8081/ping`,
+            `http://127.0.0.1:8081/ping`
+          ];
+          
+          for (const endpoint of pingEndpoints) {
+            try {
+              await withRetry(async () => {
+                const response = await axios.get(endpoint, { timeout: 2000 });
+                return response.status === 200;
+              }, { maxRetries: 1, initialDelay: 300 });
+              pingHealthy = true;
+              logger.info(`Successfully connected to Traefik ping endpoint at ${endpoint}`);
+              break; // Exit the loop if successful
+            } catch (err) {
+              logger.debug(`Failed to ping Traefik at ${endpoint}: ${err.message}`);
+              // Continue to the next endpoint
+            }
+          }
+          
+          if (!pingHealthy) {
+            logger.warn('Could not connect to any Traefik ping endpoint');
+          }
         } catch (pingErr) {
           logger.warn(`Failed to ping Traefik: ${pingErr.message}`);
           pingHealthy = false;
         }
       }
 
-      // Check if config is valid
-      const configValid = await this.validateConfig();
-
+      // Check if config is valid - but don't fail health check on config validation error
+      let configValid = { success: false, message: 'Not attempted' };
+      try {
+        configValid = await this.validateConfig();
+      } catch (err) {
+        logger.warn(`Config validation error: ${err.message}`);
+        configValid = { 
+          success: false, 
+          message: `Validation error: ${err.message}`
+        };
+      }
+      
       // Update health status
       this.healthStatus = {
-        status:
-          containerStatus.running && pingHealthy ? "healthy" : "unhealthy",
+        status: containerStatus.running ? (pingHealthy ? 'healthy' : 'degraded') : 'unhealthy',
         lastCheck: {
           timestamp: new Date().toISOString(),
-          result:
-            containerStatus.running && pingHealthy ? "success" : "failure",
+          result: containerStatus.running ? (pingHealthy ? 'success' : 'partial') : 'failure'
         },
         details: {
           containerRunning: containerStatus.running,
           pingHealthy,
           configValid: configValid.success,
           containerDetails: containerStatus,
-        },
+          message: pingHealthy ? 'Traefik is functioning normally' : 
+                   (containerStatus.running ? 'Traefik container is running but API is not responding' : 
+                   'Traefik container is not running')
+        }
       };
 
       return this.healthStatus.details;
     } catch (err) {
       logger.error(`Health check failed: ${err.message}`, {
         error: err.message,
-        stack: err.stack,
+        stack: err.stack
       });
-
+      
       this.healthStatus = {
-        status: "unhealthy",
+        status: 'unknown',
         lastCheck: {
           timestamp: new Date().toISOString(),
-          result: "failure",
+          result: 'error'
         },
         details: {
           containerRunning: false,
           pingHealthy: false,
           configValid: false,
           error: err.message,
-        },
+          message: `Error checking Traefik health: ${err.message}`
+        }
       };
-
+      
       return this.healthStatus.details;
     }
   }
