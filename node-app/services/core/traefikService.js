@@ -1,0 +1,787 @@
+/**
+ * Traefik Service
+ *
+ * Provides a service layer for interacting with Traefik v2 for routing and load balancing.
+ * Replaces the previous HAProxy service with a more modern and cloud-native approach.
+ */
+
+const fs = require("fs").promises;
+const path = require("path");
+const yaml = require("js-yaml");
+const axios = require("axios");
+const { promisify } = require("util");
+const exec = promisify(require("child_process").exec);
+const logger = require("../../utils/logger").getLogger("traefikService");
+const { AppError } = require("../../utils/errorHandler");
+const { withRetry } = require("../../utils/retryHandler");
+
+class TraefikService {
+  constructor(certificateService) {
+    this.initialized = false;
+    this.certificateService = certificateService;
+    this.traefikContainer = process.env.TRAEFIK_CONTAINER || "traefik";
+    this.configPath = process.env.TRAEFIK_CONFIG_PATH || "/etc/traefik";
+    this.dynamicConfigPath = path.join(this.configPath, "dynamic");
+    this.routesConfigPath = path.join(this.dynamicConfigPath, "routes.yml");
+    this.mongoDomain = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
+    this.appDomain = process.env.APP_DOMAIN || "apps.cloudlunacy.uk";
+    this.healthStatus = {
+      status: "unknown",
+      lastCheck: null,
+      details: {},
+    };
+    this.routes = {
+      http: {},
+      mongodb: {},
+    };
+  }
+
+  /**
+   * Initialize the Traefik service
+   * @returns {Promise<boolean>} Success flag
+   */
+  async initialize() {
+    try {
+      if (this.initialized) {
+        return true;
+      }
+
+      logger.info("Initializing Traefik service");
+
+      // Check if Traefik is running
+      const containerStatus = await this.checkTraefikContainer();
+      if (!containerStatus.running) {
+        logger.warn(
+          `Traefik container is not running: ${
+            containerStatus.error || "unknown error"
+          }`
+        );
+      }
+
+      // Load existing routes if available
+      try {
+        await this.loadRoutes();
+        logger.info("Loaded existing routes from configuration");
+      } catch (err) {
+        if (err.code === "ENOENT") {
+          logger.info(
+            "No existing routes configuration found, will create when needed"
+          );
+        } else {
+          logger.warn(`Error loading existing routes: ${err.message}`);
+        }
+
+        // Initialize empty routes structure
+        await this.saveRoutes();
+      }
+
+      // Initial health check
+      await this.performHealthCheck();
+
+      this.initialized = true;
+      logger.info("Traefik service initialized successfully");
+      return true;
+    } catch (err) {
+      logger.error(`Failed to initialize Traefik service: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Load routes from Traefik configuration
+   * @returns {Promise<Object>} Routes object
+   */
+  async loadRoutes() {
+    try {
+      const routesYaml = await fs.readFile(this.routesConfigPath, "utf8");
+      const config = yaml.load(routesYaml) || {};
+
+      // Initialize default structure if missing
+      if (!config.http) config.http = {};
+      if (!config.http.routers) config.http.routers = {};
+      if (!config.http.services) config.http.services = {};
+      if (!config.tcp) config.tcp = {};
+      if (!config.tcp.routers) config.tcp.routers = {};
+      if (!config.tcp.services) config.tcp.services = {};
+
+      // Extract routes from configuration
+      this.routes = {
+        http: {},
+        mongodb: {},
+      };
+
+      // Process HTTP routes
+      Object.entries(config.http.routers).forEach(([name, router]) => {
+        if (name.startsWith("agent-")) {
+          const agentId = name.replace("agent-", "");
+          const subdomain = router.rule
+            .match(/Host\(`([^`]+)`\)/)[1]
+            .split(".")[0];
+
+          this.routes.http[`${agentId}-${subdomain}`] = {
+            agentId,
+            subdomain,
+            router: name,
+            service: router.service,
+            rule: router.rule,
+          };
+        }
+      });
+
+      // Process MongoDB routes
+      Object.entries(config.tcp.routers).forEach(([name, router]) => {
+        if (name.startsWith("mongodb-")) {
+          const agentId = name.replace("mongodb-", "");
+
+          this.routes.mongodb[agentId] = {
+            agentId,
+            router: name,
+            service: router.service,
+            rule: router.rule,
+          };
+        }
+      });
+
+      return this.routes;
+    } catch (err) {
+      logger.error(`Failed to load routes: ${err.message}`);
+      throw err;
+    }
+  }
+
+  /**
+   * Save routes to Traefik configuration file
+   * @returns {Promise<boolean>} Success flag
+   */
+  async saveRoutes() {
+    try {
+      // Create config structure
+      const config = {
+        http: {
+          routers: {},
+          services: {},
+        },
+        tcp: {
+          routers: {},
+          services: {},
+        },
+      };
+
+      // Add HTTP routes
+      Object.values(this.routes.http).forEach((route) => {
+        const routerName = `agent-${route.agentId}-${route.subdomain}`;
+        const serviceName = `service-${route.agentId}-${route.subdomain}`;
+
+        config.http.routers[routerName] = {
+          rule: `Host(\`${route.subdomain}.${this.appDomain}\`)`,
+          service: serviceName,
+          entryPoints: ["websecure"],
+          tls: {},
+        };
+
+        config.http.services[serviceName] = {
+          loadBalancer: {
+            servers: [{ url: route.targetUrl }],
+          },
+        };
+      });
+
+      // Add MongoDB routes
+      Object.values(this.routes.mongodb).forEach((route) => {
+        const routerName = `mongodb-${route.agentId}`;
+        const serviceName = `mongodb-service-${route.agentId}`;
+
+        config.tcp.routers[routerName] = {
+          rule: `HostSNI(\`${route.agentId}.${this.mongoDomain}\`)`,
+          service: serviceName,
+          entryPoints: ["mongodb"],
+          tls: {
+            passthrough: true,
+          },
+        };
+
+        config.tcp.services[serviceName] = {
+          loadBalancer: {
+            servers: [{ address: `${route.targetHost}:${route.targetPort}` }],
+          },
+        };
+      });
+
+      // Save the configuration
+      const yamlStr = yaml.dump(config);
+      await fs.mkdir(this.dynamicConfigPath, { recursive: true });
+      await fs.writeFile(this.routesConfigPath, yamlStr);
+
+      logger.info("Routes configuration saved successfully");
+      return true;
+    } catch (err) {
+      logger.error(`Failed to save routes: ${err.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Add HTTP route for an agent
+   * @param {string} agentId - Agent ID
+   * @param {string} subdomain - Subdomain to use
+   * @param {string} targetUrl - Target URL
+   * @param {Object} options - Additional options
+   * @returns {Promise<Object>} Result
+   */
+  async addHttpRoute(agentId, subdomain, targetUrl, options = {}) {
+    try {
+      if (!this.initialized) {
+        await this.initialize();
+      }
+
+      logger.info(
+        `Adding HTTP route for ${subdomain}.${this.appDomain} to ${targetUrl}`
+      );
+
+      // Normalize targetUrl to ensure it has protocol
+      if (
+        !targetUrl.startsWith("http://") &&
+        !targetUrl.startsWith("https://")
+      ) {
+        targetUrl = `http://${targetUrl}`;
+      }
+
+      // Create route entry
+      const routeKey = `${agentId}-${subdomain}`;
+      this.routes.http[routeKey] = {
+        agentId,
+        subdomain,
+        targetUrl,
+        options,
+      };
+
+      // Save routes to file
+      const saved = await this.saveRoutes();
+      if (!saved) {
+        throw new AppError("Failed to save HTTP route configuration", 500);
+      }
+
+      return {
+        success: true,
+        message: `HTTP route added successfully for ${subdomain}.${this.appDomain}`,
+        route: {
+          agentId,
+          subdomain,
+          domain: `${subdomain}.${this.appDomain}`,
+          targetUrl,
+        },
+      };
+    } catch (err) {
+      logger.error(`Failed to add HTTP route: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+      });
+      throw err;
+    }
+  }
+
+  /**
+   * Add MongoDB route for an agent
+   * @param {string} agentId - Agent ID
+   * @param {string} targetHost - Target host
+   * @param {number} targetPort - Target port
+   * @param {Object} options - Additional options
+   * @returns {Promise<Object>} Result
+   */
+  async addMongoDBRoute(agentId, targetHost, targetPort = 27017, options = {}) {
+    try {
+      if (!this.initialized) {
+        await this.initialize();
+      }
+
+      logger.info(
+        `Adding MongoDB route for ${agentId}.${this.mongoDomain} to ${targetHost}:${targetPort}`
+      );
+
+      // Create route entry
+      this.routes.mongodb[agentId] = {
+        agentId,
+        targetHost,
+        targetPort,
+        options,
+      };
+
+      // Save routes to file
+      const saved = await this.saveRoutes();
+      if (!saved) {
+        throw new AppError("Failed to save MongoDB route configuration", 500);
+      }
+
+      return {
+        success: true,
+        message: `MongoDB route added successfully for ${agentId}.${this.mongoDomain}`,
+        route: {
+          agentId,
+          domain: `${agentId}.${this.mongoDomain}`,
+          targetHost,
+          targetPort,
+        },
+      };
+    } catch (err) {
+      logger.error(`Failed to add MongoDB route: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+      });
+      throw err;
+    }
+  }
+
+  /**
+   * Remove a route
+   * @param {string} agentId - Agent ID
+   * @param {string} subdomain - Subdomain (for HTTP routes)
+   * @param {string} type - Route type ('http' or 'mongodb')
+   * @returns {Promise<Object>} Result
+   */
+  async removeRoute(agentId, subdomain, type = "http") {
+    try {
+      if (!this.initialized) {
+        await this.initialize();
+      }
+
+      if (type === "http") {
+        if (!subdomain) {
+          throw new AppError("Subdomain is required for HTTP routes", 400);
+        }
+
+        const routeKey = `${agentId}-${subdomain}`;
+        if (!this.routes.http[routeKey]) {
+          throw new AppError(
+            `HTTP route not found for ${subdomain}.${this.appDomain}`,
+            404
+          );
+        }
+
+        logger.info(`Removing HTTP route for ${subdomain}.${this.appDomain}`);
+        delete this.routes.http[routeKey];
+      } else if (type === "mongodb") {
+        if (!this.routes.mongodb[agentId]) {
+          throw new AppError(
+            `MongoDB route not found for ${agentId}.${this.mongoDomain}`,
+            404
+          );
+        }
+
+        logger.info(
+          `Removing MongoDB route for ${agentId}.${this.mongoDomain}`
+        );
+        delete this.routes.mongodb[agentId];
+      } else {
+        throw new AppError(`Invalid route type: ${type}`, 400);
+      }
+
+      // Save routes to file
+      const saved = await this.saveRoutes();
+      if (!saved) {
+        throw new AppError(
+          `Failed to save route configuration after removing ${type} route`,
+          500
+        );
+      }
+
+      return {
+        success: true,
+        message: `${type.toUpperCase()} route removed successfully`,
+        type,
+        agentId,
+        subdomain: type === "http" ? subdomain : undefined,
+      };
+    } catch (err) {
+      logger.error(`Failed to remove route: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+      });
+      throw err;
+    }
+  }
+
+  /**
+   * Get all routes for a specific agent
+   * @param {string} agentId - Agent ID
+   * @returns {Promise<Object>} Routes information
+   */
+  async getAgentRoutes(agentId) {
+    try {
+      if (!this.initialized) {
+        await this.initialize();
+      }
+
+      const httpRoutes = Object.values(this.routes.http)
+        .filter((route) => route.agentId === agentId)
+        .map((route) => ({
+          type: "http",
+          agentId: route.agentId,
+          subdomain: route.subdomain,
+          domain: `${route.subdomain}.${this.appDomain}`,
+          targetUrl: route.targetUrl,
+        }));
+
+      const mongodbRoute = this.routes.mongodb[agentId];
+      const mongodbRoutes = mongodbRoute
+        ? [
+            {
+              type: "mongodb",
+              agentId,
+              domain: `${agentId}.${this.mongoDomain}`,
+              targetHost: mongodbRoute.targetHost,
+              targetPort: mongodbRoute.targetPort,
+            },
+          ]
+        : [];
+
+      return {
+        success: true,
+        agentId,
+        routes: [...httpRoutes, ...mongodbRoutes],
+      };
+    } catch (err) {
+      logger.error(`Failed to get agent routes: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+      });
+      throw err;
+    }
+  }
+
+  /**
+   * Get all routes
+   * @returns {Promise<Object>} All routes
+   */
+  async getAllRoutes() {
+    try {
+      if (!this.initialized) {
+        await this.initialize();
+      }
+
+      const httpRoutes = Object.values(this.routes.http).map((route) => ({
+        type: "http",
+        agentId: route.agentId,
+        subdomain: route.subdomain,
+        domain: `${route.subdomain}.${this.appDomain}`,
+        targetUrl: route.targetUrl,
+      }));
+
+      const mongodbRoutes = Object.values(this.routes.mongodb).map((route) => ({
+        type: "mongodb",
+        agentId: route.agentId,
+        domain: `${route.agentId}.${this.mongoDomain}`,
+        targetHost: route.targetHost,
+        targetPort: route.targetPort,
+      }));
+
+      return {
+        success: true,
+        routes: [...httpRoutes, ...mongodbRoutes],
+      };
+    } catch (err) {
+      logger.error(`Failed to get all routes: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+      });
+      throw err;
+    }
+  }
+
+  /**
+   * Perform a health check on Traefik
+   * @returns {Promise<Object>} Health status
+   */
+  async performHealthCheck() {
+    try {
+      // Check if Traefik container is running
+      const containerStatus = await this.checkTraefikContainer();
+
+      // Check if Traefik ping endpoint is accessible
+      let pingHealthy = false;
+      if (containerStatus.running) {
+        try {
+          await withRetry(
+            async () => {
+              await axios.get("http://localhost:8081/ping");
+              return true;
+            },
+            { maxRetries: 2, initialDelay: 500 }
+          );
+          pingHealthy = true;
+        } catch (pingErr) {
+          logger.warn(`Failed to ping Traefik: ${pingErr.message}`);
+          pingHealthy = false;
+        }
+      }
+
+      // Check if config is valid
+      const configValid = await this.validateConfig();
+
+      // Update health status
+      this.healthStatus = {
+        status:
+          containerStatus.running && pingHealthy ? "healthy" : "unhealthy",
+        lastCheck: {
+          timestamp: new Date().toISOString(),
+          result:
+            containerStatus.running && pingHealthy ? "success" : "failure",
+        },
+        details: {
+          containerRunning: containerStatus.running,
+          pingHealthy,
+          configValid: configValid.success,
+          containerDetails: containerStatus,
+        },
+      };
+
+      return this.healthStatus.details;
+    } catch (err) {
+      logger.error(`Health check failed: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+      });
+
+      this.healthStatus = {
+        status: "unhealthy",
+        lastCheck: {
+          timestamp: new Date().toISOString(),
+          result: "failure",
+        },
+        details: {
+          containerRunning: false,
+          pingHealthy: false,
+          configValid: false,
+          error: err.message,
+        },
+      };
+
+      return this.healthStatus.details;
+    }
+  }
+
+  /**
+   * Get the current health status
+   * @returns {Object} Health status
+   */
+  getHealthStatus() {
+    // If we've never checked health, perform a check
+    if (!this.healthStatus.lastCheck) {
+      return this.performHealthCheck();
+    }
+
+    return this.healthStatus;
+  }
+
+  /**
+   * Get Traefik stats
+   * @returns {Promise<Object>} Traefik stats
+   */
+  async getStats() {
+    try {
+      if (!this.initialized) {
+        await this.initialize();
+      }
+
+      // Health check to ensure Traefik is running
+      const health = await this.performHealthCheck();
+      if (!health.containerRunning) {
+        throw new AppError("Traefik container is not running", 503);
+      }
+
+      // Count routes
+      const httpRouteCount = Object.keys(this.routes.http).length;
+      const mongodbRouteCount = Object.keys(this.routes.mongodb).length;
+
+      // Get container stats
+      const { stdout } = await exec(
+        `docker stats ${this.traefikContainer} --no-stream --format "{{.CPUPerc}}|{{.MemUsage}}|{{.NetIO}}|{{.BlockIO}}"`
+      );
+      const [cpuPerc, memUsage, netIO, blockIO] = stdout.trim().split("|");
+
+      return {
+        success: true,
+        routeStats: {
+          total: httpRouteCount + mongodbRouteCount,
+          http: httpRouteCount,
+          mongodb: mongodbRouteCount,
+        },
+        containerStats: {
+          cpuPerc,
+          memUsage,
+          netIO,
+          blockIO,
+        },
+        health: this.healthStatus,
+      };
+    } catch (err) {
+      logger.error(`Failed to get Traefik stats: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+      });
+      throw err;
+    }
+  }
+
+  /**
+   * Validate Traefik configuration
+   * @returns {Promise<Object>} Validation result
+   */
+  async validateConfig() {
+    try {
+      if (!this.initialized) {
+        await this.initialize();
+      }
+
+      // Check if Traefik container is running
+      const containerStatus = await this.checkTraefikContainer();
+      if (!containerStatus.running) {
+        return {
+          success: false,
+          message: "Traefik container is not running",
+          details: containerStatus,
+        };
+      }
+
+      // Run the healthcheck command
+      const { stdout, stderr } = await exec(
+        `docker exec ${this.traefikContainer} traefik healthcheck`
+      );
+      return {
+        success: true,
+        message: "Traefik configuration is valid",
+        details: {
+          output: stdout.trim(),
+          warnings: stderr.trim(),
+        },
+      };
+    } catch (err) {
+      logger.error(`Failed to validate Traefik configuration: ${err.message}`, {
+        error: err.message,
+        stderr: err.stderr,
+      });
+
+      return {
+        success: false,
+        message: `Traefik configuration is invalid: ${err.message}`,
+        details: {
+          error: err.message,
+          stderr: err.stderr,
+        },
+      };
+    }
+  }
+
+  /**
+   * Recover Traefik service
+   * @returns {Promise<Object>} Recovery result
+   */
+  async recoverService() {
+    try {
+      if (!this.initialized) {
+        await this.initialize();
+      }
+
+      logger.info("Attempting to recover Traefik service");
+
+      // Check current status
+      const health = await this.performHealthCheck();
+
+      // If healthy, no need to recover
+      if (health.containerRunning && health.pingHealthy) {
+        return {
+          success: true,
+          message: "Traefik service is already healthy",
+          action: "none",
+        };
+      }
+
+      // Try to restart container
+      logger.info("Restarting Traefik container");
+      const { stdout, stderr } = await exec(
+        `docker restart ${this.traefikContainer}`
+      );
+
+      // Wait a moment for the container to restart
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+
+      // Check if recovery was successful
+      const recoveryHealth = await this.performHealthCheck();
+
+      if (recoveryHealth.containerRunning && recoveryHealth.pingHealthy) {
+        return {
+          success: true,
+          message: "Traefik service recovered successfully",
+          action: "restart",
+        };
+      } else {
+        // If restart didn't work, log the failure but return partial success
+        logger.warn("Traefik service only partially recovered", {
+          containerRunning: recoveryHealth.containerRunning,
+          pingHealthy: recoveryHealth.pingHealthy,
+        });
+
+        return {
+          success: false,
+          message: "Traefik service only partially recovered",
+          action: "restart",
+          details: recoveryHealth,
+        };
+      }
+    } catch (err) {
+      logger.error(`Failed to recover Traefik service: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+      });
+
+      return {
+        success: false,
+        message: `Failed to recover Traefik service: ${err.message}`,
+        action: "failed",
+        error: err.message,
+      };
+    }
+  }
+
+  /**
+   * Check Traefik container status
+   * @returns {Promise<Object>} Container status
+   */
+  async checkTraefikContainer() {
+    try {
+      const { stdout } = await exec(
+        `docker ps -a --format "{{.Names}},{{.Status}},{{.Ports}}" --filter "name=${this.traefikContainer}"`
+      );
+
+      if (!stdout.trim()) {
+        return {
+          running: false,
+          error: "No Traefik container found",
+        };
+      }
+
+      const [name, status, ports] = stdout.trim().split(",");
+
+      return {
+        running: status.includes("Up"),
+        name,
+        status,
+        ports,
+      };
+    } catch (err) {
+      logger.error(`Failed to check Traefik container: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+      });
+
+      return {
+        running: false,
+        error: err.message,
+      };
+    }
+  }
+}
+
+module.exports = TraefikService;

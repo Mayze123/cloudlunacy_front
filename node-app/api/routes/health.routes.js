@@ -1,7 +1,7 @@
 /**
  * Health Routes
  *
- * Routes for system health monitoring, HAProxy management, and certificate management.
+ * Routes for system health monitoring, proxy management, and certificate management.
  */
 
 const express = require("express");
@@ -32,40 +32,77 @@ router.get(
 router.get("/system", healthController.getSystemHealth);
 
 /**
- * HAProxy Health
- * GET /api/health/haproxy - Get detailed HAProxy health metrics
+ * Traefik Health
+ * GET /api/health/traefik - Get detailed Traefik health metrics
  */
-router.get("/haproxy", healthController.getHAProxyHealth);
+router.get("/traefik", healthController.getTraefikHealth);
 
 /**
- * HAProxy Statistics
- * GET /api/health/haproxy/stats - Get HAProxy statistics
+ * Traefik Statistics
+ * GET /api/health/traefik/stats - Get Traefik statistics
+ */
+router.get(
+  "/traefik/stats",
+  authMiddleware.requireAuth,
+  healthController.getTraefikStats
+);
+
+/**
+ * Traefik Recovery
+ * POST /api/health/traefik/recover - Attempt to recover Traefik service
+ */
+router.post(
+  "/traefik/recover",
+  authMiddleware.requireAuth,
+  authMiddleware.requireAdmin,
+  healthController.recoverTraefikService
+);
+
+/**
+ * Traefik Configuration Validation
+ * GET /api/health/traefik/validate - Validate Traefik configuration
+ */
+router.get(
+  "/traefik/validate",
+  authMiddleware.requireAuth,
+  healthController.validateTraefikConfig
+);
+
+/**
+ * HAProxy Health (Legacy - Kept for backward compatibility)
+ * GET /api/health/haproxy - Redirects to Traefik health
+ */
+router.get("/haproxy", healthController.getTraefikHealth);
+
+/**
+ * HAProxy Statistics (Legacy - Kept for backward compatibility)
+ * GET /api/health/haproxy/stats - Redirects to Traefik stats
  */
 router.get(
   "/haproxy/stats",
   authMiddleware.requireAuth,
-  healthController.getHAProxyStats
+  healthController.getTraefikStats
 );
 
 /**
- * HAProxy Recovery
- * POST /api/health/haproxy/recover - Attempt to recover HAProxy service
+ * HAProxy Recovery (Legacy - Kept for backward compatibility)
+ * POST /api/health/haproxy/recover - Redirects to Traefik recovery
  */
 router.post(
   "/haproxy/recover",
   authMiddleware.requireAuth,
   authMiddleware.requireAdmin,
-  healthController.recoverHAProxyService
+  healthController.recoverTraefikService
 );
 
 /**
- * HAProxy Configuration Validation
- * GET /api/health/haproxy/validate - Validate HAProxy configuration
+ * HAProxy Configuration Validation (Legacy - Kept for backward compatibility)
+ * GET /api/health/haproxy/validate - Redirects to Traefik validation
  */
 router.get(
   "/haproxy/validate",
   authMiddleware.requireAuth,
-  healthController.validateHAProxyConfig
+  healthController.validateTraefikConfig
 );
 
 /**

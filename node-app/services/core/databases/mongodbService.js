@@ -13,11 +13,11 @@ const logger = require("../../../utils/logger").getLogger("mongodbService");
 const DatabaseService = require("./databaseService");
 
 class MongoDBService extends DatabaseService {
-  constructor(routingService, haproxyService) {
+  constructor(routingService, traefikService) {
     super(routingService);
     this.mongoDomain = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
     this.connectionCache = new Map();
-    this.haproxyService = haproxyService;
+    this.traefikService = traefikService;
   }
 
   /**
@@ -29,9 +29,9 @@ class MongoDBService extends DatabaseService {
     }
 
     try {
-      if (!this.haproxyService) {
+      if (!this.traefikService) {
         logger.warn(
-          "No HAProxy service provided during initialization, MongoDB routes will not work correctly"
+          "No Traefik service provided during initialization, MongoDB routes will not work correctly"
         );
       }
 
@@ -73,42 +73,42 @@ class MongoDBService extends DatabaseService {
         `Registering MongoDB agent: ${agentId}, IP: ${targetIp}:${targetPort}`
       );
 
-      if (!this.haproxyService) {
+      if (!this.traefikService) {
         return {
           success: false,
-          error: "HAProxy service not available",
+          error: "Traefik service not available",
         };
       }
 
-      // Update HAProxy configuration using the enhanced HAProxy service
+      // Update Traefik configuration
       try {
-        // Check if haproxyService has the appropriate MongoDB routing method
-        if (typeof this.haproxyService.addMongoDBRoute === "function") {
-          await this.haproxyService.addMongoDBRoute(
+        // Check if traefikService has the appropriate MongoDB routing method
+        if (typeof this.traefikService.addMongoDBRoute === "function") {
+          await this.traefikService.addMongoDBRoute(
             agentId,
             targetIp,
             targetPort,
             { useTls }
           );
           logger.info(
-            `Successfully updated HAProxy for MongoDB agent ${agentId}`
+            `Successfully updated Traefik for MongoDB agent ${agentId}`
           );
         } else {
           logger.warn(
-            `HAProxy service does not support addMongoDBRoute method`
+            `Traefik service does not support addMongoDBRoute method`
           );
           return {
             success: false,
-            error: "HAProxy service does not support MongoDB routes",
+            error: "Traefik service does not support MongoDB routes",
           };
         }
-      } catch (haproxyErr) {
+      } catch (traefikErr) {
         logger.error(
-          `Failed to update HAProxy for MongoDB: ${haproxyErr.message}`
+          `Failed to update Traefik for MongoDB: ${traefikErr.message}`
         );
         return {
           success: false,
-          error: `Failed to update HAProxy backend: ${haproxyErr.message}`,
+          error: `Failed to update Traefik backend: ${traefikErr.message}`,
         };
       }
 
@@ -168,30 +168,30 @@ class MongoDBService extends DatabaseService {
 
       logger.info(`Deregistering MongoDB agent: ${agentId}`);
 
-      if (!this.haproxyService) {
+      if (!this.traefikService) {
         return {
           success: false,
-          error: "HAProxy service not available",
+          error: "Traefik service not available",
         };
       }
 
-      // Remove from HAProxy configuration using the enhanced HAProxy service
+      // Remove from Traefik configuration
       try {
-        if (typeof this.haproxyService.removeRoute === "function") {
-          await this.haproxyService.removeRoute(agentId, null, "mongodb");
-          logger.info(`MongoDB route for ${agentId} removed from HAProxy`);
+        if (typeof this.traefikService.removeRoute === "function") {
+          await this.traefikService.removeRoute(agentId, null, "mongodb");
+          logger.info(`MongoDB route for ${agentId} removed from Traefik`);
         } else {
-          logger.warn("HAProxy service does not support MongoDB route removal");
+          logger.warn("Traefik service does not support MongoDB route removal");
           return {
             success: false,
-            error: "HAProxy service does not support MongoDB route removal",
+            error: "Traefik service does not support MongoDB route removal",
           };
         }
-      } catch (haproxyErr) {
-        logger.error(`Failed to remove MongoDB backend: ${haproxyErr.message}`);
+      } catch (traefikErr) {
+        logger.error(`Failed to remove MongoDB backend: ${traefikErr.message}`);
         return {
           success: false,
-          error: `Failed to remove MongoDB backend: ${haproxyErr.message}`,
+          error: `Failed to remove MongoDB backend: ${traefikErr.message}`,
         };
       }
 
@@ -426,23 +426,24 @@ class MongoDBService extends DatabaseService {
    */
   async checkMongoDBPort() {
     try {
-      if (!this.haproxyService) {
-        logger.warn("HAProxy service not available, cannot check MongoDB port");
+      if (!this.traefikService) {
+        logger.warn("Traefik service not available, cannot check MongoDB port");
         return false;
       }
 
-      // Check if the HAProxy service has the checkMongoDBPort method
-      if (typeof this.haproxyService.checkMongoDBPort === "function") {
-        return await this.haproxyService.checkMongoDBPort();
+      // Check if the Traefik service has a health check method
+      if (typeof this.traefikService.performHealthCheck === "function") {
+        const health = await this.traefikService.performHealthCheck();
+        return health && health.containerRunning;
       }
 
       // Fallback to querying the service health
-      if (typeof this.haproxyService.getHealthStatus === "function") {
-        const healthStatus = await this.haproxyService.getHealthStatus();
+      if (typeof this.traefikService.getHealthStatus === "function") {
+        const healthStatus = await this.traefikService.getHealthStatus();
         return healthStatus && healthStatus.status === "healthy";
       }
 
-      logger.warn("HAProxy service does not support MongoDB port checking");
+      logger.warn("Traefik service does not support health checking");
       return false;
     } catch (error) {
       logger.error(`Error checking MongoDB port: ${error.message}`, {
@@ -454,28 +455,30 @@ class MongoDBService extends DatabaseService {
   }
 
   /**
-   * Ensure MongoDB port is configured in HAProxy
+   * Ensure MongoDB port is configured in Traefik
    * @returns {Promise<boolean>} True if configuration was successful
    */
   async ensureMongoDBPort() {
     try {
-      if (!this.haproxyService) {
+      if (!this.traefikService) {
         logger.warn(
-          "HAProxy service not available, cannot ensure MongoDB port"
+          "Traefik service not available, cannot ensure MongoDB port"
         );
         return false;
       }
 
-      // Check if the HAProxy service has the ensureMongoDBPort method
-      if (typeof this.haproxyService.ensureMongoDBPort === "function") {
-        const result = await this.haproxyService.ensureMongoDBPort();
-        return result === true;
+      // Check if the service is healthy
+      const healthStatus = await this.checkMongoDBPort();
+
+      if (!healthStatus) {
+        // Try to recover the service
+        if (typeof this.traefikService.recoverService === "function") {
+          const recovery = await this.traefikService.recoverService();
+          return recovery && recovery.success;
+        }
       }
 
-      logger.warn(
-        "HAProxy service does not support ensuring MongoDB port configuration"
-      );
-      return false;
+      return healthStatus;
     } catch (error) {
       logger.error(`Error ensuring MongoDB port: ${error.message}`, {
         error: error.message,

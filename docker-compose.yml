@@ -1,9 +1,9 @@
 version: "3.8"
 
 services:
-  haproxy:
-    image: haproxytech/haproxy-ubuntu:latest
-    container_name: haproxy
+  traefik:
+    image: traefik:v2.9
+    container_name: traefik
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -12,27 +12,16 @@ services:
       - "443:443"
       - "8081:8081"
       - "27017:27017"
-      - "5555:5555" # Data Plane API port
     networks:
       - frontend
       - backend
     volumes:
-      - ./config/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:rw
-      - ./config/haproxy/dataplaneapi.yml:/usr/local/etc/haproxy/dataplaneapi.yml:rw
-      - ./haproxy-dockerfile/custom-entrypoint.sh:/usr/local/bin/custom-entrypoint.sh:ro
-      - ./haproxy-dockerfile/install-dataplaneapi.sh:/usr/local/bin/install-dataplaneapi.sh:ro
-      - ./config/haproxy/docker-entrypoint-wrapper.sh:/usr/local/bin/docker-entrypoint-wrapper.sh:ro
-      # Certificate management tools
-      - ./config/haproxy/certificate-precheck.sh:/usr/local/etc/haproxy/certificate-precheck.sh:ro
-      - ./haproxy-dockerfile/sync-certificates.sh:/usr/local/bin/sync-certificates.sh:ro
-      # Certificate directories
-      - ./config/certs:/etc/ssl/certs:ro
-      - ./config/certs/private:/etc/ssl/private:ro
-      - haproxy-data:/etc/haproxy/dataplaneapi
+      - ./config/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./config/traefik/dynamic:/etc/traefik/dynamic:ro
+      - ./config/certs:/etc/traefik/certs:ro
+      - ./config/certs/private:/etc/traefik/private:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - /var/log/haproxy:/var/log/haproxy
-      - ./config/haproxy/errors:/etc/haproxy/errors:ro
-    entrypoint: ["/usr/local/bin/custom-entrypoint.sh"]
+      - traefik-data:/etc/traefik/acme
     env_file:
       - ./.env
     environment:
@@ -41,16 +30,15 @@ services:
       - CF_API_KEY=${CF_API_KEY}
       - CLOUDFLARE_DNS_API_TOKEN=${CF_DNS_API_TOKEN}
       - CF_ZONE_API_TOKEN=${CF_ZONE_API_TOKEN}
-      # Data Plane API Configuration
-      - HAPROXY_API_USER=admin
-      - HAPROXY_API_PASS=admin
+    labels:
+      - "traefik.enable=true"
+      # Dashboard
+      - "traefik.http.routers.dashboard.rule=Host(`traefik.localhost`)"
+      - "traefik.http.routers.dashboard.service=api@internal"
+      - "traefik.http.routers.dashboard.entrypoints=websecure"
+      - "traefik.http.routers.dashboard.middlewares=auth-admin@file"
     healthcheck:
-      # Use a shell format to properly handle the logic
-      test:
-        [
-          "CMD-SHELL",
-          "curl -f http://localhost:5555/v3/health || curl -f http://localhost:8081/health || exit 0",
-        ]
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -99,14 +87,19 @@ services:
       - JWT_SECRET=${JWT_SECRET}
       - MONGO_DOMAIN=${MONGO_DOMAIN:-mongodb.cloudlunacy.uk}
       - APP_DOMAIN=${APP_DOMAIN:-apps.cloudlunacy.uk}
-      - HAPROXY_CONTAINER=haproxy
-      - HAPROXY_API_URL=http://haproxy:5555/v3
-      - HAPROXY_API_USER=admin
-      - HAPROXY_API_PASS=admin
+      - TRAEFIK_CONTAINER=traefik
       - NODE_ENV=production
       - NODE_DEBUG=
-      - HAPROXY_OPTIONAL=true
       - LOG_DIR=/app/logs
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.node-app.rule=Host(`api.${APP_DOMAIN:-cloudlunacy.uk}`)"
+      - "traefik.http.routers.node-app.entrypoints=websecure"
+      - "traefik.http.routers.node-app.tls=true"
+      - "traefik.http.services.node-app.loadbalancer.server.port=3005"
+      - "traefik.http.middlewares.node-app-security.headers.frameDeny=true"
+      - "traefik.http.middlewares.node-app-security.headers.sslRedirect=true"
+      - "traefik.http.routers.node-app.middlewares=node-app-security"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3005/health"]
       interval: 30s
@@ -117,13 +110,13 @@ services:
 volumes:
   node-data:
   certbot-data:
-  haproxy-data:
+  traefik-data:
   node-app-data:
 
 networks:
   frontend:
-    name: haproxy-network
-    external: true
+    name: cloudlunacy-frontend
+    driver: bridge
   backend:
-    name: cloudlunacy-network
-    external: true
+    name: cloudlunacy-backend
+    driver: bridge

@@ -8,12 +8,12 @@
 const logger = require("../../utils/logger").getLogger("proxyService");
 const { AppError } = require("../../utils/errorHandler");
 const { withRetry } = require("../../utils/retryHandler");
-const HAProxyService = require("./haproxyService");
+const TraefikService = require("./traefikService");
 
 class ProxyService {
   constructor() {
     this.initialized = false;
-    this.haproxyService = new HAProxyService();
+    this.traefikService = new TraefikService();
     this.appDomain = process.env.APP_DOMAIN || "apps.cloudlunacy.uk";
     this.mongoDomain = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
   }
@@ -29,10 +29,10 @@ class ProxyService {
     logger.info("Initializing proxy service");
 
     try {
-      // Initialize HAProxy service
-      const haproxyInitialized = await this.haproxyService.initialize();
-      if (!haproxyInitialized) {
-        logger.error("Failed to initialize HAProxy service");
+      // Initialize Traefik service
+      const traefikInitialized = await this.traefikService.initialize();
+      if (!traefikInitialized) {
+        logger.error("Failed to initialize Traefik service");
         return false;
       }
 
@@ -78,8 +78,8 @@ class ProxyService {
       `Adding HTTP route for ${subdomain}.${this.appDomain} to ${targetUrl}`
     );
 
-    // Add HTTP route using HAProxy service
-    return this.haproxyService.addHttpRoute(
+    // Add HTTP route using Traefik service
+    return this.traefikService.addHttpRoute(
       agentId,
       subdomain,
       targetUrl,
@@ -113,8 +113,8 @@ class ProxyService {
       `Adding MongoDB route for ${agentId}.${this.mongoDomain} to ${targetHost}:${targetPort}`
     );
 
-    // Add MongoDB route using HAProxy service
-    return this.haproxyService.addMongoDBRoute(
+    // Add MongoDB route using Traefik service
+    return this.traefikService.addMongoDBRoute(
       agentId,
       targetHost,
       targetPort,
@@ -145,8 +145,8 @@ class ProxyService {
 
     logger.info(`Removing ${type} route for agent ${agentId}`);
 
-    // Remove route using HAProxy service
-    return this.haproxyService.removeRoute(agentId, subdomain, type);
+    // Remove route using Traefik service
+    return this.traefikService.removeRoute(agentId, subdomain, type);
   }
 
   /**
@@ -159,7 +159,7 @@ class ProxyService {
       await this.initialize();
     }
 
-    return this.haproxyService.getAgentRoutes(agentId);
+    return this.traefikService.getAgentRoutes(agentId);
   }
 
   /**
@@ -171,11 +171,11 @@ class ProxyService {
       await this.initialize();
     }
 
-    return this.haproxyService.getAllRoutes();
+    return this.traefikService.getAllRoutes();
   }
 
   /**
-   * Check HAProxy health
+   * Check Traefik health
    * @returns {Promise<Object>} Health status
    */
   async checkHealth() {
@@ -184,14 +184,15 @@ class ProxyService {
         await this.initialize();
       }
 
-      // Simple health check: Check if HAProxy is running
+      // Simple health check: Check if Traefik is running
       const isHealthy = await withRetry(
         async () => {
           try {
-            // Using HAProxy service to check if the port is listening
-            const mongoPortAvailable =
-              await this.haproxyService.checkMongoDBPort();
-            return { healthy: mongoPortAvailable };
+            const health = await this.traefikService.performHealthCheck();
+            return {
+              healthy: health.containerRunning && health.pingHealthy,
+              details: health,
+            };
           } catch (err) {
             return { healthy: false, error: err.message };
           }
@@ -224,16 +225,21 @@ class ProxyService {
         await this.initialize();
       }
 
-      // Check if MongoDB port is available
-      const mongoPortAvailable = await this.haproxyService.checkMongoDBPort();
-      if (!mongoPortAvailable) {
-        // Try to fix MongoDB port configuration
-        await this.haproxyService.ensureMongoDBPort();
+      // Check health and attempt recovery if needed
+      const healthStatus = await this.checkHealth();
+
+      if (healthStatus.status === "unhealthy") {
+        const recoveryResult = await this.traefikService.recoverService();
+        return {
+          success: recoveryResult.success,
+          message: recoveryResult.message,
+          action: recoveryResult.action,
+        };
       }
 
       return {
         success: true,
-        message: "Proxy configuration repaired successfully",
+        message: "Proxy configuration is healthy, no repair needed",
       };
     } catch (err) {
       logger.error(`Repair failed: ${err.message}`);

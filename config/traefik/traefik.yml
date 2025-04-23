@@ -1,0 +1,70 @@
+## Traefik Main Configuration
+
+# Global settings
+global:
+  checkNewVersion: true
+  sendAnonymousUsage: false
+
+# Log configuration
+log:
+  level: "INFO"
+  format: "common"
+
+# Access logs configuration
+accessLog:
+  format: "common"
+
+# API and dashboard configuration
+api:
+  dashboard: true
+  insecure: false # Require authentication for the dashboard
+
+# Entrypoints configuration
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+
+  websecure:
+    address: ":443"
+
+  mongodb:
+    address: ":27017"
+
+# Configure providers
+providers:
+  file:
+    directory: "/etc/traefik/dynamic"
+    watch: true
+
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+    watch: true
+
+# TLS options
+tls:
+  options:
+    default:
+      minVersion: "VersionTLS12"
+      sniStrict: true
+
+    mongodb:
+      minVersion: "VersionTLS12"
+      sniStrict: true
+      alpnProtocols:
+        - "h2"
+        - "http/1.1"
+
+# Certificate resolvers for Let's Encrypt
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: "admin@cloudlunacy.uk"
+      storage: "/etc/traefik/acme/acme.json"
+      httpChallenge:
+        entryPoint: "web"

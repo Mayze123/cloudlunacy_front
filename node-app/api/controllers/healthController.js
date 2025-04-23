@@ -1189,3 +1189,165 @@ exports.getHealthDashboard = asyncHandler(async (req, res) => {
     });
   }
 });
+
+/**
+ * Get detailed Traefik health metrics
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
+exports.getTraefikHealth = async (req, res) => {
+  try {
+    const traefikService = coreServices.traefikService;
+
+    if (!traefikService || !traefikService.initialized) {
+      return res.status(503).json({
+        success: false,
+        message: "Traefik service is not initialized",
+      });
+    }
+
+    // Get detailed metrics with optional refresh
+    const forceRefresh = req.query.refresh === "true";
+    let health;
+
+    if (forceRefresh) {
+      health = await traefikService.performHealthCheck();
+    } else {
+      health = traefikService.getHealthStatus();
+    }
+
+    res.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      status: health.status,
+      details: health.details,
+    });
+  } catch (err) {
+    logger.error(`Error in getTraefikHealth: ${err.message}`);
+    res.status(500).json({
+      success: false,
+      message: "Failed to retrieve Traefik health",
+      error: err.message,
+    });
+  }
+};
+
+/**
+ * Get Traefik stats and metrics
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
+exports.getTraefikStats = async (req, res) => {
+  try {
+    const traefikService = coreServices.traefikService;
+
+    if (!traefikService || !traefikService.initialized) {
+      return res.status(503).json({
+        success: false,
+        message: "Traefik service is not initialized",
+      });
+    }
+
+    const stats = await traefikService.getStats();
+
+    res.json({
+      success: true,
+      stats,
+    });
+  } catch (err) {
+    logger.error(`Error in getTraefikStats: ${err.message}`);
+    res.status(500).json({
+      success: false,
+      message: "Failed to retrieve Traefik stats",
+      error: err.message,
+    });
+  }
+};
+
+/**
+ * Attempt to recover Traefik service
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
+exports.recoverTraefikService = async (req, res) => {
+  try {
+    const traefikService = coreServices.traefikService;
+
+    if (!traefikService || !traefikService.initialized) {
+      return res.status(503).json({
+        success: false,
+        message: "Traefik service is not initialized",
+      });
+    }
+
+    // Check if administrator key is provided for this sensitive operation
+    const adminKey = req.headers["x-admin-key"] || "";
+    const configuredKey = process.env.ADMIN_KEY || "";
+
+    if (!configuredKey || adminKey !== configuredKey) {
+      logger.warn(`Unauthorized Traefik recovery attempt from ${req.ip}`);
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized: Admin key required for this operation",
+      });
+    }
+
+    // Attempt recovery
+    logger.info(`Manual Traefik recovery initiated by admin from ${req.ip}`);
+    const result = await traefikService.recoverService();
+
+    if (result.success) {
+      res.json({
+        success: true,
+        message: result.message,
+        action: result.action,
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        message: result.message,
+        error: result.error,
+      });
+    }
+  } catch (err) {
+    logger.error(`Error in recoverTraefikService: ${err.message}`);
+    res.status(500).json({
+      success: false,
+      message: "Failed to recover Traefik service",
+      error: err.message,
+    });
+  }
+};
+
+/**
+ * Validate Traefik configuration
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
+exports.validateTraefikConfig = async (req, res) => {
+  try {
+    const traefikService = coreServices.traefikService;
+
+    if (!traefikService || !traefikService.initialized) {
+      return res.status(503).json({
+        success: false,
+        message: "Traefik service is not initialized",
+      });
+    }
+
+    const validationResult = await traefikService.validateConfig();
+
+    res.json({
+      success: validationResult.success,
+      message: validationResult.message,
+      details: validationResult.details,
+    });
+  } catch (err) {
+    logger.error(`Error in validateTraefikConfig: ${err.message}`);
+    res.status(500).json({
+      success: false,
+      message: "Failed to validate Traefik configuration",
+      error: err.message,
+    });
+  }
+};

@@ -15,7 +15,8 @@ const authMiddleware = require("./middleware/auth");
 const certificateRoutes = require("./routes/certificate.routes");
 const mongodbRoutes = require("./routes/mongodb.routes");
 const healthRoutes = require("./routes/health.routes");
-const metricsRoutes = require("./routes/metrics.routes"); // Added metrics routes
+const metricsRoutes = require("./routes/metrics.routes");
+const traefikRoutes = require("./routes/traefikRoutes"); // Import Traefik routes
 
 // Import controllers
 const agentController = require("./controllers/agentController");
@@ -47,7 +48,8 @@ const configService = new ConfigService();
 router.use("/certificates", certificateRoutes);
 router.use("/mongodb", mongodbRoutes);
 router.use("/health", healthRoutes);
-router.use("/metrics", metricsRoutes); // Mount metrics routes
+router.use("/metrics", metricsRoutes);
+router.use("/", traefikRoutes); // Mount Traefik routes
 
 /**
  * Agent Routes

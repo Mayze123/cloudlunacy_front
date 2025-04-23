@@ -1,0 +1,61 @@
+## Traefik Dynamic Configuration
+
+# Middleware definitions
+http:
+  middlewares:
+    # Basic authentication for the dashboard
+    auth-admin:
+      basicAuth:
+        users:
+          - "admin:$apr1$ruca84Hq$mbjdMZBAG.KWn7vfN/SNK/"  # Password: adminpass
+    
+    # Compression middleware
+    compress:
+      compress: {}
+    
+    # CORS headers middleware
+    cors-headers:
+      headers:
+        accessControlAllowMethods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
+        accessControlAllowOriginList:
+          - "https://*.cloudlunacy.uk"
+          - "https://*.apps.cloudlunacy.uk"
+        accessControlAllowCredentials: true
+        accessControlMaxAge: 100
+        addVaryHeader: true
+    
+    # Security headers middleware
+    secure-headers:
+      headers:
+        frameDeny: true
+        browserXssFilter: true
+        contentTypeNosniff: true
+        forceSTSHeader: true
+        stsIncludeSubdomains: true
+        stsPreload: true
+        stsSeconds: 31536000
+
+# Dashboard configuration
+http:
+  routers:
+    dashboard:
+      rule: "Host(`traefik.localhost`)"
+      service: "api@internal"
+      entryPoints:
+        - "websecure"
+      middlewares:
+        - "auth-admin"
+      tls: {}
+
+# Default TLS configuration
+tls:
+  stores:
+    default:
+      defaultCertificate:
+        certFile: "/etc/traefik/certs/default.crt"
+        keyFile: "/etc/traefik/certs/default.key"
