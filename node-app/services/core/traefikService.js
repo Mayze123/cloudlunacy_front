@@ -207,6 +207,10 @@ class TraefikService {
         config.tcp.services[serviceName] = {
           loadBalancer: {
             servers: [{ address: `${route.targetHost}:${route.targetPort}` }],
+            healthCheck: {
+              interval: "10s",
+              timeout: "3s",
+            },
           },
         };
       });
@@ -499,11 +503,11 @@ class TraefikService {
     try {
       // Check if Traefik container is running
       const containerStatus = await this.checkTraefikContainer();
-      
+
       // Check if Traefik ping endpoint is accessible
       let pingHealthy = false;
       let pingResponseDetails = null;
-      
+
       if (containerStatus.running) {
         try {
           // Try various ways to connect to Traefik's ping endpoint
@@ -514,34 +518,41 @@ class TraefikService {
             `http://127.0.0.1:8081/api/ping`,
             // Fallbacks to dashboard and root as health indicators
             `http://${this.traefikContainer}:8081/dashboard/`,
-            `http://${this.traefikContainer}:8081/`
+            `http://${this.traefikContainer}:8081/`,
           ];
-          
+
           for (const endpoint of pingEndpoints) {
             try {
-              await withRetry(async () => {
-                const response = await axios.get(endpoint, { 
-                  timeout: 2000,
-                  validateStatus: (status) => status < 500 // Accept any non-5xx response as "up"
-                });
-                pingResponseDetails = {
-                  endpoint,
-                  status: response.status,
-                  data: response.data
-                };
-                return true;
-              }, { maxRetries: 1, initialDelay: 300 });
+              await withRetry(
+                async () => {
+                  const response = await axios.get(endpoint, {
+                    timeout: 2000,
+                    validateStatus: (status) => status < 500, // Accept any non-5xx response as "up"
+                  });
+                  pingResponseDetails = {
+                    endpoint,
+                    status: response.status,
+                    data: response.data,
+                  };
+                  return true;
+                },
+                { maxRetries: 1, initialDelay: 300 }
+              );
               pingHealthy = true;
-              logger.info(`Successfully connected to Traefik endpoint at ${endpoint}`);
+              logger.info(
+                `Successfully connected to Traefik endpoint at ${endpoint}`
+              );
               break; // Exit the loop if successful
             } catch (err) {
-              logger.debug(`Failed to ping Traefik at ${endpoint}: ${err.message}`);
+              logger.debug(
+                `Failed to ping Traefik at ${endpoint}: ${err.message}`
+              );
               // Continue to the next endpoint
             }
           }
-          
+
           if (!pingHealthy) {
-            logger.warn('Could not connect to any Traefik health endpoint');
+            logger.warn("Could not connect to any Traefik health endpoint");
           }
         } catch (pingErr) {
           logger.warn(`Failed to ping Traefik: ${pingErr.message}`);
@@ -551,47 +562,57 @@ class TraefikService {
 
       // Don't fail initialization if Traefik isn't ready yet
       // Instead, mark it as degraded but still allow the app to function
-      
+
       // Update health status
       this.healthStatus = {
-        status: containerStatus.running ? (pingHealthy ? 'healthy' : 'degraded') : 'unhealthy',
+        status: containerStatus.running
+          ? pingHealthy
+            ? "healthy"
+            : "degraded"
+          : "unhealthy",
         lastCheck: {
           timestamp: new Date().toISOString(),
-          result: containerStatus.running ? (pingHealthy ? 'success' : 'partial') : 'failure'
+          result: containerStatus.running
+            ? pingHealthy
+              ? "success"
+              : "partial"
+            : "failure",
         },
         details: {
           containerRunning: containerStatus.running,
           pingHealthy,
           pingResponse: pingResponseDetails,
           containerDetails: containerStatus,
-          message: pingHealthy ? 'Traefik is functioning normally' : 
-                   (containerStatus.running ? 'Traefik container is running but API is not responding' : 
-                   'Traefik container is not running')
-        }
+          message: pingHealthy
+            ? "Traefik is functioning normally"
+            : containerStatus.running
+            ? "Traefik container is running but API is not responding"
+            : "Traefik container is not running",
+        },
       };
 
       return this.healthStatus.details;
     } catch (err) {
       logger.error(`Health check failed: ${err.message}`, {
         error: err.message,
-        stack: err.stack
+        stack: err.stack,
       });
-      
+
       this.healthStatus = {
-        status: 'unknown',
+        status: "unknown",
         lastCheck: {
           timestamp: new Date().toISOString(),
-          result: 'error'
+          result: "error",
         },
         details: {
           containerRunning: false,
           pingHealthy: false,
           configValid: false,
           error: err.message,
-          message: `Error checking Traefik health: ${err.message}`
-        }
+          message: `Error checking Traefik health: ${err.message}`,
+        },
       };
-      
+
       return this.healthStatus.details;
     }
   }
@@ -698,7 +719,7 @@ class TraefikService {
           error: err.message,
           stderr: err.stderr,
         });
-        
+
         return {
           success: false,
           message: `Traefik configuration validation warning: ${err.message}`,
@@ -814,7 +835,10 @@ class TraefikService {
       }
 
       const [name, status, ports] = stdout.trim().split(",");
-      const isRunning = status.includes("Up") && !status.includes("(unhealthy)") && !status.includes("(Restarting)");
+      const isRunning =
+        status.includes("Up") &&
+        !status.includes("(unhealthy)") &&
+        !status.includes("(Restarting)");
 
       return {
         running: isRunning,
@@ -822,9 +846,13 @@ class TraefikService {
         status,
         ports,
         restartStatus: status.includes("Restarting") ? "restarting" : "normal",
-        healthStatus: status.includes("(healthy)") ? "healthy" : 
-                     status.includes("(unhealthy)") ? "unhealthy" : 
-                     status.includes("(health: starting)") ? "starting" : "unknown"
+        healthStatus: status.includes("(healthy)")
+          ? "healthy"
+          : status.includes("(unhealthy)")
+          ? "unhealthy"
+          : status.includes("(health: starting)")
+          ? "starting"
+          : "unknown",
       };
     } catch (err) {
       logger.error(`Failed to check Traefik container: ${err.message}`, {

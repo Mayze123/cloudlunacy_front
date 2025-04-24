@@ -45,7 +45,7 @@ tcp:
     mongodb-default:
       entryPoints:
         - "mongodb"
-      rule: "HostSNI(`*`)"
+      rule: "HostSNI(`*.mongodb.cloudlunacy.uk`)"
       service: "mongodb-default"
       tls:
         passthrough: true
