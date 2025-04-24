@@ -256,22 +256,18 @@ class CertificateService {
 
           // Create agent directory with proper permissions
           const agentCertDir = path.join(this.certsDir, "agents", agentId);
+          // Create agent directory without failing on chmod errors
+          await fs.mkdir(agentCertDir, { recursive: true });
           try {
-            // Use recursive mkdir with more detailed error handling
-            await fs.mkdir(agentCertDir, { recursive: true });
-            // Ensure directory is writable by current process
             await fs.chmod(agentCertDir, 0o755);
-            logger.info(
-              `Successfully created/verified agent cert directory: ${agentCertDir}`
-            );
-          } catch (mkdirErr) {
-            logger.error(
-              `Failed to create agent cert directory: ${mkdirErr.message}`
-            );
-            throw new Error(
-              `Cannot create certificate directory: ${mkdirErr.message}`
+          } catch (chmodErr) {
+            logger.warn(
+              `Could not set permissions for agent cert directory: ${chmodErr.message}`
             );
           }
+          logger.info(
+            `Successfully created/verified agent cert directory: ${agentCertDir}`
+          );
 
           // Define paths
           const keyPath = path.join(agentCertDir, "server.key");
