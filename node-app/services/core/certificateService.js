@@ -412,11 +412,41 @@ DNS.2 = *.${mongoSubdomain}
             effectiveCaKeyPath = this.localCaKeyPath;
           }
 
-          // If neither originals nor local copies are accessible, throw error
+// If neither originals nor local copies are accessible, try to create new ones
           if (!originalFilesAccessible && !localCopiesExist) {
-            throw new Error(
-              "Cannot access CA files and no fallback copies exist"
-            );
+            try {
+              logger.warn("Cannot access CA files, creating temporary CA certificates");
+              
+              // Generate a temporary CA key and certificate
+              await fs.mkdir(path.dirname(this.localCaKeyPath), { recursive: true });
+              
+              // Generate CA private key
+              execSync(`openssl genrsa -out ${this.localCaKeyPath} 2048`);
+              
+              // Generate CA certificate
+              execSync(
+                `openssl req -x509 -new -nodes -key ${this.localCaKeyPath} -sha256 -days 3650 -out ${this.localCaCertPath} -subj "/CN=CloudLunacy Temp CA/O=CloudLunacy/C=UK"`
+              );
+              
+              // Set proper permissions
+              await fs.chmod(this.localCaKeyPath, 0o600);
+              await fs.chmod(this.localCaCertPath, 0o644);
+              
+              logger.info("Temporary CA certificate and key generated successfully");
+              
+              // Use the temporary CA files for certificate generation
+              effectiveCaCertPath = this.localCaCertPath;
+              effectiveCaKeyPath = this.localCaKeyPath;
+              localCopiesExist = true;
+            } catch (genErr) {
+              logger.error(`Failed to generate temporary CA: ${genErr.message}`);
+              throw new Error("Cannot access CA files and failed to create temporary CA");
+            }
+          }
+          
+          // If we still don't have usable CA files, throw error
+          if (!originalFilesAccessible && !localCopiesExist) {
+            throw new Error("Cannot access CA files and no fallback copies exist");
           }
 
           try {
