@@ -107,23 +107,44 @@ class MongoDBService extends DatabaseService {
       );
 
       if (!this.traefikService) {
+        logger.error("Traefik service not available for MongoDB registration");
         return {
           success: false,
           error: "Traefik service not available",
         };
       }
 
-      let routingResult;
-      // Use Traefik for routing
+      // Ensure Traefik service is initialized
+      if (!this.traefikService.initialized) {
+        try {
+          await this.traefikService.initialize();
+        } catch (initErr) {
+          logger.error(
+            `Failed to initialize Traefik service: ${initErr.message}`
+          );
+          return {
+            success: false,
+            error: `Failed to initialize Traefik service: ${initErr.message}`,
+          };
+        }
+      }
+
+      // Use Traefik for routing with improved error handling
       if (typeof this.traefikService.addMongoDBRoute === "function") {
         try {
-          routingResult = await this.traefikService.addMongoDBRoute(
+          const routingResult = await this.traefikService.addMongoDBRoute(
             agentId,
             targetIp,
             targetPort,
             { useTls }
           );
+
           if (!routingResult.success) {
+            logger.error(
+              `Failed to update Traefik: ${
+                routingResult.error || "Unknown error"
+              }`
+            );
             return {
               success: false,
               error: `Failed to update Traefik: ${
@@ -131,11 +152,22 @@ class MongoDBService extends DatabaseService {
               }`,
             };
           }
+
           logger.info(
             `Successfully updated Traefik for MongoDB agent ${agentId}`
           );
         } catch (traefikErr) {
-          logger.error(`Failed to use Traefik: ${traefikErr.message}`);
+          logger.error(
+            `Failed to use Traefik for MongoDB routing: ${traefikErr.message}`,
+            {
+              error: traefikErr.message,
+              stack: traefikErr.stack,
+              agentId,
+              targetIp,
+              targetPort,
+            }
+          );
+
           return {
             success: false,
             error: `Failed to update Traefik: ${traefikErr.message}`,
@@ -149,7 +181,7 @@ class MongoDBService extends DatabaseService {
         };
       }
 
-      // Build connection information with proper TLS options
+      // Build connection information
       const domain = `${agentId}.${this.mongoDomain}`;
 
       // Cache the connection info with expiration timestamp
@@ -183,6 +215,8 @@ class MongoDBService extends DatabaseService {
       logger.error(`Error registering MongoDB agent: ${error.message}`, {
         error: error.message,
         stack: error.stack,
+        agentId,
+        targetIp,
       });
 
       return {

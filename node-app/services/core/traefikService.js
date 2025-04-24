@@ -20,10 +20,25 @@ class TraefikService {
     this.initialized = false;
     this.certificateService = certificateService;
     this.traefikContainer = process.env.TRAEFIK_CONTAINER || "traefik";
+
+    // Determine the correct configuration path based on environment
+    const isProduction = process.env.NODE_ENV === "production";
+    const defaultConfigPath = isProduction
+      ? "/opt/cloudlunacy_front/config/traefik"
+      : "/app/config/traefik";
+
     // Use a path that the node user has permission to write to
-    this.configPath = process.env.TRAEFIK_CONFIG_PATH || "/app/config/traefik";
+    this.configPath = process.env.TRAEFIK_CONFIG_PATH || defaultConfigPath;
     this.dynamicConfigPath = path.join(this.configPath, "dynamic");
     this.routesConfigPath = path.join(this.dynamicConfigPath, "routes.yml");
+
+    // Log the configuration paths during initialization
+    logger.debug(`Traefik configuration paths:`, {
+      configPath: this.configPath,
+      dynamicConfigPath: this.dynamicConfigPath,
+      routesConfigPath: this.routesConfigPath,
+    });
+
     this.mongoDomain = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
     this.appDomain = process.env.APP_DOMAIN || "apps.cloudlunacy.uk";
     this.healthStatus = {
@@ -162,8 +177,20 @@ class TraefikService {
       // Create config structure
       const config = {
         http: {
-          routers: {},
-          services: {},
+          routers: {
+            "traefik-healthcheck": {
+              entryPoints: ["traefik"],
+              rule: "Path(`/ping`)",
+              service: "api@internal",
+            },
+          },
+          services: {
+            "dummy-service": {
+              loadBalancer: {
+                servers: [{ url: "http://localhost:3005" }],
+              },
+            },
+          },
         },
         tcp: {
           routers: {},
@@ -207,23 +234,49 @@ class TraefikService {
         config.tcp.services[serviceName] = {
           loadBalancer: {
             servers: [{ address: `${route.targetHost}:${route.targetPort}` }],
-            healthCheck: {
-              interval: "10s",
-              timeout: "3s",
-            },
           },
         };
       });
 
-      // Save the configuration
-      const yamlStr = yaml.dump(config);
-      await fs.mkdir(this.dynamicConfigPath, { recursive: true });
-      await fs.writeFile(this.routesConfigPath, yamlStr);
+      // Save the configuration - ensure directory exists first
+      try {
+        // Create directory if it doesn't exist
+        await fs.mkdir(this.dynamicConfigPath, { recursive: true });
 
-      logger.info("Routes configuration saved successfully");
-      return true;
+        // Write YAML file with proper header
+        const yamlStr =
+          "# Dynamic routes configuration for Traefik\n" +
+          "# This file is managed by the CloudLunacy Front API\n\n" +
+          yaml.dump(config);
+
+        await fs.writeFile(this.routesConfigPath, yamlStr);
+
+        logger.info("Routes configuration saved successfully");
+        return true;
+      } catch (fsErr) {
+        // If we encounter a permission issue, log detailed information
+        logger.error(`Failed to save routes configuration: ${fsErr.message}`, {
+          error: fsErr.message,
+          code: fsErr.code,
+          path: this.routesConfigPath,
+          dynamicConfigPath: this.dynamicConfigPath,
+          configPath: this.configPath,
+          stack: fsErr.stack,
+        });
+
+        if (fsErr.code === "EACCES" || fsErr.code === "EPERM") {
+          logger.error(
+            `Permission denied when writing to ${this.routesConfigPath}. Check that the node process has write permissions to this directory.`
+          );
+        }
+
+        return false;
+      }
     } catch (err) {
-      logger.error(`Failed to save routes: ${err.message}`);
+      logger.error(`Failed to save routes: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+      });
       return false;
     }
   }
