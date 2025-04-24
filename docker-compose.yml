@@ -43,6 +43,41 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+    depends_on:
+      setup-traefik-config:
+        condition: service_completed_successfully
+
+  # New service to properly set up config directories and permissions
+  setup-traefik-config:
+    image: busybox:latest
+    container_name: setup-traefik-config
+    restart: "no"
+    volumes:
+      - ./config:/config
+    command: >
+      sh -c "
+        mkdir -p /config/traefik/dynamic &&
+        touch /config/traefik/dynamic/routes.yml &&
+        echo '# Dynamic routes configuration for Traefik' > /config/traefik/dynamic/routes.yml &&
+        echo '# This file is managed by the CloudLunacy Front API' >> /config/traefik/dynamic/routes.yml &&
+        echo 'http:' >> /config/traefik/dynamic/routes.yml &&
+        echo '  routers:' >> /config/traefik/dynamic/routes.yml &&
+        echo '    traefik-healthcheck:' >> /config/traefik/dynamic/routes.yml &&
+        echo '      entryPoints:' >> /config/traefik/dynamic/routes.yml &&
+        echo '        - \"traefik\"' >> /config/traefik/dynamic/routes.yml &&
+        echo '      rule: \"Path(`/ping`)\"' >> /config/traefik/dynamic/routes.yml &&
+        echo '      service: \"api@internal\"' >> /config/traefik/dynamic/routes.yml &&
+        echo '  services:' >> /config/traefik/dynamic/routes.yml &&
+        echo '    dummy-service:' >> /config/traefik/dynamic/routes.yml &&
+        echo '      loadBalancer:' >> /config/traefik/dynamic/routes.yml &&
+        echo '        servers:' >> /config/traefik/dynamic/routes.yml &&
+        echo '          - url: \"http://localhost:3005\"' >> /config/traefik/dynamic/routes.yml &&
+        echo 'tcp:' >> /config/traefik/dynamic/routes.yml &&
+        echo '  routers: {}' >> /config/traefik/dynamic/routes.yml &&
+        echo '  services: {}' >> /config/traefik/dynamic/routes.yml &&
+        chmod -R 777 /config/traefik/dynamic &&
+        echo 'Traefik configuration directories and permissions set up successfully'
+      "
 
   certbot:
     image: certbot/certbot:latest
@@ -91,6 +126,10 @@ services:
       - NODE_ENV=production
       - NODE_DEBUG=
       - LOG_DIR=/app/logs
+      - TRAEFIK_CONFIG_PATH=/app/config/traefik
+    depends_on:
+      setup-traefik-config:
+        condition: service_completed_successfully
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.node-app.rule=Host(`api.${APP_DOMAIN:-cloudlunacy.uk}`)"

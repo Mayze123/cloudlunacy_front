@@ -23,11 +23,13 @@ class TraefikService {
 
     // Determine the correct configuration path based on environment
     const isProduction = process.env.NODE_ENV === "production";
+
+    // In production, use a path inside the container that the node user can write to
     const defaultConfigPath = isProduction
-      ? "/opt/cloudlunacy_front/config/traefik"
+      ? "/app/config/traefik"
       : "/app/config/traefik";
 
-    // Use a path that the node user has permission to write to
+    // Use environment variable if set, otherwise use default
     this.configPath = process.env.TRAEFIK_CONFIG_PATH || defaultConfigPath;
     this.dynamicConfigPath = path.join(this.configPath, "dynamic");
     this.routesConfigPath = path.join(this.dynamicConfigPath, "routes.yml");
