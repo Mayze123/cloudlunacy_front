@@ -8,5 +8,4 @@ http:
         - "traefik"
       rule: "Path(`/ping`)"
       service: "api@internal"
-
 # No dynamic HTTP or TCP routes currently defined.
