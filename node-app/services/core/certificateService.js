@@ -5,6 +5,7 @@
  */
 
 const fs = require("fs").promises;
+const fsSync = require("fs");
 const path = require("path");
 const os = require("os");
 const { execSync } = require("child_process");
@@ -32,6 +33,12 @@ class CertificateService {
     this.caCertPath = null;
     this.caKeyPath = null;
     this.mongoDomain = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
+
+    // Fallback base for writable certs when config mounts are read-only
+    this.localCertsDir =
+      process.env.LOCAL_CERTS_BASE_PATH ||
+      path.join(os.tmpdir(), "cloudlunacy-certs");
+    fs.mkdir(this.localCertsDir, { recursive: true }).catch(() => {});
 
     // Traefik API configuration (if available)
     this.traefikApiUrl =
@@ -254,10 +261,24 @@ class CertificateService {
         async () => {
           logger.info(`Creating certificate for agent ${agentId}`);
 
-          // Create agent directory with proper permissions
-          const agentCertDir = path.join(this.certsDir, "agents", agentId);
-          // Create agent directory without failing on chmod errors
+          // Determine writable agent certificate directory (fall back if bind mount is read-only)
+          let agentCertDir = path.join(this.certsDir, "agents", agentId);
           await fs.mkdir(agentCertDir, { recursive: true });
+          // Test writability
+          let writable = true;
+          try {
+            await fs.access(agentCertDir, fsSync.constants.W_OK);
+          } catch {
+            writable = false;
+          }
+          if (!writable) {
+            logger.warn(
+              `Agent cert dir ${agentCertDir} not writable, using local fallback`
+            );
+            agentCertDir = path.join(this.localCertsDir, agentId);
+            await fs.mkdir(agentCertDir, { recursive: true });
+          }
+          // Ensure directory permissions where possible
           try {
             await fs.chmod(agentCertDir, 0o755);
           } catch (chmodErr) {
@@ -265,9 +286,7 @@ class CertificateService {
               `Could not set permissions for agent cert directory: ${chmodErr.message}`
             );
           }
-          logger.info(
-            `Successfully created/verified agent cert directory: ${agentCertDir}`
-          );
+          logger.info(`Using agent cert directory: ${agentCertDir}`);
 
           // Define paths
           const keyPath = path.join(agentCertDir, "server.key");
