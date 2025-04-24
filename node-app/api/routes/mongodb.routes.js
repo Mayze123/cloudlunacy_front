@@ -7,8 +7,8 @@ const authMiddleware = require("../middleware/auth");
  * @swagger
  * /api/mongodb/register:
  *   post:
- *     summary: Register an agent's MongoDB instance with Traefik
- *     description: Allows an agent to register its MongoDB instance for Traefik routing
+ *     summary: Register an agent's MongoDB instance
+ *     description: Registers a MongoDB instance for Traefik routing
  *     tags: [MongoDB]
  *     security:
  *       - agentAuth: []
@@ -39,6 +39,35 @@ const authMiddleware = require("../middleware/auth");
  *     responses:
  *       200:
  *         description: MongoDB successfully registered
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   description: Whether the registration was successful
+ *                 message:
+ *                   type: string
+ *                   description: Success message
+ *                 domain:
+ *                   type: string
+ *                   description: Domain name for accessing the MongoDB instance
+ *                 connectionString:
+ *                   type: string
+ *                   description: Connection string template (with placeholder credentials)
+ *                 targetIp:
+ *                   type: string
+ *                   description: Target IP address for the MongoDB instance
+ *                 targetPort:
+ *                   type: number
+ *                   description: Target port for the MongoDB instance
+ *                 tlsEnabled:
+ *                   type: boolean
+ *                   description: Whether TLS is enabled for this connection
+ *                 connectionTestResult:
+ *                   type: object
+ *                   description: Optional test results if connectivity testing was performed
  *       400:
  *         description: Missing required parameters
  *       404:
@@ -54,10 +83,94 @@ router.post(
 
 /**
  * @swagger
+ * /api/mongodb:
+ *   get:
+ *     summary: List all MongoDB subdomains
+ *     description: Get a list of all registered MongoDB subdomains
+ *     tags: [MongoDB]
+ *     security:
+ *       - agentAuth: []
+ *     responses:
+ *       200:
+ *         description: List of MongoDB subdomains
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 count:
+ *                   type: number
+ *                   description: Number of MongoDB subdomains
+ *                 subdomains:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       name:
+ *                         type: string
+ *                       agentId:
+ *                         type: string
+ *                       targetAddress:
+ *                         type: string
+ *                       lastUpdated:
+ *                         type: string
+ *       500:
+ *         description: Internal server error
+ */
+router.get(
+  "/",
+  authMiddleware.requireAuth,
+  mongodbController.listSubdomains
+);
+
+/**
+ * @swagger
+ * /api/mongodb/{agentId}:
+ *   delete:
+ *     summary: Remove a MongoDB subdomain
+ *     description: Removes the MongoDB routing for a specific agent
+ *     tags: [MongoDB]
+ *     security:
+ *       - agentAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: agentId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: ID of the agent to remove MongoDB routing for
+ *     responses:
+ *       200:
+ *         description: MongoDB subdomain removed successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *       404:
+ *         description: Agent or MongoDB route not found
+ *       500:
+ *         description: Internal server error
+ */
+router.delete(
+  "/:agentId",
+  authMiddleware.requireAuth,
+  authMiddleware.requireAgentAccess(),
+  mongodbController.removeSubdomain
+);
+
+/**
+ * @swagger
  * /api/mongodb/{agentId}/test:
  *   get:
  *     summary: Test MongoDB connectivity
- *     description: Tests the connectivity to an agent's MongoDB instance
+ *     description: Tests the connectivity to an agent's MongoDB instance with comprehensive diagnostics
  *     tags: [MongoDB]
  *     security:
  *       - agentAuth: []
@@ -68,9 +181,42 @@ router.post(
  *         schema:
  *           type: string
  *         description: ID of the agent to test MongoDB connectivity
+ *       - in: query
+ *         name: targetIp
+ *         schema:
+ *           type: string
+ *         description: Optional override to test connectivity to a different IP address
  *     responses:
  *       200:
  *         description: Test results returned
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                 error:
+ *                   type: string
+ *                 direct:
+ *                   type: object
+ *                   description: Results of direct MongoDB connection test
+ *                 proxy:
+ *                   type: object
+ *                   description: Results of connection through the proxy
+ *                 diagnostics:
+ *                   type: object
+ *                   description: System diagnostics information
+ *                 routing:
+ *                   type: object
+ *                   description: Routing configuration information
+ *                 recommendations:
+ *                   type: array
+ *                   description: Automated recommendations based on test results
+ *                   items:
+ *                     type: string
  *       404:
  *         description: Agent not found
  *       500:
@@ -83,18 +229,53 @@ router.get(
   mongodbController.testConnection
 );
 
-// Other MongoDB-related routes
+/**
+ * @swagger
+ * /api/mongodb/{agentId}/connection-info:
+ *   get:
+ *     summary: Get MongoDB connection information
+ *     description: Retrieves connection information for a registered MongoDB instance
+ *     tags: [MongoDB]
+ *     security:
+ *       - agentAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: agentId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: ID of the agent to get connection info for
+ *     responses:
+ *       200:
+ *         description: Connection information retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 connectionInfo:
+ *                   type: object
+ *                   properties:
+ *                     domain:
+ *                       type: string
+ *                     host:
+ *                       type: string
+ *                     port:
+ *                       type: number
+ *                     useTls:
+ *                       type: boolean
+ *       404:
+ *         description: Agent not found or no connection info available
+ *       500:
+ *         description: Internal server error
+ */
 router.get(
   "/:agentId/connection-info",
   authMiddleware.requireAuth,
   authMiddleware.requireAgentAccess(),
   mongodbController.getConnectionInfo
-);
-router.post(
-  "/:agentId/credentials",
-  authMiddleware.requireAuth,
-  authMiddleware.requireAgentAccess(),
-  mongodbController.generateCredentials
 );
 
 module.exports = router;

@@ -4,7 +4,6 @@
  * Handles MongoDB server management operations:
  * - Registration of agent MongoDB instances
  * - Connection testing
- * - Credential generation
  */
 
 const crypto = require("crypto");
@@ -18,6 +17,8 @@ class MongoDBService extends DatabaseService {
     this.mongoDomain = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
     this.connectionCache = new Map();
     this.traefikService = traefikService;
+    // Cache expiration time in milliseconds (default: 1 hour)
+    this.cacheExpirationTime = process.env.MONGO_CACHE_EXPIRATION || 3600000;
   }
 
   /**
@@ -31,9 +32,12 @@ class MongoDBService extends DatabaseService {
     try {
       if (!this.traefikService) {
         logger.warn(
-          "No Traefik service provided during initialization, MongoDB routes will not work correctly"
+          "Traefik service not available during initialization, MongoDB routes will not work correctly"
         );
       }
+
+      // Start a background task to clean expired cache entries
+      this._startCacheCleanupTask();
 
       this.initialized = true;
       logger.info("MongoDB service initialized");
@@ -45,6 +49,38 @@ class MongoDBService extends DatabaseService {
       });
       return false;
     }
+  }
+
+  /**
+   * Start a periodic task to clean up expired cache entries
+   * @private
+   */
+  _startCacheCleanupTask() {
+    // Run cache cleanup every hour
+    const cleanupInterval = Math.min(this.cacheExpirationTime, 3600000);
+    
+    setInterval(() => {
+      try {
+        const now = Date.now();
+        let cleanupCount = 0;
+        
+        this.connectionCache.forEach((value, key) => {
+          if (value.lastUpdated) {
+            const lastUpdatedTime = new Date(value.lastUpdated).getTime();
+            if (now - lastUpdatedTime > this.cacheExpirationTime) {
+              this.connectionCache.delete(key);
+              cleanupCount++;
+            }
+          }
+        });
+        
+        if (cleanupCount > 0) {
+          logger.debug(`Cleaned up ${cleanupCount} expired MongoDB connection cache entries`);
+        }
+      } catch (error) {
+        logger.error(`Error in MongoDB cache cleanup: ${error.message}`);
+      }
+    }, cleanupInterval);
   }
 
   /**
@@ -65,8 +101,6 @@ class MongoDBService extends DatabaseService {
       const {
         useTls = true,
         targetPort = 27017,
-        username = "admin",
-        password = "adminpassword",
       } = options;
 
       logger.info(
@@ -80,56 +114,55 @@ class MongoDBService extends DatabaseService {
         };
       }
 
-      // Update Traefik configuration
-      try {
-        // Check if traefikService has the appropriate MongoDB routing method
-        if (typeof this.traefikService.addMongoDBRoute === "function") {
-          await this.traefikService.addMongoDBRoute(
+      let routingResult;
+      // Use Traefik for routing
+      if (typeof this.traefikService.addMongoDBRoute === "function") {
+        try {
+          routingResult = await this.traefikService.addMongoDBRoute(
             agentId,
             targetIp,
             targetPort,
             { useTls }
           );
-          logger.info(
-            `Successfully updated Traefik for MongoDB agent ${agentId}`
-          );
-        } else {
-          logger.warn(
-            `Traefik service does not support addMongoDBRoute method`
-          );
+          if (!routingResult.success) {
+            return {
+              success: false,
+              error: `Failed to update Traefik: ${routingResult.error || "Unknown error"}`,
+            };
+          }
+          logger.info(`Successfully updated Traefik for MongoDB agent ${agentId}`);
+        } catch (traefikErr) {
+          logger.error(`Failed to use Traefik: ${traefikErr.message}`);
           return {
             success: false,
-            error: "Traefik service does not support MongoDB routes",
+            error: `Failed to update Traefik: ${traefikErr.message}`,
           };
         }
-      } catch (traefikErr) {
-        logger.error(
-          `Failed to update Traefik for MongoDB: ${traefikErr.message}`
-        );
+      } else {
+        logger.error("Traefik service does not support addMongoDBRoute method");
         return {
           success: false,
-          error: `Failed to update Traefik backend: ${traefikErr.message}`,
+          error: "Traefik service does not support MongoDB routes",
         };
       }
 
-      // Build connection information
+      // Build connection information with proper TLS options
       const domain = `${agentId}.${this.mongoDomain}`;
-      const connectionString = `mongodb://${username}:${password}@${domain}:27017/admin?${
-        useTls ? "tls=true&tlsAllowInvalidCertificates=true" : ""
-      }`;
-
-      // Cache the connection info
+      
+      // Cache the connection info with expiration timestamp
+      const now = new Date().toISOString();
       this.connectionCache.set(agentId, {
         agentId,
         targetIp,
         targetPort,
         domain,
-        connectionString,
         useTls,
-        lastUpdated: new Date().toISOString(),
+        routingService: "traefik",
+        lastUpdated: now,
+        created: now
       });
 
-      logger.info(`MongoDB agent ${agentId} registered successfully`);
+      logger.info(`MongoDB agent ${agentId} registered successfully using Traefik`);
 
       return {
         success: true,
@@ -139,7 +172,7 @@ class MongoDBService extends DatabaseService {
         targetPort,
         domain,
         mongodbUrl: `mongodb://${domain}:27017`,
-        connectionString,
+        routingService: "traefik"
       };
     } catch (error) {
       logger.error(`Error registering MongoDB agent: ${error.message}`, {
@@ -259,6 +292,14 @@ class MongoDBService extends DatabaseService {
 
       // Attempt direct connection to the MongoDB instance
       let directClient = null;
+      let proxyClient = null;
+      const result = {
+        success: false,
+        direct: { success: false },
+        proxy: { success: false }
+      };
+
+      // First test direct connection
       try {
         const directUrl = `mongodb://${connectionInfo.targetIp}:${connectionInfo.targetPort}`;
         logger.debug(`Attempting direct connection to ${directUrl}`);
@@ -276,42 +317,93 @@ class MongoDBService extends DatabaseService {
           `Direct MongoDB connection successful to ${connectionInfo.targetIp}`
         );
 
-        return {
+        result.direct = {
           success: true,
-          message: "MongoDB connection test successful",
-          direct: {
-            success: true,
-            serverVersion: serverInfo.version,
-            uptime: serverInfo.uptime,
-          },
-          proxy: {
-            // Not testing proxy connection here for simplicity
-            success: null,
-            message: "Proxy connection test not performed",
-          },
+          serverVersion: serverInfo.version,
+          uptime: serverInfo.uptime
         };
+        
+        // Set overall success to true if direct connection succeeds
+        result.success = true;
       } catch (directError) {
-        logger.error(
-          `Direct MongoDB connection failed: ${directError.message}`
-        );
-
-        return {
+        logger.error(`Direct MongoDB connection failed: ${directError.message}`);
+        result.direct = {
           success: false,
-          error: `MongoDB connection test failed: ${directError.message}`,
-          direct: {
-            success: false,
-            error: directError.message,
-          },
-          proxy: {
-            success: null,
-            message: "Proxy connection test not performed",
-          },
+          error: directError.message
         };
       } finally {
         if (directClient) {
-          await directClient.close();
+          await directClient.close().catch(() => {});
         }
       }
+
+      // Then test proxy connection if we have full connection info
+      if (connectionInfo.domain) {
+        try {
+          // Create a test connection string with anonymous credentials
+          // This just tests TCP connectivity, not actual authentication
+          let proxyUrl = `mongodb://anon:anon@${connectionInfo.domain}:27017/admin?authSource=admin`;
+          
+          // Add TLS options if needed
+          if (connectionInfo.useTls) {
+            proxyUrl += "&tls=true&tlsAllowInvalidCertificates=true";
+          }
+          
+          logger.debug(`Attempting proxy connection to ${proxyUrl.replace(/anon:anon/, "anon:***")}`);
+
+          proxyClient = new MongoClient(proxyUrl, {
+            connectTimeoutMS: 5000,
+            serverSelectionTimeoutMS: 5000,
+          });
+          
+          // Just attempt to connect - we expect auth to fail but TCP connection to succeed
+          await proxyClient.connect();
+          
+          // If we somehow get here without error, connection worked (unlikely with dummy credentials)
+          result.proxy = {
+            success: true,
+            message: "Proxy connection successful - TCP connectivity verified"
+          };
+        } catch (proxyError) {
+          // Check if it's an authentication error (which means routing works)
+          if (proxyError.message.includes("Authentication failed") || 
+              proxyError.code === 18 || // AuthenticationFailed code
+              proxyError.message.includes("not authorized")) {
+            // Auth failed but TCP connection succeeded - this is actually good!
+            result.proxy = {
+              success: true,
+              message: "Proxy routing verified (auth failed but TCP connection succeeded)"
+            };
+          } else {
+            // This is a real connection failure
+            logger.error(`Proxy MongoDB connection failed: ${proxyError.message}`);
+            result.proxy = {
+              success: false,
+              error: proxyError.message
+            };
+          }
+        } finally {
+          if (proxyClient) {
+            await proxyClient.close().catch(() => {});
+          }
+        }
+      } else {
+        result.proxy = {
+          success: null,
+          message: "Proxy connection test skipped - insufficient connection information"
+        };
+      }
+
+      // Set overall success - successful if either direct or proxy connection worked
+      result.success = result.direct.success || (result.proxy && result.proxy.success);
+      
+      if (result.success) {
+        result.message = "MongoDB connection test partially or fully successful";
+      } else {
+        result.error = "MongoDB connection test failed for both direct and proxy connections";
+      }
+
+      return result;
     } catch (error) {
       logger.error(`Error testing MongoDB connection: ${error.message}`, {
         error: error.message,
@@ -360,62 +452,6 @@ class MongoDBService extends DatabaseService {
       return {
         success: false,
         error: `Error getting connection info: ${error.message}`,
-      };
-    }
-  }
-
-  /**
-   * Generate credentials for MongoDB access
-   *
-   * @param {string} agentId - Agent ID
-   * @param {string} dbName - Database name
-   * @param {string} username - Username (optional, generated if not provided)
-   * @returns {Promise<Object>} - Generated credentials
-   */
-  async generateCredentials(agentId, dbName, username = null) {
-    try {
-      if (!this.initialized) {
-        await this.initialize();
-      }
-
-      // Generate username if not provided
-      if (!username) {
-        username = `user_${crypto.randomBytes(4).toString("hex")}`;
-      }
-
-      // Generate secure password
-      const password = crypto.randomBytes(16).toString("hex");
-
-      // Create connection string with the new credentials
-      const domain = `${agentId}.${this.mongoDomain}`;
-      const connectionString = `mongodb://${username}:${password}@${domain}:27017/${dbName}?authSource=${dbName}`;
-
-      logger.info(`Generated MongoDB credentials for ${agentId}/${dbName}`);
-
-      return {
-        success: true,
-        message: "MongoDB credentials generated successfully",
-        agentId,
-        dbName,
-        username,
-        password,
-        connectionString,
-        uri: `mongodb://${domain}:27017/${dbName}`,
-        instructions: [
-          "To create this user in MongoDB, run:",
-          `use ${dbName}`,
-          `db.createUser({user: "${username}", pwd: "${password}", roles: ["readWrite"]})`,
-        ],
-      };
-    } catch (error) {
-      logger.error(`Error generating MongoDB credentials: ${error.message}`, {
-        error: error.message,
-        stack: error.stack,
-      });
-
-      return {
-        success: false,
-        error: `Error generating MongoDB credentials: ${error.message}`,
       };
     }
   }
