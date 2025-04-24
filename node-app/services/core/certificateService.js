@@ -40,6 +40,10 @@ class CertificateService {
       path.join(os.tmpdir(), "cloudlunacy-certs");
     fs.mkdir(this.localCertsDir, { recursive: true }).catch(() => {});
 
+    // Local CA certificate paths for fallback
+    this.localCaCertPath = path.join(this.localCertsDir, "ca.crt");
+    this.localCaKeyPath = path.join(this.localCertsDir, "ca.key");
+
     // Traefik API configuration (if available)
     this.traefikApiUrl =
       process.env.TRAEFIK_API_URL || "http://localhost:8080/api";
@@ -357,6 +361,64 @@ DNS.2 = *.${mongoSubdomain}
           // Write OpenSSL configuration
           await fs.writeFile(configPath, opensslConfig);
 
+          // Ensure CA key and certificate are accessible
+          // If originals can't be accessed, attempt to use fallback copies
+          let effectiveCaCertPath = this.caCertPath;
+          let effectiveCaKeyPath = this.caKeyPath;
+
+          // First check if we have existing local copies of CA files
+          let localCopiesExist = false;
+          try {
+            await fs.access(this.localCaCertPath, fsSync.constants.R_OK);
+            await fs.access(this.localCaKeyPath, fsSync.constants.R_OK);
+            localCopiesExist = true;
+          } catch (accessErr) {
+            localCopiesExist = false;
+          }
+
+          // Then check if the original CA files are accessible
+          let originalFilesAccessible = true;
+          try {
+            await fs.access(this.caCertPath, fsSync.constants.R_OK);
+            await fs.access(this.caKeyPath, fsSync.constants.R_OK);
+          } catch (accessErr) {
+            originalFilesAccessible = false;
+          }
+
+          // If we can access originals but don't have local copies, create them
+          if (originalFilesAccessible && !localCopiesExist) {
+            try {
+              // Copy to local fallback location
+              await fs.copyFile(this.caCertPath, this.localCaCertPath);
+              await fs.copyFile(this.caKeyPath, this.localCaKeyPath);
+              await fs.chmod(this.localCaCertPath, 0o644);
+              await fs.chmod(this.localCaKeyPath, 0o600);
+              logger.info(
+                "Copied CA files to fallback location for future use"
+              );
+            } catch (copyErr) {
+              logger.warn(
+                `Failed to create fallback copies of CA files: ${copyErr.message}`
+              );
+            }
+          }
+
+          // If original CA files aren't accessible but we have local copies, use those
+          if (!originalFilesAccessible && localCopiesExist) {
+            logger.info(
+              "Using local fallback copies of CA files due to permission issues"
+            );
+            effectiveCaCertPath = this.localCaCertPath;
+            effectiveCaKeyPath = this.localCaKeyPath;
+          }
+
+          // If neither originals nor local copies are accessible, throw error
+          if (!originalFilesAccessible && !localCopiesExist) {
+            throw new Error(
+              "Cannot access CA files and no fallback copies exist"
+            );
+          }
+
           try {
             // Generate private key to temporary file first
             execSync(`openssl genrsa -out ${tempKeyPath} 2048`);
@@ -379,7 +441,7 @@ DNS.2 = *.${mongoSubdomain}
               caSerialOption = `-CAserial ${localSerial}`;
             }
             execSync(
-              `openssl x509 -req -in ${csrPath} -CA ${this.caCertPath} -CAkey ${this.caKeyPath} ${caSerialOption} -out ${tempCertPath} -days 365 -extensions v3_req -extfile ${configPath}`
+              `openssl x509 -req -in ${csrPath} -CA ${effectiveCaCertPath} -CAkey ${effectiveCaKeyPath} ${caSerialOption} -out ${tempCertPath} -days 365 -extensions v3_req -extfile ${configPath}`
             );
 
             // Create combined PEM file for HAProxy
