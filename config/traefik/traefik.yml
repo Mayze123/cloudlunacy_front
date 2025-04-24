@@ -17,7 +17,7 @@ accessLog:
 # API and dashboard configuration
 api:
   dashboard: true
-  insecure: true  # Allow API access without authentication during setup
+  insecure: true # Allow API access without authentication during setup
 
 # Entrypoints configuration
 entryPoints:
@@ -33,7 +33,7 @@ entryPoints:
     address: ":443"
 
   traefik:
-    address: ":8081"  # Specific entrypoint for Traefik API
+    address: ":8081" # Specific entrypoint for Traefik API
 
   mongodb:
     address: ":27017"
