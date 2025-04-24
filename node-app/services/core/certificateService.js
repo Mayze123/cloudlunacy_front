@@ -6,6 +6,7 @@
 
 const fs = require("fs").promises;
 const path = require("path");
+const os = require("os");
 const { execSync } = require("child_process");
 const logger = require("../../utils/logger").getLogger("certificateService");
 const { promisify } = require("util");
@@ -261,7 +262,7 @@ class CertificateService {
           const tempKeyPath = path.join(agentCertDir, ".server.key.tmp");
           const tempCertPath = path.join(agentCertDir, ".server.crt.tmp");
           const tempPemPath = path.join(agentCertDir, ".server.pem.tmp");
-          const configPath = path.join(agentCertDir, "openssl.cnf");
+          const configPath = path.join(os.tmpdir(), `openssl_${agentId}.cnf`);
           const mongoSubdomain = `${agentId}.${this.mongoDomain}`;
 
           // Validate IP address to prevent OpenSSL errors
