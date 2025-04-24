@@ -46,10 +46,7 @@ exports.registerMongoDB = asyncHandler(async (req, res) => {
 
     if (!result.success) {
       logger.error(`MongoDB registration failed: ${result.error}`);
-      throw new AppError(
-        `Failed to register MongoDB: ${result.error}`,
-        500
-      );
+      throw new AppError(`Failed to register MongoDB: ${result.error}`, 500);
     }
 
     // At this point we have a successful registration
@@ -67,7 +64,7 @@ exports.registerMongoDB = asyncHandler(async (req, res) => {
         agentId,
         targetIp
       );
-      
+
       if (!connectionTest.success) {
         logger.warn(
           `MongoDB connection test failed after registration: ${connectionTest.error}`
@@ -89,14 +86,14 @@ exports.registerMongoDB = asyncHandler(async (req, res) => {
       targetIp,
       targetPort,
       tlsEnabled: useTls,
-      connectionTestResult: connectionTest || { success: null, message: "Connection test not performed" }
+      connectionTestResult: connectionTest || {
+        success: null,
+        message: "Connection test not performed",
+      },
     });
   } catch (error) {
     logger.error(`MongoDB registration error: ${error.message}`);
-    throw new AppError(
-      `Failed to register MongoDB: ${error.message}`,
-      500
-    );
+    throw new AppError(`Failed to register MongoDB: ${error.message}`, 500);
   }
 });
 
@@ -152,17 +149,25 @@ exports.removeSubdomain = asyncHandler(async (req, res) => {
   // First get connection info to have details for the logs
   let connectionInfo = null;
   try {
-    connectionInfo = await coreServices.mongodbService.getConnectionInfo(agentId);
+    connectionInfo = await coreServices.mongodbService.getConnectionInfo(
+      agentId
+    );
   } catch (infoErr) {
     // Continue even if we can't get info - might still be able to deregister
-    logger.warn(`Could not get connection info before removal: ${infoErr.message}`);
+    logger.warn(
+      `Could not get connection info before removal: ${infoErr.message}`
+    );
   }
 
   // Try to remove MongoDB registration
   const result = await coreServices.mongodbService.deregisterAgent(agentId);
 
   if (!result.success) {
-    logger.error(`Failed to remove MongoDB for agent ${agentId}: ${result.error || 'Unknown error'}`);
+    logger.error(
+      `Failed to remove MongoDB for agent ${agentId}: ${
+        result.error || "Unknown error"
+      }`
+    );
     throw new AppError(
       `Failed to remove MongoDB subdomain for agent ${agentId}: ${result.error}`,
       404
@@ -172,7 +177,7 @@ exports.removeSubdomain = asyncHandler(async (req, res) => {
   // Return success response
   res.status(200).json({
     success: true,
-    message: `MongoDB subdomain for agent ${agentId} removed successfully`
+    message: `MongoDB subdomain for agent ${agentId} removed successfully`,
   });
 });
 
@@ -185,28 +190,37 @@ exports.testConnection = asyncHandler(async (req, res) => {
   const { agentId } = req.params;
   const { targetIp } = req.query; // Optional override for testing a different IP
 
-  logger.info(`Testing MongoDB connectivity for agent ${agentId}${targetIp ? ` at ${targetIp}` : ''}`);
+  logger.info(
+    `Testing MongoDB connectivity for agent ${agentId}${
+      targetIp ? ` at ${targetIp}` : ""
+    }`
+  );
 
   // Test MongoDB connectivity
-  const result = await coreServices.mongodbService.testConnection(agentId, targetIp);
+  const result = await coreServices.mongodbService.testConnection(
+    agentId,
+    targetIp
+  );
 
   // Add diagnostics information
   const diagnostics = {
     timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development',
+    environment: process.env.NODE_ENV || "development",
     traefikAvailable: !!coreServices.traefikService,
-    mongodbPort: process.env.MONGODB_PORT || '27017',
-    mongoDomain: process.env.MONGO_DOMAIN || 'mongodb.cloudlunacy.uk'
+    mongodbPort: process.env.MONGODB_PORT || "27017",
+    mongoDomain: process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk",
   };
 
   // Get routing information if available
   let routingInfo = {};
   try {
-    const connectionInfo = await coreServices.mongodbService.getConnectionInfo(agentId);
+    const connectionInfo = await coreServices.mongodbService.getConnectionInfo(
+      agentId
+    );
     if (connectionInfo && connectionInfo.success) {
       routingInfo = {
         domain: connectionInfo.domain,
-        lastUpdated: connectionInfo.lastUpdated
+        lastUpdated: connectionInfo.lastUpdated,
       };
     }
   } catch (infoErr) {
@@ -216,13 +230,15 @@ exports.testConnection = asyncHandler(async (req, res) => {
   // Combine all details in response
   res.status(200).json({
     success: result.success,
-    message: result.message || (result.success ? 'Test completed successfully' : 'Test failed'),
+    message:
+      result.message ||
+      (result.success ? "Test completed successfully" : "Test failed"),
     error: result.error,
     direct: result.direct,
     proxy: result.proxy,
     diagnostics,
     routing: routingInfo,
-    recommendations: generateRecommendations(result)
+    recommendations: generateRecommendations(result),
   });
 });
 
@@ -234,53 +250,78 @@ function generateRecommendations(testResult) {
   const recommendations = [];
 
   if (!testResult.success) {
-    recommendations.push('Verify that the MongoDB server is running and accessible.');
+    recommendations.push(
+      "Verify that the MongoDB server is running and accessible."
+    );
   }
 
   // Direct connection issues
   if (testResult.direct && !testResult.direct.success) {
-    const directError = testResult.direct.error || '';
-    
-    if (directError.includes('ECONNREFUSED')) {
-      recommendations.push('The MongoDB server is not running or the port is blocked. Check that MongoDB is running on the target machine.');
+    const directError = testResult.direct.error || "";
+
+    if (directError.includes("ECONNREFUSED")) {
+      recommendations.push(
+        "The MongoDB server is not running or the port is blocked. Check that MongoDB is running on the target machine."
+      );
     }
-    
-    if (directError.includes('EHOSTUNREACH') || directError.includes('ENETUNREACH')) {
-      recommendations.push('The host is unreachable. Check network connectivity and firewall settings.');
+
+    if (
+      directError.includes("EHOSTUNREACH") ||
+      directError.includes("ENETUNREACH")
+    ) {
+      recommendations.push(
+        "The host is unreachable. Check network connectivity and firewall settings."
+      );
     }
-    
-    if (directError.includes('timed out')) {
-      recommendations.push('Connection timed out. This could be due to network latency, firewall rules, or the server being overloaded.');
+
+    if (directError.includes("timed out")) {
+      recommendations.push(
+        "Connection timed out. This could be due to network latency, firewall rules, or the server being overloaded."
+      );
     }
   }
 
   // Proxy connection issues
   if (testResult.proxy && !testResult.proxy.success) {
-    const proxyError = testResult.proxy.error || '';
-    
-    if (proxyError.includes('ECONNREFUSED')) {
-      recommendations.push('The proxy cannot connect to the MongoDB server. Check that the proxy configuration is correct.');
+    const proxyError = testResult.proxy.error || "";
+
+    if (proxyError.includes("ECONNREFUSED")) {
+      recommendations.push(
+        "The proxy cannot connect to the MongoDB server. Check that the proxy configuration is correct."
+      );
     }
-    
-    if (proxyError.includes('certificate')) {
-      recommendations.push('TLS certificate issues detected. Consider temporarily disabling TLS or generating new certificates.');
+
+    if (proxyError.includes("certificate")) {
+      recommendations.push(
+        "TLS certificate issues detected. Consider temporarily disabling TLS or generating new certificates."
+      );
     }
-    
-    if (proxyError.includes('DNS')) {
-      recommendations.push('DNS resolution failed. Check that the MongoDB domain is properly configured in your DNS or hosts file.');
+
+    if (proxyError.includes("DNS")) {
+      recommendations.push(
+        "DNS resolution failed. Check that the MongoDB domain is properly configured in your DNS or hosts file."
+      );
     }
   }
 
   // If direct works but proxy doesn't
-  if (testResult.direct && testResult.direct.success && 
-      testResult.proxy && !testResult.proxy.success) {
-    recommendations.push('The MongoDB server is running but proxy routing is not working. Check the proxy configuration and routing rules.');
+  if (
+    testResult.direct &&
+    testResult.direct.success &&
+    testResult.proxy &&
+    !testResult.proxy.success
+  ) {
+    recommendations.push(
+      "The MongoDB server is running but proxy routing is not working. Check the proxy configuration and routing rules."
+    );
   }
 
   // Default recommendations if none were generated
   if (recommendations.length === 0 && !testResult.success) {
-    recommendations.push('Try restarting the MongoDB server and the proxy service.');
-    recommendations.push('Check the logs for more detailed error information.');
+    recommendations.push(
+      "Try restarting the MongoDB server and the proxy service."
+    );
+    recommendations.push("Check the logs for more detailed error information.");
   }
 
   return recommendations;

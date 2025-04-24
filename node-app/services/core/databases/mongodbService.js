@@ -58,12 +58,12 @@ class MongoDBService extends DatabaseService {
   _startCacheCleanupTask() {
     // Run cache cleanup every hour
     const cleanupInterval = Math.min(this.cacheExpirationTime, 3600000);
-    
+
     setInterval(() => {
       try {
         const now = Date.now();
         let cleanupCount = 0;
-        
+
         this.connectionCache.forEach((value, key) => {
           if (value.lastUpdated) {
             const lastUpdatedTime = new Date(value.lastUpdated).getTime();
@@ -73,9 +73,11 @@ class MongoDBService extends DatabaseService {
             }
           }
         });
-        
+
         if (cleanupCount > 0) {
-          logger.debug(`Cleaned up ${cleanupCount} expired MongoDB connection cache entries`);
+          logger.debug(
+            `Cleaned up ${cleanupCount} expired MongoDB connection cache entries`
+          );
         }
       } catch (error) {
         logger.error(`Error in MongoDB cache cleanup: ${error.message}`);
@@ -98,10 +100,7 @@ class MongoDBService extends DatabaseService {
       }
 
       // Default options
-      const {
-        useTls = true,
-        targetPort = 27017,
-      } = options;
+      const { useTls = true, targetPort = 27017 } = options;
 
       logger.info(
         `Registering MongoDB agent: ${agentId}, IP: ${targetIp}:${targetPort}`
@@ -127,10 +126,14 @@ class MongoDBService extends DatabaseService {
           if (!routingResult.success) {
             return {
               success: false,
-              error: `Failed to update Traefik: ${routingResult.error || "Unknown error"}`,
+              error: `Failed to update Traefik: ${
+                routingResult.error || "Unknown error"
+              }`,
             };
           }
-          logger.info(`Successfully updated Traefik for MongoDB agent ${agentId}`);
+          logger.info(
+            `Successfully updated Traefik for MongoDB agent ${agentId}`
+          );
         } catch (traefikErr) {
           logger.error(`Failed to use Traefik: ${traefikErr.message}`);
           return {
@@ -148,7 +151,7 @@ class MongoDBService extends DatabaseService {
 
       // Build connection information with proper TLS options
       const domain = `${agentId}.${this.mongoDomain}`;
-      
+
       // Cache the connection info with expiration timestamp
       const now = new Date().toISOString();
       this.connectionCache.set(agentId, {
@@ -159,10 +162,12 @@ class MongoDBService extends DatabaseService {
         useTls,
         routingService: "traefik",
         lastUpdated: now,
-        created: now
+        created: now,
       });
 
-      logger.info(`MongoDB agent ${agentId} registered successfully using Traefik`);
+      logger.info(
+        `MongoDB agent ${agentId} registered successfully using Traefik`
+      );
 
       return {
         success: true,
@@ -172,7 +177,7 @@ class MongoDBService extends DatabaseService {
         targetPort,
         domain,
         mongodbUrl: `mongodb://${domain}:27017`,
-        routingService: "traefik"
+        routingService: "traefik",
       };
     } catch (error) {
       logger.error(`Error registering MongoDB agent: ${error.message}`, {
@@ -296,7 +301,7 @@ class MongoDBService extends DatabaseService {
       const result = {
         success: false,
         direct: { success: false },
-        proxy: { success: false }
+        proxy: { success: false },
       };
 
       // First test direct connection
@@ -320,16 +325,18 @@ class MongoDBService extends DatabaseService {
         result.direct = {
           success: true,
           serverVersion: serverInfo.version,
-          uptime: serverInfo.uptime
+          uptime: serverInfo.uptime,
         };
-        
+
         // Set overall success to true if direct connection succeeds
         result.success = true;
       } catch (directError) {
-        logger.error(`Direct MongoDB connection failed: ${directError.message}`);
+        logger.error(
+          `Direct MongoDB connection failed: ${directError.message}`
+        );
         result.direct = {
           success: false,
-          error: directError.message
+          error: directError.message,
         };
       } finally {
         if (directClient) {
@@ -343,43 +350,53 @@ class MongoDBService extends DatabaseService {
           // Create a test connection string with anonymous credentials
           // This just tests TCP connectivity, not actual authentication
           let proxyUrl = `mongodb://anon:anon@${connectionInfo.domain}:27017/admin?authSource=admin`;
-          
+
           // Add TLS options if needed
           if (connectionInfo.useTls) {
             proxyUrl += "&tls=true&tlsAllowInvalidCertificates=true";
           }
-          
-          logger.debug(`Attempting proxy connection to ${proxyUrl.replace(/anon:anon/, "anon:***")}`);
+
+          logger.debug(
+            `Attempting proxy connection to ${proxyUrl.replace(
+              /anon:anon/,
+              "anon:***"
+            )}`
+          );
 
           proxyClient = new MongoClient(proxyUrl, {
             connectTimeoutMS: 5000,
             serverSelectionTimeoutMS: 5000,
           });
-          
+
           // Just attempt to connect - we expect auth to fail but TCP connection to succeed
           await proxyClient.connect();
-          
+
           // If we somehow get here without error, connection worked (unlikely with dummy credentials)
           result.proxy = {
             success: true,
-            message: "Proxy connection successful - TCP connectivity verified"
+            message: "Proxy connection successful - TCP connectivity verified",
           };
         } catch (proxyError) {
           // Check if it's an authentication error (which means routing works)
-          if (proxyError.message.includes("Authentication failed") || 
-              proxyError.code === 18 || // AuthenticationFailed code
-              proxyError.message.includes("not authorized")) {
+          if (
+            proxyError.message.includes("Authentication failed") ||
+            proxyError.code === 18 || // AuthenticationFailed code
+            proxyError.message.includes("not authorized")
+          ) {
             // Auth failed but TCP connection succeeded - this is actually good!
             result.proxy = {
               success: true,
-              message: "Proxy routing verified (auth failed but TCP connection succeeded)"
+              message:
+                "Proxy routing verified (auth failed but TCP connection succeeded)",
             };
           } else {
             // This is a real connection failure
-            logger.error(`Proxy MongoDB connection failed: ${proxyError.message}`);
+            logger.error(
+              `Proxy MongoDB connection failed: ${proxyError.message}`
+            );
             result.proxy = {
               success: false,
-              error: proxyError.message
+              error: proxyError.message,
             };
           }
         } finally {
@@ -390,17 +407,21 @@ class MongoDBService extends DatabaseService {
       } else {
         result.proxy = {
           success: null,
-          message: "Proxy connection test skipped - insufficient connection information"
+          message:
+            "Proxy connection test skipped - insufficient connection information",
         };
       }
 
       // Set overall success - successful if either direct or proxy connection worked
-      result.success = result.direct.success || (result.proxy && result.proxy.success);
-      
+      result.success =
+        result.direct.success || (result.proxy && result.proxy.success);
+
       if (result.success) {
-        result.message = "MongoDB connection test partially or fully successful";
+        result.message =
+          "MongoDB connection test partially or fully successful";
       } else {
-        result.error = "MongoDB connection test failed for both direct and proxy connections";
+        result.error =
+          "MongoDB connection test failed for both direct and proxy connections";
       }
 
       return result;

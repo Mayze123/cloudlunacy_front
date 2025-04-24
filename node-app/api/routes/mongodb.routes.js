@@ -83,6 +83,49 @@ router.post(
 
 /**
  * @swagger
+ * /api/mongodb/test-register:
+ *   post:
+ *     summary: TEST ONLY - Register a MongoDB instance without authentication
+ *     description: For testing purposes only - Registers a MongoDB instance without requiring authentication
+ *     tags: [MongoDB, Testing]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - agentId
+ *               - targetIp
+ *             properties:
+ *               agentId:
+ *                 type: string
+ *                 description: ID of the agent registering its MongoDB
+ *                 example: "test-mongo-agent"
+ *               targetIp:
+ *                 type: string
+ *                 description: IP address of the MongoDB server
+ *                 example: "127.0.0.1"
+ *               targetPort:
+ *                 type: number
+ *                 description: Port number of the MongoDB server
+ *                 default: 27017
+ *               useTls:
+ *                 type: boolean
+ *                 description: Whether to use TLS for MongoDB connections
+ *                 default: false
+ *     responses:
+ *       200:
+ *         description: MongoDB successfully registered
+ *       400:
+ *         description: Missing required parameters
+ *       500:
+ *         description: Internal server error
+ */
+router.post("/test-register", mongodbController.registerMongoDB);
+
+/**
+ * @swagger
  * /api/mongodb:
  *   get:
  *     summary: List all MongoDB subdomains
@@ -119,11 +162,7 @@ router.post(
  *       500:
  *         description: Internal server error
  */
-router.get(
-  "/",
-  authMiddleware.requireAuth,
-  mongodbController.listSubdomains
-);
+router.get("/", authMiddleware.requireAuth, mongodbController.listSubdomains);
 
 /**
  * @swagger
@@ -228,6 +267,31 @@ router.get(
   authMiddleware.requireAgentAccess(),
   mongodbController.testConnection
 );
+
+/**
+ * @swagger
+ * /api/mongodb/test/{agentId}:
+ *   get:
+ *     summary: TEST ONLY - Test MongoDB connectivity without authentication
+ *     description: For testing purposes only - Tests connectivity to a MongoDB instance without requiring authentication
+ *     tags: [MongoDB, Testing]
+ *     parameters:
+ *       - in: path
+ *         name: agentId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: ID of the agent to test MongoDB connectivity
+ *         example: "test-mongo-agent"
+ *     responses:
+ *       200:
+ *         description: Test results returned
+ *       404:
+ *         description: Agent not found
+ *       500:
+ *         description: Internal server error
+ */
+router.get("/test/:agentId", mongodbController.testConnection);
 
 /**
  * @swagger
