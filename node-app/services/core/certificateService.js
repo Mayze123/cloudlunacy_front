@@ -368,13 +368,13 @@ DNS.2 = *.${mongoSubdomain}
 
             // Sign certificate with CA
             // Determine CA serial option: fallback to local serial file if certsDir is read-only
-            let caSerialOption = '-CAcreateserial';
+            let caSerialOption = "-CAcreateserial";
             if (agentCertDir.startsWith(this.localCertsDir)) {
-              const localSerial = path.join(this.localCertsDir, 'ca.srl');
+              const localSerial = path.join(this.localCertsDir, "ca.srl");
               try {
                 await fs.access(localSerial);
               } catch {
-                await fs.writeFile(localSerial, '01');
+                await fs.writeFile(localSerial, "01");
               }
               caSerialOption = `-CAserial ${localSerial}`;
             }
