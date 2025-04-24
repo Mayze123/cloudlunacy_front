@@ -367,8 +367,19 @@ DNS.2 = *.${mongoSubdomain}
             );
 
             // Sign certificate with CA
+            // Determine CA serial option: fallback to local serial file if certsDir is read-only
+            let caSerialOption = '-CAcreateserial';
+            if (agentCertDir.startsWith(this.localCertsDir)) {
+              const localSerial = path.join(this.localCertsDir, 'ca.srl');
+              try {
+                await fs.access(localSerial);
+              } catch {
+                await fs.writeFile(localSerial, '01');
+              }
+              caSerialOption = `-CAserial ${localSerial}`;
+            }
             execSync(
-              `openssl x509 -req -in ${csrPath} -CA ${this.caCertPath} -CAkey ${this.caKeyPath} -CAcreateserial -out ${tempCertPath} -days 365 -extensions v3_req -extfile ${configPath}`
+              `openssl x509 -req -in ${csrPath} -CA ${this.caCertPath} -CAkey ${this.caKeyPath} ${caSerialOption} -out ${tempCertPath} -days 365 -extensions v3_req -extfile ${configPath}`
             );
 
             // Create combined PEM file for HAProxy
