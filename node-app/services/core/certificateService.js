@@ -48,11 +48,6 @@ class CertificateService {
     this.traefikApiUrl =
       process.env.TRAEFIK_API_URL || "http://localhost:8080/api";
 
-    // Legacy Data Plane API configuration (kept for backward compatibility)
-    this.apiBaseUrl = process.env.HAPROXY_API_URL || "http://localhost:5555/v3";
-    this.apiUsername = process.env.HAPROXY_API_USER || "admin";
-    this.apiPassword = process.env.HAPROXY_API_PASS || "admin";
-
     // Initialize certificate provider using factory
     const providerType = process.env.CERT_PROVIDER_TYPE || "self-signed";
     this.provider = this._createProvider(providerType);
@@ -241,7 +236,7 @@ class CertificateService {
   }
 
   /**
-   * Create certificate for an agent and update HAProxy via Data Plane API
+   * Create certificate for an agent
    * @param {string} agentId - Agent ID
    * @param {string} targetIp - Target IP address
    * @returns {Promise<Object>} Result with certificate paths
@@ -310,18 +305,8 @@ class CertificateService {
             // IPv4 validation
             const ipv4Regex =
               /^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
-
-            // IPv6 validation (simplified)
-            const ipv6Regex =
-              /^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$|^::1$|^::$|^([0-9a-fA-F]{1,4}:){0,6}::([0-9a-fA-F]{1,4}:){0,6}[0-9a-fA-F]{1,4}$/;
-
-            return ipv4Regex.test(ip) || ipv6Regex.test(ip);
+            return ipv4Regex.test(ip);
           };
-
-          // Log the target IP for debugging
-          logger.debug(
-            `Certificate generation for ${agentId} with targetIp: ${targetIp}`
-          );
 
           // Create OpenSSL configuration with proper IP handling
           let opensslConfig = `
@@ -340,23 +325,14 @@ subjectAltName = @alt_names
 
 [alt_names]
 DNS.1 = ${mongoSubdomain}
-DNS.2 = *.${mongoSubdomain}
+DNS.2 = localhost
 `;
 
-          // Only add the IP as DNS.3 if it's not a valid IP address
-          if (!isValidIP(targetIp)) {
-            opensslConfig += `DNS.3 = ${targetIp || "localhost"}\n`;
-          } else {
-            opensslConfig += `DNS.3 = localhost\n`;
-          }
-
-          // Only add IP.1 if targetIp is actually a valid IP address
+          // Add IP address if valid
           if (isValidIP(targetIp)) {
             opensslConfig += `IP.1 = ${targetIp}\n`;
-          } else {
-            // Fallback to localhost if the provided targetIp is not a valid IP
-            opensslConfig += `IP.1 = 127.0.0.1\n`;
           }
+          opensslConfig += `IP.2 = 127.0.0.1\n`;
 
           // Write OpenSSL configuration
           await fs.writeFile(configPath, opensslConfig);
@@ -412,41 +388,53 @@ DNS.2 = *.${mongoSubdomain}
             effectiveCaKeyPath = this.localCaKeyPath;
           }
 
-// If neither originals nor local copies are accessible, try to create new ones
+          // If neither originals nor local copies are accessible, try to create new ones
           if (!originalFilesAccessible && !localCopiesExist) {
             try {
-              logger.warn("Cannot access CA files, creating temporary CA certificates");
-              
+              logger.warn(
+                "Cannot access CA files, creating temporary CA certificates"
+              );
+
               // Generate a temporary CA key and certificate
-              await fs.mkdir(path.dirname(this.localCaKeyPath), { recursive: true });
-              
+              await fs.mkdir(path.dirname(this.localCaKeyPath), {
+                recursive: true,
+              });
+
               // Generate CA private key
               execSync(`openssl genrsa -out ${this.localCaKeyPath} 2048`);
-              
+
               // Generate CA certificate
               execSync(
                 `openssl req -x509 -new -nodes -key ${this.localCaKeyPath} -sha256 -days 3650 -out ${this.localCaCertPath} -subj "/CN=CloudLunacy Temp CA/O=CloudLunacy/C=UK"`
               );
-              
+
               // Set proper permissions
               await fs.chmod(this.localCaKeyPath, 0o600);
               await fs.chmod(this.localCaCertPath, 0o644);
-              
-              logger.info("Temporary CA certificate and key generated successfully");
-              
+
+              logger.info(
+                "Temporary CA certificate and key generated successfully"
+              );
+
               // Use the temporary CA files for certificate generation
               effectiveCaCertPath = this.localCaCertPath;
               effectiveCaKeyPath = this.localCaKeyPath;
               localCopiesExist = true;
             } catch (genErr) {
-              logger.error(`Failed to generate temporary CA: ${genErr.message}`);
-              throw new Error("Cannot access CA files and failed to create temporary CA");
+              logger.error(
+                `Failed to generate temporary CA: ${genErr.message}`
+              );
+              throw new Error(
+                "Cannot access CA files and failed to create temporary CA"
+              );
             }
           }
-          
+
           // If we still don't have usable CA files, throw error
           if (!originalFilesAccessible && !localCopiesExist) {
-            throw new Error("Cannot access CA files and no fallback copies exist");
+            throw new Error(
+              "Cannot access CA files and no fallback copies exist"
+            );
           }
 
           try {
@@ -474,7 +462,7 @@ DNS.2 = *.${mongoSubdomain}
               `openssl x509 -req -in ${csrPath} -CA ${effectiveCaCertPath} -CAkey ${effectiveCaKeyPath} ${caSerialOption} -out ${tempCertPath} -days 365 -extensions v3_req -extfile ${configPath}`
             );
 
-            // Create combined PEM file for HAProxy
+            // Create combined PEM file
             const certContent = await fs.readFile(tempCertPath, "utf8");
             const keyContent = await fs.readFile(tempKeyPath, "utf8");
             const pemContent = certContent + keyContent;
@@ -490,14 +478,7 @@ DNS.2 = *.${mongoSubdomain}
             await fs.rename(tempCertPath, certPath);
             await fs.rename(tempPemPath, pemPath);
 
-            // Copy certificates to HAProxy directory
-            const updateResult = await this.updateHAProxyCertificates(
-              agentId,
-              certPath,
-              keyPath,
-              pemPath
-            );
-
+            // Certificate created successfully
             logger.info(`Certificate created for agent ${agentId}`);
             return {
               success: true,
@@ -505,7 +486,6 @@ DNS.2 = *.${mongoSubdomain}
               certPath,
               pemPath,
               caPath: this.caCertPath,
-              haproxyUpdated: updateResult.success,
             };
           } catch (err) {
             // Clean up temporary files if they exist
@@ -645,159 +625,6 @@ DNS.2 = *.${mongoSubdomain}
         `Failed to get agent certificates for ${agentId}: ${err.message}`
       );
       throw err;
-    }
-  }
-
-  /**
-   * Reload HAProxy to apply certificate changes
-   * @returns {Promise<Object>} Result of the operation
-   */
-  async reloadHAProxy() {
-    let lock = null;
-    // Use lock to prevent multiple simultaneous reloads
-    try {
-      lock = await FileLock.acquire(HAPROXY_RELOAD_LOCK, 10000);
-
-      if (!lock.success) {
-        logger.info(
-          "HAProxy reload already in progress, skipping duplicate reload"
-        );
-        return {
-          success: true,
-          message: "HAProxy reload already in progress by another process",
-        };
-      }
-
-      try {
-        logger.info("Reloading HAProxy to apply certificate changes");
-
-        // Create a function to retry with both methods
-        const reloadWithRetries = async () => {
-          // First try using Docker command
-          try {
-            const haproxyContainer = process.env.HAPROXY_CONTAINER || "haproxy";
-            const execTimeout = 15000; // 15-second timeout for Docker commands
-
-            // Validate configuration before reloading
-            try {
-              // Use promises with timeout to avoid hanging
-              await Promise.race([
-                execAsync(
-                  `docker exec ${haproxyContainer} haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg`
-                ),
-                new Promise((_, reject) =>
-                  setTimeout(
-                    () =>
-                      reject(
-                        new Error(
-                          "Docker exec command timed out after 15 seconds"
-                        )
-                      ),
-                    execTimeout
-                  )
-                ),
-              ]);
-
-              logger.info("HAProxy configuration validated successfully");
-            } catch (validationErr) {
-              logger.error(
-                `HAProxy configuration validation failed: ${validationErr.message}`
-              );
-              throw new Error(
-                `Invalid HAProxy configuration: ${validationErr.message}`
-              );
-            }
-
-            // Reload HAProxy with timeout
-            await Promise.race([
-              execAsync(
-                `docker exec ${haproxyContainer} service haproxy reload`
-              ),
-              new Promise((_, reject) =>
-                setTimeout(
-                  () =>
-                    reject(
-                      new Error(
-                        "HAProxy reload command timed out after 15 seconds"
-                      )
-                    ),
-                  execTimeout
-                )
-              ),
-            ]);
-
-            // Verify that HAProxy is still running after reload with timeout
-            const { stdout } = await Promise.race([
-              execAsync(`docker ps -q -f name=${haproxyContainer}`),
-              new Promise((_, reject) =>
-                setTimeout(
-                  () =>
-                    reject(
-                      new Error("Docker ps command timed out after 15 seconds")
-                    ),
-                  execTimeout
-                )
-              ),
-            ]);
-
-            if (!stdout.trim()) {
-              throw new Error("HAProxy is not running after reload attempt");
-            }
-
-            logger.info("HAProxy reloaded successfully via Docker command");
-            return { success: true, message: "HAProxy reloaded successfully" };
-          } catch (dockerErr) {
-            logger.warn(
-              `Failed to reload HAProxy via Docker: ${dockerErr.message}`
-            );
-
-            // Fallback to Data Plane API
-            try {
-              const client = this._getApiClient();
-              await client.post("/services/haproxy/reload");
-              logger.info("HAProxy reloaded successfully via Data Plane API");
-              return {
-                success: true,
-                message: "HAProxy reloaded successfully via API",
-              };
-            } catch (apiErr) {
-              logger.error(
-                `Failed to reload HAProxy via API: ${apiErr.message}`
-              );
-              throw apiErr;
-            }
-          }
-        };
-
-        // Use the retry handler to retry the reload operation
-        return await retryHandler.withRetry(reloadWithRetries, {
-          maxAttempts: MAX_RETRY_ATTEMPTS,
-          retryDelay: RETRY_DELAY_MS,
-          onRetry: (error, attempt) => {
-            logger.warn(
-              `Retry ${attempt}/${MAX_RETRY_ATTEMPTS} reloading HAProxy: ${error.message}`
-            );
-          },
-        });
-      } finally {
-        // Always release the lock when done, but check if it exists and has release method first
-        if (lock && typeof lock.release === "function") {
-          await lock.release();
-        }
-      }
-    } catch (err) {
-      logger.error(`Failed to reload HAProxy: ${err.message}`);
-      // Final attempt to release the lock if it exists
-      if (lock && typeof lock.release === "function") {
-        try {
-          await lock.release();
-        } catch (releaseErr) {
-          logger.warn(
-            `Failed to release HAProxy reload lock: ${releaseErr.message}`
-          );
-        }
-      }
-      return { success: false, error: err.message };
     }
   }
 
@@ -1038,205 +865,6 @@ DNS.2 = *.${mongoSubdomain}
     }
   }
 
-  async updateHAProxyCertificates(agentId, certPath, keyPath, pemPath) {
-    // Use a lock to prevent concurrent updates to the certificate list
-    const certificateListLock = `${CERTIFICATE_LIST_LOCK}`;
-
-    try {
-      logger.info(`Updating HAProxy certificates for agent ${agentId}`);
-
-      // Ensure minimal certificate exists first for HAProxy startup
-      await this.ensureMinimalCertificate();
-
-      // Use the host paths instead of container paths
-      const hostCertsDir = this.certsDir;
-      const mongodbCertsDir = path.join(hostCertsDir, "mongodb");
-      const certListPath = path.join(hostCertsDir, "mongodb-certs.list");
-      const singleCertPath = path.join(hostCertsDir, "mongodb.pem");
-      const tempPemPath = path.join(hostCertsDir, `.${agentId}.temp.pem`);
-
-      try {
-        // Create directories if they don't exist
-        await fs.mkdir(hostCertsDir, { recursive: true });
-        await fs.mkdir(path.join(hostCertsDir, "private"), { recursive: true });
-
-        // Create a temporary file first, then move atomically to avoid race conditions
-        // Even though we have locking, this adds an extra layer of protection
-        await fs.copyFile(pemPath, tempPemPath);
-        await fs.chmod(tempPemPath, 0o600);
-
-        // This is a critical section that modifies shared resources - use lock
-        return await FileLock.withLock(
-          certificateListLock,
-          async () => {
-            // Always ensure the single certificate is updated (for backward compatibility)
-            // This will be available in the container at /etc/ssl/certs/mongodb.pem
-            await fs.rename(tempPemPath, singleCertPath);
-            logger.info(
-              `Updated single certificate at ${singleCertPath} for backward compatibility`
-            );
-
-            // Try to upgrade to the multi-certificate structure if possible
-            try {
-              // Create mongodb directory if it doesn't exist
-              await fs.mkdir(mongodbCertsDir, { recursive: true });
-
-              // Define agent-specific filenames
-              const agentPemPath = path.join(mongodbCertsDir, `${agentId}.pem`);
-              const agentTempPemPath = path.join(
-                mongodbCertsDir,
-                `.${agentId}.temp.pem`
-              );
-
-              // Copy PEM file to agent-specific location using atomic rename
-              await fs.copyFile(pemPath, agentTempPemPath);
-              await fs.chmod(agentTempPemPath, 0o600);
-              await fs.rename(agentTempPemPath, agentPemPath);
-
-              // Also maintain backwards compatibility with individual cert/key files
-              const certsFilename = `${agentId}-mongodb.crt`;
-              const keyFilename = `${agentId}-mongodb.key`;
-              const targetCertPath = path.join(hostCertsDir, certsFilename);
-              const targetKeyPath = path.join(
-                hostCertsDir,
-                "private",
-                keyFilename
-              );
-              const tempCertPath = path.join(
-                hostCertsDir,
-                `.${certsFilename}.temp`
-              );
-              const tempKeyPath = path.join(
-                hostCertsDir,
-                "private",
-                `.${keyFilename}.temp`
-              );
-
-              // Copy with atomic rename operations
-              await fs.copyFile(certPath, tempCertPath);
-              await fs.copyFile(keyPath, tempKeyPath);
-              await fs.chmod(tempCertPath, 0o644);
-              await fs.chmod(tempKeyPath, 0o600);
-              await fs.rename(tempCertPath, targetCertPath);
-              await fs.rename(tempKeyPath, targetKeyPath);
-
-              logger.info(
-                `Copied certificates to host directories for agent ${agentId}`
-              );
-
-              // Add entry to certificate list file
-              // Make sure to use container path in the list entry since HAProxy will read it there
-              const containerAgentPemPath = `/etc/ssl/certs/mongodb/${agentId}.pem`;
-              const certListEntry = `${containerAgentPemPath} ${agentId}.${this.mongoDomain}\n`;
-
-              try {
-                // Check if certificate list file exists and if entry is already present
-                let currentList = "";
-                let listExists = false;
-
-                try {
-                  currentList = await fs.readFile(certListPath, "utf-8");
-                  listExists = true;
-                } catch {
-                  // File doesn't exist, will create a new one
-                  logger.info(
-                    `Certificate list file doesn't exist, creating a new one at ${certListPath}`
-                  );
-                  // Initialize with header
-                  currentList =
-                    "# HAProxy Certificate List for MongoDB\n# Format: <path> <SNI>\n\n";
-                }
-
-                if (!currentList.includes(certListEntry)) {
-                  // Append the new entry to the list - write to temp first then rename for atomicity
-                  const tempListPath = `${certListPath}.tmp`;
-                  await fs.writeFile(tempListPath, currentList + certListEntry);
-                  await fs.chmod(tempListPath, 0o644);
-                  await fs.rename(tempListPath, certListPath);
-                  logger.info(
-                    `Added agent ${agentId} certificate to the certificate list`
-                  );
-                } else {
-                  logger.info(
-                    `Certificate for agent ${agentId} already in certificate list`
-                  );
-                }
-
-                // If we've successfully set up the certificate list, we should also check if we need to update HAProxy config
-                if (!listExists) {
-                  try {
-                    logger.info(
-                      "Successfully created certificate list for future use"
-                    );
-                    // In the future, we can automatically update HAProxy config to use the certificate list
-                  } catch (configErr) {
-                    logger.warn(
-                      `Failed to prepare for future certificate list usage: ${configErr.message}`
-                    );
-                  }
-                }
-              } catch (listErr) {
-                logger.error(
-                  `Failed to update certificate list file: ${listErr.message}`
-                );
-                logger.info("Continuing with single certificate approach");
-              }
-            } catch (multiCertErr) {
-              logger.warn(
-                `Failed to set up multi-certificate structure: ${multiCertErr.message}`
-              );
-              logger.info("Continuing with single certificate approach");
-            }
-
-            // Reload HAProxy to apply certificate changes - this works for both approaches
-            const reloadResult = await this.reloadHAProxy();
-
-            // Update HAProxy configuration via Data Plane API
-            const apiResult = await this.updateHAProxyTlsConfig(
-              agentId,
-              pemPath
-            );
-
-            return {
-              success: reloadResult.success && apiResult.success,
-              reloadResult,
-              apiResult,
-              message: `Certificate updates applied for agent ${agentId}`,
-            };
-          },
-          60000
-        ); // 20 second timeout for the lock
-      } catch (copyErr) {
-        // Clean up temporary file if it exists
-        try {
-          await fs.unlink(tempPemPath).catch(() => {});
-        } catch (cleanupErr) {
-          logger.debug(`Failed to clean up temp file: ${cleanupErr.message}`);
-        }
-
-        logger.warn(
-          `Failed to copy certificates to system locations: ${copyErr.message}`
-        );
-        // Even if copying to system locations fails, try to update HAProxy via the API
-        return this.updateHAProxyTlsConfig(agentId, pemPath);
-      }
-    } catch (err) {
-      if (err.message.includes("Could not acquire lock")) {
-        logger.warn(
-          `Certificate list is being updated by another process. Will retry later for agent ${agentId}`
-        );
-        return {
-          success: false,
-          error: "Certificate system is busy. Please try again shortly.",
-          transient: true,
-        };
-      }
-
-      logger.error(`Failed to update HAProxy certificates: ${err.message}`);
-      throw err;
-    }
-  }
-
   /**
    * Update certificates in Traefik
    * @param {string} agentId - The agent ID
@@ -1320,242 +948,6 @@ DNS.2 = *.${mongoSubdomain}
         error: err.message,
       };
     }
-  }
-
-  /**
-   * Update HAProxy TLS configuration via Data Plane API
-   * @param {string} agentId - Agent ID
-   * @param {string} pemPath - Path to PEM file
-   * @returns {Promise<Object>} Result of the operation
-   */
-  async updateHAProxyTlsConfig(agentId, pemPath) {
-    // Use retry handler for the entire operation
-    return await retryHandler
-      .withRetry(
-        async () => {
-          let transactionId = null;
-
-          try {
-            const client = this._getApiClient();
-
-            // Start a transaction
-            const transactionResponse = await client.post(
-              "/services/haproxy/transactions"
-            );
-            transactionId = transactionResponse.data.id;
-
-            logger.info(
-              `Started HAProxy transaction ${transactionId} for TLS config update for agent ${agentId}`
-            );
-
-            // Update MongoDB backend SSL configuration
-            try {
-              // Create or update SSL certificate store for MongoDB
-              const certStoreName = `mongodb_${agentId}_certs`;
-
-              // Check if certificate store exists
-              let certStoreExists = false;
-              try {
-                await client.get(
-                  `/services/haproxy/configuration/certificate_stores/${certStoreName}?transaction_id=${transactionId}`
-                );
-                certStoreExists = true;
-              } catch (err) {
-                if (err.response && err.response.status === 404) {
-                  certStoreExists = false;
-                } else {
-                  // Re-throw unexpected errors
-                  throw err;
-                }
-              }
-
-              // Create or update certificate store
-              if (certStoreExists) {
-                await client.put(
-                  `/services/haproxy/configuration/certificate_stores/${certStoreName}?transaction_id=${transactionId}`,
-                  {
-                    crt_list: pemPath,
-                  }
-                );
-                logger.debug(
-                  `Updated existing certificate store ${certStoreName}`
-                );
-              } else {
-                await client.post(
-                  `/services/haproxy/configuration/certificate_stores?transaction_id=${transactionId}`,
-                  {
-                    name: certStoreName,
-                    crt_list: pemPath,
-                  }
-                );
-                logger.debug(`Created new certificate store ${certStoreName}`);
-              }
-
-              // Set SSL configuration on the backend for the agent
-              const backendName = `${agentId}-mongodb-backend`;
-
-              // Check if backend exists
-              let backendExists = false;
-              try {
-                await client.get(
-                  `/services/haproxy/configuration/backends/${backendName}?transaction_id=${transactionId}`
-                );
-                backendExists = true;
-              } catch (err) {
-                if (err.response && err.response.status === 404) {
-                  backendExists = false;
-                } else {
-                  // Re-throw unexpected errors
-                  throw err;
-                }
-              }
-
-              // Update backend SSL configuration only if it exists
-              // We don't create it here as that's handled by HAProxyService
-              if (backendExists) {
-                await client.put(
-                  `/services/haproxy/configuration/backends/${backendName}?transaction_id=${transactionId}`,
-                  {
-                    ssl: {
-                      enabled: true,
-                      verify: "none",
-                      ca_file: this.caCertPath,
-                      crt_list: pemPath,
-                    },
-                  }
-                );
-                logger.debug(`Updated SSL config for backend ${backendName}`);
-              } else {
-                logger.info(
-                  `Backend ${backendName} doesn't exist yet, skipping SSL configuration`
-                );
-              }
-
-              // Verify the transaction changes before committing
-              try {
-                const changes = await client.get(
-                  `/services/haproxy/transactions/${transactionId}`
-                );
-                const changeCount = changes.data.version || 0;
-
-                if (changeCount === 0) {
-                  logger.info(
-                    `No changes detected in transaction ${transactionId}, skipping commit`
-                  );
-
-                  // Delete the empty transaction
-                  await client.delete(
-                    `/services/haproxy/transactions/${transactionId}`
-                  );
-                  transactionId = null;
-
-                  return {
-                    success: true,
-                    message: `No changes needed to HAProxy TLS configuration for agent ${agentId}`,
-                  };
-                }
-
-                logger.info(
-                  `Committing transaction ${transactionId} with ${changeCount} changes`
-                );
-              } catch (err) {
-                logger.warn(
-                  `Error checking transaction changes: ${err.message}`
-                );
-                // Continue with commit anyway
-              }
-
-              // Commit the transaction
-              await client.put(
-                `/services/haproxy/transactions/${transactionId}`
-              );
-              logger.info(
-                `Committed HAProxy transaction ${transactionId} for TLS config update for agent ${agentId}`
-              );
-
-              // Transaction committed successfully, set to null to prevent cleanup
-              transactionId = null;
-
-              return {
-                success: true,
-                message: `Updated HAProxy TLS configuration for agent ${agentId}`,
-              };
-            } catch (err) {
-              throw err;
-            }
-          } catch (err) {
-            // Clean up transaction if it exists and wasn't committed
-            if (transactionId) {
-              try {
-                const client = this._getApiClient();
-                await client.delete(
-                  `/services/haproxy/transactions/${transactionId}`
-                );
-                logger.warn(
-                  `Deleted HAProxy transaction ${transactionId} due to error`
-                );
-              } catch (deleteErr) {
-                logger.error(
-                  `Failed to delete HAProxy transaction ${transactionId}: ${deleteErr.message}`
-                );
-              }
-            }
-
-            logger.error(
-              `Failed to update HAProxy TLS config for agent ${agentId}: ${err.message}`,
-              {
-                error: err.message,
-                stack: err.stack,
-              }
-            );
-
-            // Determine if error is retryable
-            const isRetryable =
-              // Network errors
-              err.code === "ECONNREFUSED" ||
-              err.code === "ECONNRESET" ||
-              err.code === "ETIMEDOUT" ||
-              // HTTP 5xx errors
-              (err.response && err.response.status >= 500) ||
-              // HTTP 429 rate limit errors
-              (err.response && err.response.status === 429);
-
-            if (!isRetryable) {
-              // Don't retry for client errors or other non-transient issues
-              throw err;
-            }
-
-            // Throw the error to trigger a retry if appropriate
-            throw err;
-          }
-        },
-        {
-          maxAttempts: MAX_RETRY_ATTEMPTS,
-          retryDelay: RETRY_DELAY_MS,
-          onRetry: (error, attempt) => {
-            logger.warn(
-              `Retry ${attempt}/${MAX_RETRY_ATTEMPTS} updating HAProxy TLS config for agent ${agentId}: ${error.message}`
-            );
-          },
-          shouldRetry: (error) => {
-            // Retry on network errors or server errors (5xx)
-            return (
-              error.code === "ECONNREFUSED" ||
-              error.code === "ECONNRESET" ||
-              error.code === "ETIMEDOUT" ||
-              (error.response && error.response.status >= 500) ||
-              (error.response && error.response.status === 429)
-            );
-          },
-        }
-      )
-      .catch((err) => {
-        // Fallback error handling if retries fail
-        return {
-          success: false,
-          error: err.message,
-        };
-      });
   }
 
   /**
