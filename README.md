@@ -1,6 +1,6 @@
 # CloudLunacy Front Server
 
-A robust platform for dynamically managing HAProxy routing rules for MongoDB instances and applications with full TLS/SSL encryption support.
+A robust platform for dynamically managing Traefik routing rules for MongoDB instances and applications with full TLS/SSL encryption support.
 
 ## Table of Contents
 
@@ -12,7 +12,7 @@ A robust platform for dynamically managing HAProxy routing rules for MongoDB ins
   - [Manual Installation](#manual-installation)
 - [Configuration](#configuration)
   - [Environment Variables](#environment-variables)
-  - [HAProxy Configuration](#haproxy-configuration)
+  - [Traefik Configuration](#traefik-configuration)
   - [MongoDB Configuration](#mongodb-configuration)
 - [SSL Certificate Management](#ssl-certificate-management)
   - [Automatic SSL with Let's Encrypt](#automatic-ssl-with-lets-encrypt)
@@ -26,7 +26,7 @@ A robust platform for dynamically managing HAProxy routing rules for MongoDB ins
   - [Backup and Restore](#backup-and-restore)
   - [Updating](#updating)
 - [Monitoring](#monitoring)
-  - [HAProxy Statistics](#haproxy-statistics)
+  - [Traefik Dashboard](#traefik-dashboard)
   - [Logging](#logging)
 - [Troubleshooting](#troubleshooting)
   - [Common Issues](#common-issues)
@@ -38,11 +38,11 @@ A robust platform for dynamically managing HAProxy routing rules for MongoDB ins
 
 ## Overview
 
-CloudLunacy Front Server is a comprehensive solution for managing dynamic routing to MongoDB instances and applications. It uses HAProxy as a reverse proxy, providing TLS encryption, load balancing, and high availability. The system automatically manages SSL certificates, agent registration, and health monitoring.
+CloudLunacy Front Server is a comprehensive solution for managing dynamic routing to MongoDB instances and applications. It uses Traefik as a reverse proxy, providing TLS encryption, load balancing, and high availability. The system automatically manages SSL certificates, agent registration, and health monitoring.
 
 ## Features
 
-- **Dynamic Routing:** Automatically updates HAProxy's configuration to add new subdomain routes
+- **Dynamic Routing:** Automatically updates Traefik's configuration to add new subdomain routes
 - **Agent Management:** Handles registration and authentication of agents that connect to the system
 - **MongoDB Management:** Configures and manages MongoDB instances with TLS/SSL support
 - **Certificate Management:** Generates and manages TLS certificates for secure communications
@@ -50,7 +50,7 @@ CloudLunacy Front Server is a comprehensive solution for managing dynamic routin
 - **Secure API:** Provides authenticated endpoints with role-based access control
 - **Health Monitoring:** Includes comprehensive health checks and self-healing capabilities
 - **Docker Integration:** Works seamlessly with Docker and Docker Compose environments
-- **Hot-Reload:** Leverages HAProxy's Data Plane API to apply configuration changes without requiring restarts
+- **Hot-Reload:** Leverages Traefik's dynamic configuration to apply changes without requiring restarts
 
 ## Prerequisites
 
@@ -125,7 +125,6 @@ cp .env.example .env
 nano .env  # Edit with your settings
 
 # 3. Create networks
-docker network create haproxy-network
 docker network create cloudlunacy-network
 
 # 4. Start the services
@@ -154,27 +153,21 @@ CF_ZONE_API_TOKEN=your_cloudflare_zone_api_token
 
 # Optional settings
 LOG_LEVEL=info                     # Logging level (debug, info, warn, error)
-HAPROXY_COMPOSE_PATH=/opt/haproxy/docker-compose.yml
-
-# HAProxy Data Plane API settings
-HAPROXY_API_URL=http://haproxy:5555/v2
-HAPROXY_API_USER=admin
-HAPROXY_API_PASS=admin
 ```
 
-### HAProxy Configuration
+### Traefik Configuration
 
-The main HAProxy configuration is at `/opt/cloudlunacy_front/config/haproxy/haproxy.cfg`. The system manages this file automatically, but you can make manual adjustments if needed:
+The main Traefik configuration is at `/opt/cloudlunacy_front/config/traefik/traefik.yml`. The system manages this file automatically, but you can make manual adjustments if needed:
 
 ```bash
-# Edit HAProxy configuration
-nano /opt/cloudlunacy_front/config/haproxy/haproxy.cfg
+# Edit Traefik configuration
+nano /opt/cloudlunacy_front/config/traefik/traefik.yml
 
 # Check configuration validity
-docker exec haproxy haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
+docker exec traefik traefik healthcheck
 
-# Apply changes
-docker kill -s HUP haproxy
+# Apply changes automatically
+# Traefik will detect changes and reload automatically
 ```
 
 ### MongoDB Configuration
@@ -238,10 +231,7 @@ If you prefer to manage certificates manually:
    chmod 600 /opt/cloudlunacy_front/config/certs/*.pem
    ```
 
-3. Reload HAProxy:
-   ```bash
-   docker kill -s HUP haproxy
-   ```
+3. Configure Traefik to use these certificates in the dynamic configuration.
 
 ## Usage
 
@@ -349,8 +339,8 @@ CloudLunacy Front Server performs regular health checks automatically. You can m
 # Overall health
 curl http://localhost:3005/api/health
 
-# HAProxy health
-curl http://localhost:3005/api/health/haproxy \
+# Traefik health
+curl http://localhost:3005/api/health/traefik \
   -H "Authorization: Bearer $TOKEN"
 
 # MongoDB port health
@@ -412,23 +402,23 @@ docker-compose up -d --build
 
 ## Monitoring
 
-### HAProxy Statistics
+### Traefik Dashboard
 
-HAProxy provides a statistics dashboard accessible at:
+Traefik provides a dashboard accessible at:
 
 ```
-http://localhost:8081/stats
+http://traefik.localhost:8081/dashboard/
 ```
 
-Default credentials are configured in the HAProxy config file (admin/admin_password by default).
+Default credentials are configured in the Traefik configuration file.
 
 ### Logging
 
 View logs for troubleshooting:
 
 ```bash
-# HAProxy logs
-docker logs haproxy
+# Traefik logs
+docker logs traefik
 
 # CloudLunacy Front Server logs
 docker logs cloudlunacy-front
@@ -439,45 +429,24 @@ docker logs -f cloudlunacy-front
 
 Log files are also stored in:
 
-- `/var/log/haproxy/` - HAProxy logs
 - `/opt/cloudlunacy_front/logs/` - Application logs
 
 ## Troubleshooting
 
 ### Common Issues
 
-#### HAProxy Won't Start
+#### Traefik Won't Start
 
 Check the configuration:
 
 ```bash
-docker exec haproxy haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
+docker exec traefik traefik healthcheck
 ```
 
 View logs:
 
 ```bash
-docker logs haproxy
-```
-
-#### HAProxy Data Plane API Issues
-
-Check if the API is running:
-
-```bash
-curl -u admin:admin http://localhost:5555/health
-```
-
-Verify API access:
-
-```bash
-curl -u admin:admin http://localhost:5555/v2/services/haproxy/info
-```
-
-If you need to restart the Data Plane API:
-
-```bash
-docker restart haproxy
+docker logs traefik
 ```
 
 #### Certificate Issues
@@ -518,16 +487,13 @@ docker ps
 docker network ls
 
 # Verify ports are open
-netstat -tulpn | grep -E '80|443|8081|27017|5555'
+netstat -tulpn | grep -E '80|443|8081|27017'
 
-# Test HAProxy configuration
-docker exec haproxy haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
+# Test Traefik health
+docker exec traefik traefik healthcheck
 
-# Check Data Plane API status
-curl -u admin:admin http://localhost:5555/health
-
-# View available API endpoints
-curl -u admin:admin http://localhost:5555/v2
+# Check Traefik configuration
+docker exec traefik traefik validate --check-config
 ```
 
 ## API Reference
@@ -568,7 +534,7 @@ Main API endpoints:
 
 CloudLunacy Front Server consists of:
 
-1. **HAProxy Container:** Handles TLS termination and routing
+1. **Traefik Container:** Handles TLS termination and routing
 2. **Node.js Application Container:** Manages configuration and API
 3. **Docker Networks:** Isolation between components
 4. **Certbot Container:** Manages Let's Encrypt certificate renewal (optional)
@@ -576,9 +542,9 @@ CloudLunacy Front Server consists of:
 ### Connection Flow:
 
 1. Client connects to `<subdomain>.mongodb.cloudlunacy.uk` or `<subdomain>.apps.cloudlunacy.uk`
-2. HAProxy terminates TLS connection and routes based on hostname
-3. For MongoDB: HAProxy establishes a new TLS connection to the target MongoDB server
-4. For Apps: HAProxy forwards the request to the target application
+2. Traefik terminates TLS connection and routes based on hostname
+3. For MongoDB: Traefik establishes a new TLS connection to the target MongoDB server
+4. For Apps: Traefik forwards the request to the target application
 
 ## License
 
@@ -587,29 +553,3 @@ ISC
 ---
 
 For support or contributions, please visit the [GitHub repository](https://github.com/Mayze123/cloudlunacy_front).
-
-### HAProxy Data Plane API Configuration
-
-CloudLunacy Front Server now uses the HAProxy Data Plane API for all HAProxy interactions:
-
-```bash
-# HAProxy Data Plane API settings
-HAPROXY_API_URL=http://haproxy:5555/v2
-HAPROXY_API_USER=admin
-HAPROXY_API_PASS=admin
-```
-
-The Data Plane API provides several advantages:
-
-- Changes are applied atomically through transactions
-- Configuration is validated before being applied
-- No need to restart HAProxy when making changes
-- Secure authentication for all configuration operations
-
-You can access the Data Plane API directly at:
-
-```
-http://your-server:5555/v2/
-```
-
-Default credentials are configured in the `.env` file (admin/admin by default).

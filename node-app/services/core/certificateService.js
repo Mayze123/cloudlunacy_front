@@ -1,7 +1,7 @@
 /**
  * Certificate Service
  *
- * Handles certificate generation, storage, and distribution using HAProxy Data Plane API
+ * Handles certificate generation, storage, and distribution using Traefik
  */
 
 const fs = require("fs").promises;
@@ -20,7 +20,7 @@ const CertificateProviderFactory = require("../../utils/certProviders/providerFa
 
 // Constants
 const CERTIFICATE_LOCK_PREFIX = "cert";
-const HAPROXY_RELOAD_LOCK = "haproxy_reload";
+const TRAEFIK_RELOAD_LOCK = "traefik_reload";
 const CERTIFICATE_LIST_LOCK = "certificate_list";
 const MAX_RETRY_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 1000;
@@ -33,7 +33,11 @@ class CertificateService {
     this.caKeyPath = null;
     this.mongoDomain = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
 
-    // Data Plane API configuration
+    // Traefik API configuration (if available)
+    this.traefikApiUrl =
+      process.env.TRAEFIK_API_URL || "http://localhost:8080/api";
+
+    // Legacy Data Plane API configuration (kept for backward compatibility)
     this.apiBaseUrl = process.env.HAPROXY_API_URL || "http://localhost:5555/v3";
     this.apiUsername = process.env.HAPROXY_API_USER || "admin";
     this.apiPassword = process.env.HAPROXY_API_PASS || "admin";
@@ -665,6 +669,165 @@ DNS.2 = *.${mongoSubdomain}
   }
 
   /**
+   * Reload Traefik to apply certificate changes
+   * @returns {Promise<Object>} Result of the operation
+   */
+  async reloadTraefik() {
+    let lock = null;
+    // Use lock to prevent multiple simultaneous reloads
+    try {
+      lock = await FileLock.acquire(TRAEFIK_RELOAD_LOCK, 10000);
+
+      if (!lock.success) {
+        logger.info(
+          "Traefik reload already in progress, skipping duplicate reload"
+        );
+        return {
+          success: true,
+          message: "Traefik reload already in progress by another process",
+        };
+      }
+
+      try {
+        logger.info("Reloading Traefik to apply certificate changes");
+
+        // Create a function to retry with both methods
+        const reloadWithRetries = async () => {
+          // First try using Docker command
+          try {
+            const traefikContainer = process.env.TRAEFIK_CONTAINER || "traefik";
+            const execTimeout = 15000; // 15-second timeout for Docker commands
+
+            // Validate Traefik configuration before reloading
+            try {
+              await Promise.race([
+                execAsync(
+                  `docker exec ${traefikContainer} traefik validate --check-config`
+                ),
+                new Promise((_, reject) =>
+                  setTimeout(
+                    () =>
+                      reject(
+                        new Error(
+                          "Docker exec command timed out after 15 seconds"
+                        )
+                      ),
+                    execTimeout
+                  )
+                ),
+              ]);
+
+              logger.info("Traefik configuration validated successfully");
+            } catch (validationErr) {
+              logger.error(
+                `Traefik configuration validation failed: ${validationErr.message}`
+              );
+              throw new Error(
+                `Invalid Traefik configuration: ${validationErr.message}`
+              );
+            }
+
+            // Restart Traefik container
+            await Promise.race([
+              execAsync(`docker restart ${traefikContainer}`),
+              new Promise((_, reject) =>
+                setTimeout(
+                  () =>
+                    reject(
+                      new Error(
+                        "Traefik restart command timed out after 15 seconds"
+                      )
+                    ),
+                  execTimeout
+                )
+              ),
+            ]);
+
+            // Verify that Traefik is still running after restart with timeout
+            const { stdout } = await Promise.race([
+              execAsync(`docker ps -q -f name=${traefikContainer}`),
+              new Promise((_, reject) =>
+                setTimeout(
+                  () =>
+                    reject(
+                      new Error("Docker ps command timed out after 15 seconds")
+                    ),
+                  execTimeout
+                )
+              ),
+            ]);
+
+            if (!stdout.trim()) {
+              throw new Error("Traefik is not running after restart attempt");
+            }
+
+            logger.info("Traefik reloaded successfully via Docker command");
+            return { success: true, message: "Traefik reloaded successfully" };
+          } catch (dockerErr) {
+            logger.warn(
+              `Failed to reload Traefik via Docker: ${dockerErr.message}`
+            );
+
+            // Fallback to API call
+            try {
+              // Unlike HAProxy Data Plane API, Traefik API doesn't have a specific reload endpoint
+              // Instead, we'll check the health of the Traefik API to confirm it's running
+              const response = await axios.get(this.traefikApiUrl, {
+                timeout: 5000,
+              });
+
+              if (response.status >= 200 && response.status < 300) {
+                logger.info("Traefik API is responsive after restart attempt");
+                return {
+                  success: true,
+                  message:
+                    "Traefik appears to be running after restart attempt",
+                };
+              } else {
+                throw new Error(`Unexpected status code: ${response.status}`);
+              }
+            } catch (apiErr) {
+              logger.error(
+                `Failed to verify Traefik via API: ${apiErr.message}`
+              );
+              throw apiErr;
+            }
+          }
+        };
+
+        // Use the retry handler to retry the reload operation
+        return await retryHandler.withRetry(reloadWithRetries, {
+          maxAttempts: MAX_RETRY_ATTEMPTS,
+          retryDelay: RETRY_DELAY_MS,
+          onRetry: (error, attempt) => {
+            logger.warn(
+              `Retry ${attempt}/${MAX_RETRY_ATTEMPTS} reloading Traefik: ${error.message}`
+            );
+          },
+        });
+      } finally {
+        // Always release the lock when done, but check if it exists and has release method first
+        if (lock && typeof lock.release === "function") {
+          await lock.release();
+        }
+      }
+    } catch (err) {
+      logger.error(`Failed to reload Traefik: ${err.message}`);
+      // Final attempt to release the lock if it exists
+      if (lock && typeof lock.release === "function") {
+        try {
+          await lock.release();
+        } catch (releaseErr) {
+          logger.warn(
+            `Failed to release Traefik reload lock: ${releaseErr.message}`
+          );
+        }
+      }
+      return { success: false, error: err.message };
+    }
+  }
+
+  /**
    * Ensure a minimal valid certificate exists for HAProxy to start
    * This creates a self-signed certificate if no certificate exists yet
    * @returns {Promise<boolean>} Success status
@@ -938,6 +1101,91 @@ DNS.2 = *.${mongoSubdomain}
 
       logger.error(`Failed to update HAProxy certificates: ${err.message}`);
       throw err;
+    }
+  }
+
+  /**
+   * Update certificates in Traefik
+   * @param {string} agentId - The agent ID
+   * @param {string} certPath - Path to the certificate file
+   * @param {string} keyPath - Path to the key file
+   * @param {string} pemPath - Path to the combined PEM file
+   * @returns {Promise<Object>} Result of the update
+   */
+  async updateTraefikCertificates(agentId, certPath, keyPath, pemPath) {
+    // Use a lock to prevent concurrent updates to the certificate files
+    const certificateListLock = `${CERTIFICATE_LIST_LOCK}`;
+
+    try {
+      logger.info(`Updating Traefik certificates for agent ${agentId}`);
+
+      // Ensure certificates directory exists
+      const traefikCertsDir = path.join(this.certsDir, "traefik");
+      const tempPemPath = path.join(traefikCertsDir, `.${agentId}.temp.pem`);
+      const agentPemPath = path.join(traefikCertsDir, `${agentId}.pem`);
+
+      try {
+        // Create directories if they don't exist
+        await fs.mkdir(traefikCertsDir, { recursive: true });
+
+        // Create a temporary file first, then move atomically to avoid race conditions
+        await fs.copyFile(pemPath, tempPemPath);
+        await fs.chmod(tempPemPath, 0o600);
+
+        // This is a critical section that modifies shared resources - use lock
+        return await FileLock.withLock(
+          certificateListLock,
+          async () => {
+            // Move the temporary file to the final location atomically
+            await fs.rename(tempPemPath, agentPemPath);
+            logger.info(
+              `Updated certificate at ${agentPemPath} for agent ${agentId}`
+            );
+
+            // Reload Traefik to apply certificate changes
+            const reloadResult = await this.reloadTraefik();
+
+            return {
+              success: reloadResult.success,
+              reloadResult,
+              message: `Certificate updates applied for agent ${agentId}`,
+            };
+          },
+          30000 // 30 second timeout for the lock
+        );
+      } catch (copyErr) {
+        // Clean up temporary file if it exists
+        try {
+          await fs.unlink(tempPemPath).catch(() => {});
+        } catch (cleanupErr) {
+          logger.debug(`Failed to clean up temp file: ${cleanupErr.message}`);
+        }
+
+        logger.warn(
+          `Failed to copy certificates to Traefik locations: ${copyErr.message}`
+        );
+        return {
+          success: false,
+          error: copyErr.message,
+        };
+      }
+    } catch (err) {
+      if (err.message.includes("Could not acquire lock")) {
+        logger.warn(
+          `Certificate list is being updated by another process. Will retry later for agent ${agentId}`
+        );
+        return {
+          success: false,
+          error: "Certificate system is busy. Please try again shortly.",
+          transient: true,
+        };
+      }
+
+      logger.error(`Failed to update Traefik certificates: ${err.message}`);
+      return {
+        success: false,
+        error: err.message,
+      };
     }
   }
 

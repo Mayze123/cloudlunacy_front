@@ -1,7 +1,7 @@
 /**
  * Metrics Controller
  *
- * Provides HTTP API endpoints for accessing HAProxy metrics and performance data
+ * Provides HTTP API endpoints for accessing Traefik metrics and performance data
  * Part of the Phase 3 system observability enhancements
  */
 
@@ -9,7 +9,7 @@ const path = require("path");
 const fs = require("fs").promises;
 const { AppError } = require("../../utils/errorHandler");
 const logger = require("../../utils/logger").getLogger("metricsController");
-const haproxyMetricsManager = require("../../utils/haproxyMetricsManager");
+const traefikMetricsManager = require("../../utils/traefikMetricsManager");
 
 /**
  * Get dashboard data with key metrics for front-end visualization
@@ -17,19 +17,19 @@ const haproxyMetricsManager = require("../../utils/haproxyMetricsManager");
 exports.getDashboardData = async (req, res, next) => {
   try {
     // Initialize metrics manager if not already initialized
-    if (!haproxyMetricsManager.isInitialized()) {
-      await haproxyMetricsManager.initialize();
+    if (!traefikMetricsManager.isInitialized()) {
+      await traefikMetricsManager.initialize();
     }
 
     // Get current metrics and active alerts
-    const currentMetrics = haproxyMetricsManager.getCurrentMetrics();
-    const activeAlerts = haproxyMetricsManager.getActiveAlerts();
+    const currentMetrics = traefikMetricsManager.getCurrentMetrics();
+    const activeAlerts = traefikMetricsManager.getActiveAlerts();
 
     // Get performance stats for the last hour
-    const performanceStats = haproxyMetricsManager.getPerformanceStats();
+    const performanceStats = traefikMetricsManager.getPerformanceStats();
 
     // Get historical metrics for charts (last day)
-    const historicalMetrics = haproxyMetricsManager.getHistoricalMetrics("day");
+    const historicalMetrics = traefikMetricsManager.getHistoricalMetrics("day");
 
     // Combine data for dashboard view
     const dashboardData = {
@@ -72,16 +72,16 @@ exports.getDashboardData = async (req, res, next) => {
 };
 
 /**
- * Get the current HAProxy metrics snapshot
+ * Get the current Traefik metrics snapshot
  */
 exports.getCurrentMetrics = async (req, res, next) => {
   try {
     // Initialize metrics manager if not already initialized
-    if (!haproxyMetricsManager.isInitialized()) {
-      await haproxyMetricsManager.initialize();
+    if (!traefikMetricsManager.isInitialized()) {
+      await traefikMetricsManager.initialize();
     }
 
-    const metrics = haproxyMetricsManager.getCurrentMetrics();
+    const metrics = traefikMetricsManager.getCurrentMetrics();
     res.json(metrics);
   } catch (err) {
     logger.error(`Error getting current metrics: ${err.message}`);
@@ -90,7 +90,7 @@ exports.getCurrentMetrics = async (req, res, next) => {
 };
 
 /**
- * Get historical HAProxy metrics for a specified timeframe
+ * Get historical Traefik metrics for a specified timeframe
  */
 exports.getHistoricalMetrics = async (req, res, next) => {
   try {
@@ -111,11 +111,11 @@ exports.getHistoricalMetrics = async (req, res, next) => {
     }
 
     // Initialize metrics manager if not already initialized
-    if (!haproxyMetricsManager.isInitialized()) {
-      await haproxyMetricsManager.initialize();
+    if (!traefikMetricsManager.isInitialized()) {
+      await traefikMetricsManager.initialize();
     }
 
-    const metrics = haproxyMetricsManager.getHistoricalMetrics(
+    const metrics = traefikMetricsManager.getHistoricalMetrics(
       timeframe,
       startTime,
       endTime
@@ -133,11 +133,11 @@ exports.getHistoricalMetrics = async (req, res, next) => {
 exports.getPerformanceStats = async (req, res, next) => {
   try {
     // Initialize metrics manager if not already initialized
-    if (!haproxyMetricsManager.isInitialized()) {
-      await haproxyMetricsManager.initialize();
+    if (!traefikMetricsManager.isInitialized()) {
+      await traefikMetricsManager.initialize();
     }
 
-    const stats = haproxyMetricsManager.getPerformanceStats();
+    const stats = traefikMetricsManager.getPerformanceStats();
     res.json(stats);
   } catch (err) {
     logger.error(`Error getting performance stats: ${err.message}`);
@@ -153,11 +153,11 @@ exports.getPerformanceStats = async (req, res, next) => {
 exports.getActiveAlerts = async (req, res, next) => {
   try {
     // Initialize metrics manager if not already initialized
-    if (!haproxyMetricsManager.isInitialized()) {
-      await haproxyMetricsManager.initialize();
+    if (!traefikMetricsManager.isInitialized()) {
+      await traefikMetricsManager.initialize();
     }
 
-    const alerts = haproxyMetricsManager.getActiveAlerts();
+    const alerts = traefikMetricsManager.getActiveAlerts();
     res.json(alerts);
   } catch (err) {
     logger.error(`Error getting active alerts: ${err.message}`);
@@ -171,11 +171,11 @@ exports.getActiveAlerts = async (req, res, next) => {
 exports.getAlertHistory = async (req, res, next) => {
   try {
     // Initialize metrics manager if not already initialized
-    if (!haproxyMetricsManager.isInitialized()) {
-      await haproxyMetricsManager.initialize();
+    if (!traefikMetricsManager.isInitialized()) {
+      await traefikMetricsManager.initialize();
     }
 
-    const alertHistory = haproxyMetricsManager.getAlertHistory();
+    const alertHistory = traefikMetricsManager.getAlertHistory();
     res.json(alertHistory);
   } catch (err) {
     logger.error(`Error getting alert history: ${err.message}`);
@@ -207,12 +207,12 @@ exports.exportMetrics = async (req, res, next) => {
     }
 
     // Initialize metrics manager if not already initialized
-    if (!haproxyMetricsManager.isInitialized()) {
-      await haproxyMetricsManager.initialize();
+    if (!traefikMetricsManager.isInitialized()) {
+      await traefikMetricsManager.initialize();
     }
 
     // Export metrics to a file
-    const filePath = await haproxyMetricsManager.exportMetrics(
+    const filePath = await traefikMetricsManager.exportMetrics(
       format,
       timeframe
     );
@@ -221,7 +221,7 @@ exports.exportMetrics = async (req, res, next) => {
     const contentType = format === "json" ? "application/json" : "text/csv";
 
     // Generate download filename
-    const filename = `haproxy-metrics-${timeframe}-${
+    const filename = `traefik-metrics-${timeframe}-${
       new Date().toISOString().split("T")[0]
     }.${format}`;
 
@@ -259,15 +259,15 @@ exports.updateAlertThresholds = async (req, res, next) => {
     }
 
     // Initialize metrics manager if not already initialized
-    if (!haproxyMetricsManager.isInitialized()) {
-      await haproxyMetricsManager.initialize();
+    if (!traefikMetricsManager.isInitialized()) {
+      await traefikMetricsManager.initialize();
     }
 
     // Update thresholds
-    haproxyMetricsManager.setThresholds(thresholds);
+    traefikMetricsManager.setThresholds(thresholds);
 
     // Return updated thresholds
-    const updatedThresholds = haproxyMetricsManager.getThresholds();
+    const updatedThresholds = traefikMetricsManager.getThresholds();
     res.json({
       message: "Alert thresholds updated successfully",
       thresholds: updatedThresholds,

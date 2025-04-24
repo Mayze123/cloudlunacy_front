@@ -7,8 +7,8 @@ const authMiddleware = require("../middleware/auth");
  * @swagger
  * /api/mongodb/register:
  *   post:
- *     summary: Register an agent's MongoDB instance with HAProxy
- *     description: Allows an agent to register its MongoDB instance for HAProxy routing
+ *     summary: Register an agent's MongoDB instance with Traefik
+ *     description: Allows an agent to register its MongoDB instance for Traefik routing
  *     tags: [MongoDB]
  *     security:
  *       - agentAuth: []

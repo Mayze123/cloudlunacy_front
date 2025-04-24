@@ -10,10 +10,7 @@ const { exec } = require("child_process");
 const { promisify } = require("util");
 const execAsync = promisify(exec);
 const coreServices = require("../../services/core");
-const {
-  enhancedHAProxyService,
-  enhancedCertificateService,
-} = require("../../services/core");
+const { enhancedCertificateService } = require("../../services/core");
 const logger = require("../../utils/logger").getLogger("healthController");
 const { asyncHandler } = require("../../utils/errorHandler");
 const path = require("path");
@@ -54,7 +51,7 @@ exports.getHealth = asyncHandler(async (req, res) => {
       : "not-available",
     configService: coreServices.configService.initialized,
     routingService: coreServices.routingService.initialized,
-    haproxyService: coreServices.haproxyService ? "ok" : "not-available",
+    traefikService: coreServices.traefikService ? "ok" : "not-available",
     letsencryptService: coreServices.letsencryptService
       ? "ok"
       : "not-available",
@@ -95,26 +92,26 @@ exports.checkMongo = asyncHandler(async (req, res) => {
 });
 
 /**
- * Check HAProxy health
+ * Check Traefik health
  *
- * GET /api/health/haproxy
+ * GET /api/health/traefik
  */
-exports.checkHAProxy = asyncHandler(async (req, res) => {
-  logger.info("Checking HAProxy health");
+exports.checkTraefik = asyncHandler(async (req, res) => {
+  logger.info("Checking Traefik health");
 
-  // Check HAProxy container status
-  const containerStatus = await checkHAProxyContainer();
+  // Check Traefik container status
+  const containerStatus = await checkTraefikContainer();
 
-  // Check if stats page (port 8081) is accessible
-  const statsAccessible = await checkPort(8081);
+  // Check if dashboard (port 8081) is accessible
+  const dashboardAccessible = await checkPort(8081);
 
   // Check if configuration is valid
-  const configValid = await checkHAProxyConfig();
+  const configValid = await checkTraefikConfig();
 
   res.status(200).json({
     success: true,
     containerStatus,
-    statsAccessible,
+    dashboardAccessible,
     configValid,
   });
 });
@@ -130,13 +127,13 @@ exports.repair = asyncHandler(async (req, res) => {
   // Repair core services
   const servicesRepaired = await coreServices.repair();
 
-  // Restart HAProxy
-  const haproxyRestarted = await restartHAProxy();
+  // Restart Traefik
+  const traefikRestarted = await restartTraefik();
 
   res.status(200).json({
     success: true,
     servicesRepaired,
-    haproxyRestarted,
+    traefikRestarted,
     message: "System repair completed",
   });
 });
@@ -152,51 +149,48 @@ exports.checkMongoDBConnections = async (req, res) => {
   try {
     await coreServices.configService.initialize();
 
-    const haproxyConfig = await coreServices.configService.getConfig("haproxy");
+    const traefikConfig = await coreServices.configService.getConfig("traefik");
     const issues = [];
 
-    // Check MongoDB backend
+    // Check MongoDB routers and services in Traefik configuration
     if (
-      haproxyConfig.backends &&
-      haproxyConfig.backends["mongodb-backend-dyn"]
+      traefikConfig.http &&
+      traefikConfig.http.services &&
+      traefikConfig.http.services["mongodb-service"]
     ) {
-      const backend = haproxyConfig.backends["mongodb-backend-dyn"];
+      const service = traefikConfig.http.services["mongodb-service"];
 
-      // Check if backend has servers
-      if (!backend.servers || backend.servers.length === 0) {
+      // Check if service has servers
+      if (
+        !service.loadBalancer ||
+        !service.loadBalancer.servers ||
+        service.loadBalancer.servers.length === 0
+      ) {
         issues.push({
           type: "missing_servers",
-          backend: "mongodb-backend-dyn",
+          service: "mongodb-service",
         });
       } else {
         // Check each server for issues
-        for (const server of backend.servers) {
-          // Extract agent ID from server name
-          const agentId = server.name.replace("mongodb-", "");
+        for (const server of service.loadBalancer.servers) {
+          // Extract agent ID from server URL
+          const urlMatch = server.url.match(/mongodb-([^.]+)\./);
+          const agentId = urlMatch ? urlMatch[1] : null;
 
-          // Check if SNI is configured correctly
-          if (!server.sni || !server.sni.includes(agentId)) {
+          // Check if server has a URL
+          if (!server.url) {
             issues.push({
-              type: "invalid_sni",
+              type: "missing_url",
               agentId,
-              serverName: server.name,
-            });
-          }
-
-          // Check if server has an address
-          if (!server.address) {
-            issues.push({
-              type: "missing_address",
-              agentId,
-              serverName: server.name,
+              serverUrl: server.url,
             });
           }
         }
       }
     } else {
       issues.push({
-        type: "missing_backend",
-        backend: "mongodb-backend-dyn",
+        type: "missing_service",
+        service: "mongodb-service",
       });
     }
 
@@ -218,24 +212,6 @@ exports.checkMongoDBConnections = async (req, res) => {
       message: "Failed to check MongoDB connections",
       error: err.message,
     });
-  }
-};
-
-/**
- * Check HAProxy connections
- *
- * @param {object} req - The request object
- * @param {object} res - The response object
- * @returns {Promise<void>}
- */
-exports.checkHaproxy = async (req, res) => {
-  try {
-    await coreServices.configService.initialize();
-
-    const haproxyConfig = await coreServices.configService.getConfig("haproxy");
-    // ... existing code ...
-  } catch (err) {
-    // ... existing code ...
   }
 };
 
@@ -271,15 +247,16 @@ async function checkMongoDBConfig() {
     // Make sure config is initialized
     await coreServices.configService.initialize();
 
-    // Get HAProxy config
-    const haproxyConfig = await coreServices.configService.getConfig("haproxy");
+    // Get Traefik config
+    const traefikConfig = await coreServices.configService.getConfig("traefik");
 
-    // Check if MongoDB backend exists
-    const backendExists = haproxyConfig?.backends?.["mongodb-backend-dyn"];
+    // Check if MongoDB service exists
+    const serviceExists =
+      traefikConfig?.http?.services?.["mongodb-service"] !== undefined;
 
     return {
-      valid: !!backendExists,
-      backendExists: !!backendExists,
+      valid: !!serviceExists,
+      serviceExists: !!serviceExists,
     };
   } catch (err) {
     logger.error(`Failed to check MongoDB config: ${err.message}`);
@@ -291,12 +268,12 @@ async function checkMongoDBConfig() {
 }
 
 /**
- * Check HAProxy health
+ * Check Traefik health
  */
-async function checkHAProxyHealth() {
+async function checkTraefikHealth() {
   try {
-    // Check if HAProxy container is running
-    const containerStatus = await checkHAProxyContainer();
+    // Check if Traefik container is running
+    const containerStatus = await checkTraefikContainer();
 
     return {
       containerRunning: containerStatus.running,
@@ -304,7 +281,7 @@ async function checkHAProxyHealth() {
       containerDetails: containerStatus,
     };
   } catch (err) {
-    logger.error(`Failed to check HAProxy health: ${err.message}`);
+    logger.error(`Failed to check Traefik health: ${err.message}`);
     return {
       containerRunning: false,
       status: "error",
@@ -314,18 +291,18 @@ async function checkHAProxyHealth() {
 }
 
 /**
- * Check HAProxy container status
+ * Check Traefik container status
  */
-async function checkHAProxyContainer() {
+async function checkTraefikContainer() {
   try {
     const { stdout } = await execAsync(
-      'docker ps -a --format "{{.Names}},{{.Status}},{{.Ports}}" --filter "name=haproxy"'
+      'docker ps -a --format "{{.Names}},{{.Status}},{{.Ports}}" --filter "name=traefik"'
     );
 
     if (!stdout.trim()) {
       return {
         running: false,
-        error: "No HAProxy container found",
+        error: "No Traefik container found",
       };
     }
 
@@ -338,7 +315,7 @@ async function checkHAProxyContainer() {
       ports,
     };
   } catch (err) {
-    logger.error(`Failed to check HAProxy container: ${err.message}`);
+    logger.error(`Failed to check Traefik container: ${err.message}`);
 
     return {
       running: false,
@@ -348,50 +325,48 @@ async function checkHAProxyContainer() {
 }
 
 /**
- * Check if HAProxy configuration is valid
+ * Check if Traefik configuration is valid
  */
-async function checkHAProxyConfig() {
+async function checkTraefikConfig() {
   try {
     // Make sure config manager is initialized
     await coreServices.configService.initialize();
 
     // Check if config has required sections
-    const haproxyConfig = await coreServices.configService.getConfig("haproxy");
+    const traefikConfig = await coreServices.configService.getConfig("traefik");
 
-    const frontendsValid =
-      haproxyConfig &&
-      haproxyConfig.frontends &&
-      haproxyConfig.frontends["https-in"] &&
-      haproxyConfig.frontends["mongodb-in"];
+    const routersValid =
+      traefikConfig &&
+      traefikConfig.http &&
+      traefikConfig.http.routers &&
+      Object.keys(traefikConfig.http.routers).length > 0;
 
-    const backendsValid =
-      haproxyConfig &&
-      haproxyConfig.backends &&
-      haproxyConfig.backends["mongodb-backend-dyn"] &&
-      haproxyConfig.backends["node-app-backend"];
+    const servicesValid =
+      traefikConfig &&
+      traefikConfig.http &&
+      traefikConfig.http.services &&
+      Object.keys(traefikConfig.http.services).length > 0;
 
-    // Also check HAProxy configuration syntax using docker exec
+    // Also check Traefik configuration syntax using docker exec
     let syntaxValid = false;
     try {
-      await execAsync(
-        "docker exec haproxy haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg"
-      );
+      await execAsync("docker exec traefik traefik validate --check-config");
       syntaxValid = true;
     } catch (checkErr) {
-      logger.warn(`HAProxy config syntax check failed: ${checkErr.message}`);
+      logger.warn(`Traefik config syntax check failed: ${checkErr.message}`);
       syntaxValid = false;
     }
 
     return {
-      valid: frontendsValid && backendsValid && syntaxValid,
+      valid: routersValid && servicesValid && syntaxValid,
       details: {
-        frontendsValid,
-        backendsValid,
+        routersValid,
+        servicesValid,
         syntaxValid,
       },
     };
   } catch (err) {
-    logger.error(`Failed to check HAProxy config: ${err.message}`);
+    logger.error(`Failed to check Traefik config: ${err.message}`);
 
     return {
       valid: false,
@@ -416,15 +391,15 @@ async function checkPort(port) {
 }
 
 /**
- * Restart HAProxy container
+ * Restart Traefik container
  */
-async function restartHAProxy() {
+async function restartTraefik() {
   try {
-    logger.info("Restarting HAProxy container");
-    await execAsync("docker restart haproxy");
+    logger.info("Restarting Traefik container");
+    await execAsync("docker restart traefik");
     return true;
   } catch (err) {
-    logger.error(`Failed to restart HAProxy: ${err.message}`);
+    logger.error(`Failed to restart Traefik: ${err.message}`);
     return false;
   }
 }
@@ -495,40 +470,40 @@ exports.getSystemHealth = async (req, res) => {
       services: {},
     };
 
-    // Check HAProxy health if enhanced service is initialized
+    // Check Traefik health if enhanced service is initialized
     try {
-      if (enhancedHAProxyService.initialized) {
+      if (coreServices.traefikService.initialized) {
         // Force refresh the health status if requested
         const forceRefresh = req.query.refresh === "true";
-        const haproxyHealth = await enhancedHAProxyService.getHealthStatus(
+        const traefikHealth = await coreServices.traefikService.getHealthStatus(
           forceRefresh
         );
 
-        health.services.haproxy = {
-          status: haproxyHealth.status,
-          circuitState: haproxyHealth.circuitState,
-          lastCheck: haproxyHealth.lastCheck?.timestamp,
+        health.services.traefik = {
+          status: traefikHealth.status,
+          circuitState: traefikHealth.circuitState,
+          lastCheck: traefikHealth.lastCheck?.timestamp,
           metrics: {
-            routeCount: haproxyHealth.routeCount,
-            connections: haproxyHealth.metrics?.connections,
+            routeCount: traefikHealth.routeCount,
+            connections: traefikHealth.metrics?.connections,
           },
         };
 
-        // Update overall health based on HAProxy status
-        if (haproxyHealth.status === "UNHEALTHY") {
+        // Update overall health based on Traefik status
+        if (traefikHealth.status === "UNHEALTHY") {
           health.status = "degraded";
         }
       } else {
-        health.services.haproxy = {
+        health.services.traefik = {
           status: "not_initialized",
-          message: "HAProxy service is not initialized",
+          message: "Traefik service is not initialized",
         };
         health.status = "degraded";
       }
     } catch (err) {
-      health.services.haproxy = {
+      health.services.traefik = {
         status: "error",
-        message: `Failed to check HAProxy health: ${err.message}`,
+        message: `Failed to check Traefik health: ${err.message}`,
       };
       health.status = "degraded";
     }
@@ -547,78 +522,80 @@ exports.getSystemHealth = async (req, res) => {
 };
 
 /**
- * Get detailed HAProxy health metrics
+ * Get detailed Traefik health metrics
  * @param {Object} req - Express request object
  * @param {Object} res - Express response object
  */
-exports.getHAProxyHealth = async (req, res) => {
+exports.getTraefikHealth = async (req, res) => {
   try {
-    if (!enhancedHAProxyService.initialized) {
+    if (!coreServices.traefikService.initialized) {
       return res.status(503).json({
         success: false,
-        message: "HAProxy service is not initialized",
+        message: "Traefik service is not initialized",
       });
     }
 
     // Get detailed metrics with optional refresh
     const forceRefresh = req.query.refresh === "true";
-    const health = await enhancedHAProxyService.getHealthStatus(forceRefresh);
+    const health = await coreServices.traefikService.getHealthStatus(
+      forceRefresh
+    );
 
     res.json({
       success: true,
       health,
     });
   } catch (err) {
-    logger.error(`Error in getHAProxyHealth: ${err.message}`);
+    logger.error(`Error in getTraefikHealth: ${err.message}`);
     res.status(500).json({
       success: false,
-      message: "Failed to retrieve HAProxy health",
+      message: "Failed to retrieve Traefik health",
       error: err.message,
     });
   }
 };
 
 /**
- * Get HAProxy stats and metrics
+ * Get Traefik stats and metrics
  * @param {Object} req - Express request object
  * @param {Object} res - Express response object
  */
-exports.getHAProxyStats = async (req, res) => {
+exports.getTraefikStats = async (req, res) => {
   try {
-    if (!enhancedHAProxyService.initialized) {
+    if (!coreServices.traefikService.initialized) {
       return res.status(503).json({
         success: false,
-        message: "HAProxy service is not initialized",
+        message: "Traefik service is not initialized",
       });
     }
 
-    const stats = await enhancedHAProxyService.getStats();
+    const stats = await coreServices.traefikService.getStats();
 
     res.json({
       success: true,
       stats,
     });
   } catch (err) {
-    logger.error(`Error in getHAProxyStats: ${err.message}`);
+    logger.error(`Error in getTraefikStats: ${err.message}`);
     res.status(500).json({
       success: false,
-      message: "Failed to retrieve HAProxy stats",
+      message: "Failed to retrieve Traefik stats",
       error: err.message,
     });
   }
 };
 
 /**
- * Attempt to recover HAProxy service
+ * Attempt to recover Traefik service
  * @param {Object} req - Express request object
  * @param {Object} res - Express response object
  */
-exports.recoverHAProxyService = async (req, res) => {
+exports.recoverTraefikService = async (req, res) => {
   try {
-    if (!enhancedHAProxyService.initialized) {
+    if (!coreServices.traefikService.initialized) {
       return res.status(503).json({
         success: false,
-        message: "HAProxy service is not initialized",
+        message: "Traefik service is not initialized",
       });
     }
 
@@ -627,7 +604,7 @@ exports.recoverHAProxyService = async (req, res) => {
     const configuredKey = process.env.ADMIN_KEY || "";
 
     if (!configuredKey || adminKey !== configuredKey) {
-      logger.warn(`Unauthorized HAProxy recovery attempt from ${req.ip}`);
+      logger.warn(`Unauthorized Traefik recovery attempt from ${req.ip}`);
       return res.status(401).json({
         success: false,
         message: "Unauthorized: Admin key required for this operation",
@@ -635,8 +612,8 @@ exports.recoverHAProxyService = async (req, res) => {
     }
 
     // Attempt recovery
-    logger.info(`Manual HAProxy recovery initiated by admin from ${req.ip}`);
-    const result = await enhancedHAProxyService.recoverService();
+    logger.info(`Manual Traefik recovery initiated by admin from ${req.ip}`);
+    const result = await coreServices.traefikService.recoverService();
 
     if (result.success) {
       res.json({
@@ -652,42 +629,41 @@ exports.recoverHAProxyService = async (req, res) => {
       });
     }
   } catch (err) {
-    logger.error(`Error in recoverHAProxyService: ${err.message}`);
+    logger.error(`Error in recoverTraefikService: ${err.message}`);
     res.status(500).json({
       success: false,
-      message: "Failed to recover HAProxy service",
+      message: "Failed to recover Traefik service",
       error: err.message,
     });
   }
 };
 
 /**
- * Validate HAProxy configuration
+ * Validate Traefik configuration
  * @param {Object} req - Express request object
  * @param {Object} res - Express response object
  */
-exports.validateHAProxyConfig = async (req, res) => {
+exports.validateTraefikConfig = async (req, res) => {
   try {
-    if (!enhancedHAProxyService.initialized) {
+    if (!coreServices.traefikService.initialized) {
       return res.status(503).json({
         success: false,
-        message: "HAProxy service is not initialized",
+        message: "Traefik service is not initialized",
       });
     }
 
-    const validationResult = await enhancedHAProxyService.validateConfig();
+    const validationResult = await coreServices.traefikService.validateConfig();
 
     res.json({
-      success: true,
-      valid: validationResult.valid,
+      success: validationResult.success,
       message: validationResult.message,
-      error: validationResult.error,
+      details: validationResult.details,
     });
   } catch (err) {
-    logger.error(`Error in validateHAProxyConfig: ${err.message}`);
+    logger.error(`Error in validateTraefikConfig: ${err.message}`);
     res.status(500).json({
       success: false,
-      message: "Failed to validate HAProxy configuration",
+      message: "Failed to validate Traefik configuration",
       error: err.message,
     });
   }
@@ -951,48 +927,45 @@ exports.getHealthDashboard = asyncHandler(async (req, res) => {
       recommendations: [],
     };
 
-    // Get HAProxy health (with metrics if available)
+    // Get Traefik health (with metrics if available)
     try {
       if (
-        coreServices.enhancedHAProxyService &&
-        coreServices.enhancedHAProxyService.initialized
+        coreServices.traefikService &&
+        coreServices.traefikService.initialized
       ) {
         const forceRefresh = req.query.refresh === "true";
-        const haproxyHealth =
-          await coreServices.enhancedHAProxyService.getHealthStatus(
-            forceRefresh
-          );
+        const traefikHealth = await coreServices.traefikService.getHealthStatus(
+          forceRefresh
+        );
 
-        dashboard.components.haproxy = {
-          status: haproxyHealth.status,
-          lastCheck: haproxyHealth.lastCheck?.timestamp,
-          circuitBreakerState: haproxyHealth.circuitState || "UNKNOWN",
-          containerRunning: haproxyHealth.containerRunning || false,
-          configValid: haproxyHealth.configValid || false,
-          metrics: haproxyHealth.metrics || null,
+        dashboard.components.traefik = {
+          status: traefikHealth.status,
+          lastCheck: traefikHealth.lastCheck?.timestamp,
+          circuitBreakerState: traefikHealth.circuitState || "UNKNOWN",
+          containerRunning: traefikHealth.containerRunning || false,
+          configValid: traefikHealth.configValid || false,
+          metrics: traefikHealth.metrics || null,
         };
 
         // Get detailed metrics if available
-        if (coreServices.enhancedHAProxyService.metricsCollector) {
+        if (coreServices.traefikService.metricsCollector) {
           const metrics =
-            coreServices.enhancedHAProxyService.metricsCollector.getCurrentMetrics();
-          if (metrics && metrics.haproxy && metrics.haproxy.summary) {
-            dashboard.components.haproxy.detailedMetrics =
-              metrics.haproxy.summary;
+            coreServices.traefikService.metricsCollector.getCurrentMetrics();
+          if (metrics && metrics.traefik && metrics.traefik.summary) {
+            dashboard.components.traefik.detailedMetrics =
+              metrics.traefik.summary;
 
             // Get anomalies
             const anomalies =
-              coreServices.enhancedHAProxyService.metricsCollector.getAnomalies(
-                5
-              );
+              coreServices.traefikService.metricsCollector.getAnomalies(5);
             if (anomalies && anomalies.length > 0) {
-              dashboard.components.haproxy.anomalies = anomalies;
+              dashboard.components.traefik.anomalies = anomalies;
 
               // Add high severity anomalies to alerts
               anomalies.forEach((anomaly) => {
                 if (anomaly.severity === "high") {
                   dashboard.alerts.push({
-                    component: "haproxy",
+                    component: "traefik",
                     severity: "high",
                     message: anomaly.message,
                     timestamp: anomaly.timestamp,
@@ -1003,51 +976,51 @@ exports.getHealthDashboard = asyncHandler(async (req, res) => {
 
             // Get trends
             const trends =
-              coreServices.enhancedHAProxyService.metricsCollector.calculateTrends();
+              coreServices.traefikService.metricsCollector.calculateTrends();
             if (trends && trends.status !== "insufficient_data") {
-              dashboard.components.haproxy.trends = trends;
+              dashboard.components.traefik.trends = trends;
             }
           }
         }
 
-        // Update overall status based on HAProxy status
-        if (haproxyHealth.status === "UNHEALTHY") {
+        // Update overall status based on Traefik status
+        if (traefikHealth.status === "UNHEALTHY") {
           dashboard.status = "critical";
           dashboard.alerts.push({
-            component: "haproxy",
+            component: "traefik",
             severity: "critical",
-            message: "HAProxy is unhealthy",
+            message: "Traefik is unhealthy",
           });
 
-          // Add recommendations for HAProxy issues
+          // Add recommendations for Traefik issues
           dashboard.recommendations.push({
-            component: "haproxy",
+            component: "traefik",
             action: "Run manual recovery",
-            endpoint: "/api/health/haproxy/recover",
-            description: "Attempt to automatically recover HAProxy service",
+            endpoint: "/api/health/traefik/recover",
+            description: "Attempt to automatically recover Traefik service",
           });
-        } else if (haproxyHealth.status === "DEGRADED") {
+        } else if (traefikHealth.status === "DEGRADED") {
           if (dashboard.status === "healthy") {
             dashboard.status = "degraded";
           }
           dashboard.alerts.push({
-            component: "haproxy",
+            component: "traefik",
             severity: "warning",
-            message: "HAProxy is in a degraded state",
+            message: "Traefik is in a degraded state",
           });
         }
       } else {
-        dashboard.components.haproxy = {
+        dashboard.components.traefik = {
           status: "unavailable",
-          message: "HAProxy service is not initialized",
+          message: "Traefik service is not initialized",
         };
         dashboard.status = "degraded";
       }
     } catch (err) {
-      logger.error(`Failed to get HAProxy health: ${err.message}`);
-      dashboard.components.haproxy = {
+      logger.error(`Failed to get Traefik health: ${err.message}`);
+      dashboard.components.traefik = {
         status: "error",
-        message: `Failed to get HAProxy health: ${err.message}`,
+        message: `Failed to get Traefik health: ${err.message}`,
       };
       dashboard.status = "degraded";
     }
@@ -1189,165 +1162,3 @@ exports.getHealthDashboard = asyncHandler(async (req, res) => {
     });
   }
 });
-
-/**
- * Get detailed Traefik health metrics
- * @param {Object} req - Express request object
- * @param {Object} res - Express response object
- */
-exports.getTraefikHealth = async (req, res) => {
-  try {
-    const traefikService = coreServices.traefikService;
-
-    if (!traefikService || !traefikService.initialized) {
-      return res.status(503).json({
-        success: false,
-        message: "Traefik service is not initialized",
-      });
-    }
-
-    // Get detailed metrics with optional refresh
-    const forceRefresh = req.query.refresh === "true";
-    let health;
-
-    if (forceRefresh) {
-      health = await traefikService.performHealthCheck();
-    } else {
-      health = traefikService.getHealthStatus();
-    }
-
-    res.json({
-      success: true,
-      timestamp: new Date().toISOString(),
-      status: health.status,
-      details: health.details,
-    });
-  } catch (err) {
-    logger.error(`Error in getTraefikHealth: ${err.message}`);
-    res.status(500).json({
-      success: false,
-      message: "Failed to retrieve Traefik health",
-      error: err.message,
-    });
-  }
-};
-
-/**
- * Get Traefik stats and metrics
- * @param {Object} req - Express request object
- * @param {Object} res - Express response object
- */
-exports.getTraefikStats = async (req, res) => {
-  try {
-    const traefikService = coreServices.traefikService;
-
-    if (!traefikService || !traefikService.initialized) {
-      return res.status(503).json({
-        success: false,
-        message: "Traefik service is not initialized",
-      });
-    }
-
-    const stats = await traefikService.getStats();
-
-    res.json({
-      success: true,
-      stats,
-    });
-  } catch (err) {
-    logger.error(`Error in getTraefikStats: ${err.message}`);
-    res.status(500).json({
-      success: false,
-      message: "Failed to retrieve Traefik stats",
-      error: err.message,
-    });
-  }
-};
-
-/**
- * Attempt to recover Traefik service
- * @param {Object} req - Express request object
- * @param {Object} res - Express response object
- */
-exports.recoverTraefikService = async (req, res) => {
-  try {
-    const traefikService = coreServices.traefikService;
-
-    if (!traefikService || !traefikService.initialized) {
-      return res.status(503).json({
-        success: false,
-        message: "Traefik service is not initialized",
-      });
-    }
-
-    // Check if administrator key is provided for this sensitive operation
-    const adminKey = req.headers["x-admin-key"] || "";
-    const configuredKey = process.env.ADMIN_KEY || "";
-
-    if (!configuredKey || adminKey !== configuredKey) {
-      logger.warn(`Unauthorized Traefik recovery attempt from ${req.ip}`);
-      return res.status(401).json({
-        success: false,
-        message: "Unauthorized: Admin key required for this operation",
-      });
-    }
-
-    // Attempt recovery
-    logger.info(`Manual Traefik recovery initiated by admin from ${req.ip}`);
-    const result = await traefikService.recoverService();
-
-    if (result.success) {
-      res.json({
-        success: true,
-        message: result.message,
-        action: result.action,
-      });
-    } else {
-      res.status(500).json({
-        success: false,
-        message: result.message,
-        error: result.error,
-      });
-    }
-  } catch (err) {
-    logger.error(`Error in recoverTraefikService: ${err.message}`);
-    res.status(500).json({
-      success: false,
-      message: "Failed to recover Traefik service",
-      error: err.message,
-    });
-  }
-};
-
-/**
- * Validate Traefik configuration
- * @param {Object} req - Express request object
- * @param {Object} res - Express response object
- */
-exports.validateTraefikConfig = async (req, res) => {
-  try {
-    const traefikService = coreServices.traefikService;
-
-    if (!traefikService || !traefikService.initialized) {
-      return res.status(503).json({
-        success: false,
-        message: "Traefik service is not initialized",
-      });
-    }
-
-    const validationResult = await traefikService.validateConfig();
-
-    res.json({
-      success: validationResult.success,
-      message: validationResult.message,
-      details: validationResult.details,
-    });
-  } catch (err) {
-    logger.error(`Error in validateTraefikConfig: ${err.message}`);
-    res.status(500).json({
-      success: false,
-      message: "Failed to validate Traefik configuration",
-      error: err.message,
-    });
-  }
-};

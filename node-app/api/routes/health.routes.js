@@ -69,41 +69,46 @@ router.get(
 );
 
 /**
- * HAProxy Health (Legacy - Kept for backward compatibility)
+ * Legacy HAProxy endpoints - redirect to Traefik equivalents
+ * These routes are kept for backward compatibility during migration
+ */
+
+/**
+ * Legacy HAProxy Health
  * GET /api/health/haproxy - Redirects to Traefik health
  */
-router.get("/haproxy", healthController.getTraefikHealth);
+router.get("/haproxy", (req, res) => {
+  res.redirect(307, "/api/health/traefik");
+});
 
 /**
- * HAProxy Statistics (Legacy - Kept for backward compatibility)
+ * Legacy HAProxy Statistics
  * GET /api/health/haproxy/stats - Redirects to Traefik stats
  */
-router.get(
-  "/haproxy/stats",
-  authMiddleware.requireAuth,
-  healthController.getTraefikStats
-);
+router.get("/haproxy/stats", authMiddleware.requireAuth, (req, res) => {
+  res.redirect(307, "/api/health/traefik/stats");
+});
 
 /**
- * HAProxy Recovery (Legacy - Kept for backward compatibility)
+ * Legacy HAProxy Recovery
  * POST /api/health/haproxy/recover - Redirects to Traefik recovery
  */
 router.post(
   "/haproxy/recover",
   authMiddleware.requireAuth,
   authMiddleware.requireAdmin,
-  healthController.recoverTraefikService
+  (req, res) => {
+    res.redirect(307, "/api/health/traefik/recover");
+  }
 );
 
 /**
- * HAProxy Configuration Validation (Legacy - Kept for backward compatibility)
+ * Legacy HAProxy Configuration Validation
  * GET /api/health/haproxy/validate - Redirects to Traefik validation
  */
-router.get(
-  "/haproxy/validate",
-  authMiddleware.requireAuth,
-  healthController.validateTraefikConfig
-);
+router.get("/haproxy/validate", authMiddleware.requireAuth, (req, res) => {
+  res.redirect(307, "/api/health/traefik/validate");
+});
 
 /**
  * Certificate Status Report

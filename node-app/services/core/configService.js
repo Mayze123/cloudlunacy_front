@@ -16,8 +16,8 @@ class ConfigService {
     this.paths = {
       base: process.env.CONFIG_BASE_PATH || "/app/config",
       agents: process.env.AGENTS_CONFIG_DIR || "/app/config/agents",
-      haproxy:
-        process.env.HAPROXY_CONFIG_PATH || "/app/config/haproxy/haproxy.cfg",
+      traefik:
+        process.env.TRAEFIK_CONFIG_PATH || "/app/config/traefik/traefik.yml",
       docker: process.env.DOCKER_COMPOSE_PATH || "/app/docker-compose.yml",
     };
 
@@ -93,7 +93,7 @@ class ConfigService {
 
       // Resolve other paths based on base path
       this.paths.agents = path.join(this.paths.base, "agents");
-      this.paths.haproxy = path.join(this.paths.base, "haproxy/haproxy.cfg");
+      this.paths.traefik = path.join(this.paths.base, "traefik/traefik.yml");
 
       logger.debug("Resolved configuration paths", { paths: this.paths });
       return true;
@@ -110,7 +110,7 @@ class ConfigService {
     // Use hardcoded paths as fallback
     this.paths.base = "/app/config";
     this.paths.agents = "/app/config/agents";
-    this.paths.haproxy = "/app/config/haproxy/haproxy.cfg";
+    this.paths.traefik = "/app/config/traefik/traefik.yml";
 
     logger.debug("Using fallback configuration paths", { paths: this.paths });
     return true;
@@ -183,28 +183,29 @@ agent:
         };
       }
 
-      // Check HAProxy routes for this agent through the HAProxy service
-      let mongoBackendExists = false;
-      let redisBackendExists = false;
+      // Check Traefik routes for this agent through the Traefik service
+      let mongoRouteExists = false;
+      let redisRouteExists = false;
 
       try {
-        // Use the enhanced HAProxy service if available
+        // Use the Traefik service if available
         const coreServices = require("../core");
-        if (coreServices && coreServices.enhancedHAProxyService) {
-          const routeInfo =
-            await coreServices.enhancedHAProxyService.getAgentRoutes(agentId);
+        if (coreServices && coreServices.traefikService) {
+          const routeInfo = await coreServices.traefikService.getAgentRoutes(
+            agentId
+          );
           if (routeInfo && routeInfo.routes) {
-            mongoBackendExists = routeInfo.routes.some(
+            mongoRouteExists = routeInfo.routes.some(
               (route) => route.type === "mongodb"
             );
-            redisBackendExists = routeInfo.routes.some(
+            redisRouteExists = routeInfo.routes.some(
               (route) => route.type === "redis"
             );
           }
         }
-      } catch (haproxyErr) {
+      } catch (traefikErr) {
         logger.warn(
-          `Failed to check HAProxy routes for agent ${agentId}: ${haproxyErr.message}`
+          `Failed to check Traefik routes for agent ${agentId}: ${traefikErr.message}`
         );
       }
 
@@ -279,14 +280,12 @@ agent:
       const result = {
         success: true,
         agentId,
-        haproxy: {
-          mongodb: mongoBackendExists,
-          redis: redisBackendExists,
+        routing: {
+          mongodb: mongoRouteExists,
+          redis: redisRouteExists,
         },
         domains: {
-          mongodb: mongoBackendExists
-            ? `${agentId}.${this.domains.mongo}`
-            : null,
+          mongodb: mongoRouteExists ? `${agentId}.${this.domains.mongo}` : null,
           app: `*.${agentId}.${this.domains.app}`,
         },
       };
