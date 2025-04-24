@@ -88,14 +88,12 @@ class ProxyService {
   }
 
   /**
-   * Add a MongoDB route for an agent
+   * Remove a route (HTTP only)
    * @param {string} agentId - Agent ID
-   * @param {string} targetHost - Target host
-   * @param {number} targetPort - Target port (default: 27017)
-   * @param {Object} options - Additional options
+   * @param {string} subdomain - Subdomain for HTTP routes
    * @returns {Promise<Object>} Result
    */
-  async addMongoDBRoute(agentId, targetHost, targetPort = 27017, options = {}) {
+  async removeRoute(agentId, subdomain) {
     if (!this.initialized) {
       await this.initialize();
     }
@@ -105,48 +103,16 @@ class ProxyService {
       throw new AppError("Agent ID is required", 400);
     }
 
-    if (!targetHost) {
-      throw new AppError("Target host is required", 400);
-    }
-
-    logger.info(
-      `Adding MongoDB route for ${agentId}.${this.mongoDomain} to ${targetHost}:${targetPort}`
-    );
-
-    // Add MongoDB route using Traefik service
-    return this.traefikService.addMongoDBRoute(
-      agentId,
-      targetHost,
-      targetPort,
-      options
-    );
-  }
-
-  /**
-   * Remove a route (HTTP or MongoDB)
-   * @param {string} agentId - Agent ID
-   * @param {string} subdomain - Subdomain (for HTTP routes)
-   * @param {string} type - Route type ("http" or "mongodb")
-   * @returns {Promise<Object>} Result
-   */
-  async removeRoute(agentId, subdomain, type = "http") {
-    if (!this.initialized) {
-      await this.initialize();
-    }
-
-    // Input validation
-    if (!agentId) {
-      throw new AppError("Agent ID is required", 400);
-    }
-
-    if (type === "http" && !subdomain) {
+    if (!subdomain) {
       throw new AppError("Subdomain is required for HTTP routes", 400);
     }
 
-    logger.info(`Removing ${type} route for agent ${agentId}`);
+    logger.info(
+      `Removing HTTP route for agent ${agentId} subdomain ${subdomain}`
+    );
 
     // Remove route using Traefik service
-    return this.traefikService.removeRoute(agentId, subdomain, type);
+    return this.traefikService.removeRoute(agentId, subdomain, "http");
   }
 
   /**

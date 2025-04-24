@@ -150,63 +150,19 @@ router.post(
   }
 );
 
-router.post(
-  "/proxy/mongodb",
-  authMiddleware.requireAuth,
-  async (req, res, next) => {
-    try {
-      // Add deprecation warning header
-      res.setHeader(
-        "X-Deprecated-API",
-        "This endpoint is deprecated. Please use /api/mongodb/register instead."
-      );
-
-      const { agentId, targetHost, targetPort, options } = req.body;
-
-      if (!agentId) {
-        throw new AppError("Agent ID is required", 400);
-      }
-
-      if (!targetHost) {
-        throw new AppError("Target host is required", 400);
-      }
-
-      // Log deprecation warning
-      logger.warn(
-        `Deprecated endpoint /api/proxy/mongodb was used for agent ${agentId}. This endpoint will be removed in a future version.`
-      );
-
-      const result = await proxyService.addMongoDBRoute(
-        agentId,
-        targetHost,
-        targetPort || 27017,
-        options || {}
-      );
-
-      res.json(result);
-    } catch (err) {
-      next(err);
-    }
-  }
-);
-
 router.delete("/proxy", authMiddleware.requireAuth, async (req, res, next) => {
   try {
-    const { agentId, subdomain, type } = req.body;
+    const { agentId, subdomain } = req.body;
 
     if (!agentId) {
       throw new AppError("Agent ID is required", 400);
     }
 
-    if (type === "http" && !subdomain) {
+    if (!subdomain) {
       throw new AppError("Subdomain is required for HTTP routes", 400);
     }
 
-    const result = await proxyService.removeRoute(
-      agentId,
-      subdomain,
-      type || "http"
-    );
+    const result = await proxyService.removeRoute(agentId, subdomain);
 
     res.json(result);
   } catch (err) {

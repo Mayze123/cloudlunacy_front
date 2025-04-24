@@ -246,13 +246,13 @@ exports.regenerateAgentCertificate = asyncHandler(async (req, res) => {
     let haproxyUpdated = false;
 
     try {
-      // Try to use the enhanced HAProxy service first
+      // Try to use MongoDB service first
       if (
-        coreServices.enhancedHAProxyService &&
-        coreServices.enhancedHAProxyService.initialized
+        coreServices.mongodbService &&
+        coreServices.mongodbService.initialized
       ) {
-        // Update MongoDB route using the enhanced service
-        await coreServices.enhancedHAProxyService.addMongoDBRoute(
+        // Update MongoDB route using the MongoDB service
+        await coreServices.mongodbService.registerAgent(
           agentId,
           targetIp || "127.0.0.1",
           27017,
@@ -260,7 +260,7 @@ exports.regenerateAgentCertificate = asyncHandler(async (req, res) => {
         );
 
         logger.info(
-          `HAProxy configuration updated for agent ${agentId} using enhanced HAProxy service`
+          `MongoDB registration updated for agent ${agentId} using MongoDB service`
         );
         haproxyUpdated = true;
       }
