@@ -1,4 +1,12 @@
 # Dynamic routes configuration for Traefik
 # This file is managed by the CloudLunacy Front API
 
+http:
+  routers:
+    traefik-healthcheck:
+      entryPoints:
+        - "traefik"
+      rule: "Path(`/ping`)"
+      service: "api@internal"
+
 # No dynamic HTTP or TCP routes currently defined.

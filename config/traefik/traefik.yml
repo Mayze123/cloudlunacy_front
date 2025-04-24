@@ -38,6 +38,10 @@ entryPoints:
   mongodb:
     address: ":27017"
 
+# Ping endpoint for Docker healthcheck
+ping:
+  entryPoint: traefik
+
 # Configure providers
 providers:
   file:
