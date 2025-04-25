@@ -19,22 +19,21 @@ services:
       - ./config/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
       - ./config/certs:/etc/traefik/certs:ro
       - ./config/certs/acme:/etc/traefik/acme
-      - ./config/traefik/cloudflare:/etc/traefik/cloudflare:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     env_file:
       - ./.env
     environment:
       - TZ=UTC
-      # Set the correct Cloudflare credentials for Traefik's DNS Challenge
+      # Cloudflare credentials in exact format expected by Traefik's DNS challenge
+      - CF_API_EMAIL=${CF_EMAIL}
+      - CF_API_KEY=${CF_API_KEY}
+      - CF_DNS_API_TOKEN=${CF_DNS_API_TOKEN}
+      - CF_ZONE_API_TOKEN=${CF_ZONE_API_TOKEN}
+      # Standard environment variables that Traefik expects
       - CLOUDFLARE_EMAIL=${CF_EMAIL}
       - CLOUDFLARE_API_KEY=${CF_API_KEY}
-      # Add this for Cloudflare API Token authentication (preferred over API key)
       - CLOUDFLARE_DNS_API_TOKEN=${CF_DNS_API_TOKEN}
       - CLOUDFLARE_ZONE_API_TOKEN=${CF_ZONE_API_TOKEN}
-      # Keep the original variables for backward compatibility
-      - CF_EMAIL=${CF_EMAIL}
-      - CF_API_KEY=${CF_API_KEY}
-      - CF_ZONE_API_TOKEN=${CF_ZONE_API_TOKEN}
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.dashboard.rule=Host(`traefik.${APP_DOMAIN:-cloudlunacy.uk}`)"
@@ -117,7 +116,6 @@ services:
     volumes:
       - ./config/certs:/etc/letsencrypt
       - ./config/certbot/www:/var/www/certbot
-      - ./config/certbot/cloudflare.ini:/etc/cloudflare/cloudflare.ini:ro
     environment:
       - CF_EMAIL=${CF_EMAIL}
       - CF_API_KEY=${CF_API_KEY}
