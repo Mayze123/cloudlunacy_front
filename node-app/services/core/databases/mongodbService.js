@@ -102,8 +102,11 @@ class MongoDBService extends DatabaseService {
       // Default options
       const { useTls = true, targetPort = 27017 } = options;
 
+      // Use the provided targetHost as-is for routing
+      const normalizedTargetIp = targetIp;
+
       logger.info(
-        `Registering MongoDB agent: ${agentId}, IP: ${targetIp}:${targetPort}`
+        `Registering MongoDB agent: ${agentId}, IP: ${targetIp} (normalized to ${normalizedTargetIp}):${targetPort}`
       );
 
       if (!this.traefikService) {

@@ -273,9 +273,17 @@ class TraefikService {
         });
 
         // Ensure we're using the targetHost and targetPort from the route
-        // Use the agent’s DNS entry so Traefik can resolve the remote host
-        const targetHost = `${route.agentId}.${this.mongoDomain}`;
-        const targetPort = route.targetPort || 27017;
+        const targetHost = route.targetHost;
+        const targetPort = route.targetPort || 27017; // Keep port fallback for now
+
+        // Add a check for missing targetHost
+        if (!targetHost) {
+          logger.error(
+            `Missing targetHost for MongoDB agent ${route.agentId}. Cannot configure service.`
+          );
+          // Skip creating the service if targetHost is missing
+          return;
+        }
 
         config.tcp.services[serviceName] = {
           loadBalancer: {
@@ -1087,7 +1095,7 @@ class TraefikService {
       const { targetHost, targetPort } = mongoRoute;
       let connectivityResult = false;
       let errorMessage = null;
-      
+
       try {
         // Try a more compatible approach to check connectivity
         // Instead of bash, use a simple nc (netcat) command if available, or just check via HTTP
@@ -1106,22 +1114,25 @@ class TraefikService {
             connectivityResult = true;
           } catch (wgetErr) {
             // Last resort, try a direct TCP connection with the Node.js net module
-            const net = require('net');
+            const net = require("net");
             await new Promise((resolve, reject) => {
-              const socket = net.createConnection({ host: targetHost, port: targetPort });
+              const socket = net.createConnection({
+                host: targetHost,
+                port: targetPort,
+              });
               const timeout = setTimeout(() => {
                 socket.destroy();
-                reject(new Error('Connection timeout'));
+                reject(new Error("Connection timeout"));
               }, 5000);
-              
-              socket.on('connect', () => {
+
+              socket.on("connect", () => {
                 clearTimeout(timeout);
                 socket.end();
                 connectivityResult = true;
                 resolve();
               });
-              
-              socket.on('error', (err) => {
+
+              socket.on("error", (err) => {
                 clearTimeout(timeout);
                 reject(err);
               });
