@@ -83,11 +83,11 @@ providers:
     exposedByDefault: false
     network: "cloudlunacy-frontend"
 
-  # 3) Consul Service Catalog (Service Discovery)
+  # 3) Consul KV Store
   consul:
     endpoints:
       - "consul:8500"
-    prefix: "traefik"
+    rootKey: "traefik"
     watch: true
     refreshInterval: 15s
     rateLimit:
