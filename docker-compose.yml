@@ -37,6 +37,10 @@ services:
       - "traefik.http.routers.dashboard.service=api@internal"
       - "traefik.http.routers.dashboard.entrypoints=websecure"
       - "traefik.http.routers.dashboard.middlewares=auth-admin@file"
+      # Redirect HTTP to HTTPS globally on the websecure entrypoint
+      - "traefik.http.routers.http-catchall.rule=hostregexp(`{host:.+}`)"
+      - "traefik.http.routers.http-catchall.entrypoints=web"
+      - "traefik.http.routers.http-catchall.middlewares=redirect-to-https@file"
     healthcheck:
       test: ["CMD", "traefik", "healthcheck", "--ping"]
       interval: 30s
@@ -76,30 +80,51 @@ services:
     restart: "no"
     volumes:
       - ./config:/config
+      - ./config/traefik:/etc/traefik # Ensure base traefik dir exists if needed
+      - ./config/traefik/dynamic:/etc/traefik/dynamic # Mount dynamic specifically
     command: >
       sh -c "
-        mkdir -p /config/traefik/dynamic &&
-        touch /config/traefik/dynamic/routes.yml &&
-        echo '# Dynamic routes configuration for Traefik' > /config/traefik/dynamic/routes.yml &&
-        echo '# This file is managed by the CloudLunacy Front API' >> /config/traefik/dynamic/routes.yml &&
-        echo 'http:' >> /config/traefik/dynamic/routes.yml &&
-        echo '  routers:' >> /config/traefik/dynamic/routes.yml &&
-        echo '    traefik-healthcheck:' >> /config/traefik/dynamic/routes.yml &&
-        echo '      entrypoints:' >> /config/traefik/dynamic/routes.yml &&
-        echo '        - \"traefik\"' >> /config/traefik/dynamic/routes.yml &&
-        echo '      rule: \"Path(`/ping`)\"' >> /config/traefik/dynamic/routes.yml &&
-        echo '      service: \"api@internal\"' >> /config/traefik/dynamic/routes.yml &&
-        echo '  services:' >> /config/traefik/dynamic/routes.yml &&
-        echo '    dummy-service:' >> /config/traefik/dynamic/routes.yml &&
-        echo '      loadBalancer:' >> /config/traefik/dynamic/routes.yml &&
-        echo '        servers:' >> /config/traefik/dynamic/routes.yml &&
-        echo '          - url: \"http://localhost:3005\"' >> /config/traefik/dynamic/routes.yml &&
-        echo 'tcp:' >> /config/traefik/dynamic/routes.yml &&
-        echo '  routers: {}' >> /config/traefik/dynamic/routes.yml &&
-        echo '  services: {}' >> /config/traefik/dynamic/routes.yml &&
-        chmod -R 777 /config/traefik/dynamic &&
-        echo 'Traefik configuration directories and permissions set up successfully'
+        mkdir -p /etc/traefik/dynamic &&
+        touch /etc/traefik/dynamic/middlewares.yml &&
+        echo 'http:' > /etc/traefik/dynamic/middlewares.yml &&
+        echo '  middlewares:' >> /etc/traefik/dynamic/middlewares.yml &&
+        echo '    auth-admin:' >> /etc/traefik/dynamic/middlewares.yml &&
+        echo '      basicAuth:' >> /etc/traefik/dynamic/middlewares.yml &&
+        echo '        users:' >> /etc/traefik/dynamic/middlewares.yml &&
+        echo '          - "admin:$$apr1$$7aaks1pj$$8G80W2g3vVfCuck.EwjZ80" # Default: admin/password, CHANGE THIS!' >> /etc/traefik/dynamic/middlewares.yml &&
+        echo '    redirect-to-https:' >> /etc/traefik/dynamic/middlewares.yml &&
+        echo '      redirectScheme:' >> /etc/traefik/dynamic/middlewares.yml &&
+        echo '        scheme: https' >> /etc/traefik/dynamic/middlewares.yml &&
+        echo '        permanent: true' >> /etc/traefik/dynamic/middlewares.yml &&
+        touch /etc/traefik/dynamic/routes.yml &&
+        echo '# Dynamic routes managed primarily via Consul KV' > /etc/traefik/dynamic/routes.yml &&
+        echo 'http:' >> /etc/traefik/dynamic/routes.yml &&
+        echo '  routers: {}' >> /etc/traefik/dynamic/routes.yml &&
+        echo '  services: {}' >> /etc/traefik/dynamic/routes.yml &&
+        echo 'tcp:' >> /etc/traefik/dynamic/routes.yml &&
+        echo '  routers: {}' >> /etc/traefik/dynamic/routes.yml &&
+        echo '  services: {}' >> /etc/traefik/dynamic/routes.yml &&
+        chmod -R 777 /etc/traefik/dynamic && # Ensure permissions are correct inside the container path
+        echo 'Traefik dynamic configuration files and permissions set up successfully'
       "
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.node-app.rule=Host(`api.${APP_DOMAIN:-cloudlunacy.uk}`)"
+      - "traefik.http.routers.node-app.entrypoints=websecure"
+      - "traefik.http.routers.node-app.tls=true"
+      - "traefik.http.services.node-app.loadbalancer.server.port=3005"
+      # Use a standard security middleware (assuming headers middleware defined elsewhere or using defaults)
+      # Define security headers middleware if needed, e.g., in dynamic config or another label set
+      # - "traefik.http.middlewares.node-app-security.headers.frameDeny=true" # Keep if needed
+      # Removed deprecated sslRedirect, handled by global redirect-to-https middleware
+      # - "traefik.http.middlewares.node-app-security.headers.sslRedirect=true"
+      # - "traefik.http.routers.node-app.middlewares=node-app-security" # Apply if middleware is defined
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3005/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
   certbot:
     image: certbot/certbot:latest
@@ -160,9 +185,12 @@ services:
       - "traefik.http.routers.node-app.entrypoints=websecure"
       - "traefik.http.routers.node-app.tls=true"
       - "traefik.http.services.node-app.loadbalancer.server.port=3005"
-      - "traefik.http.middlewares.node-app-security.headers.frameDeny=true"
-      - "traefik.http.middlewares.node-app-security.headers.sslRedirect=true"
-      - "traefik.http.routers.node-app.middlewares=node-app-security"
+      # Use a standard security middleware (assuming headers middleware defined elsewhere or using defaults)
+      # Define security headers middleware if needed, e.g., in dynamic config or another label set
+      # - "traefik.http.middlewares.node-app-security.headers.frameDeny=true" # Keep if needed
+      # Removed deprecated sslRedirect, handled by global redirect-to-https middleware
+      # - "traefik.http.middlewares.node-app-security.headers.sslRedirect=true"
+      # - "traefik.http.routers.node-app.middlewares=node-app-security" # Apply if middleware is defined
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3005/health"]
       interval: 30s
