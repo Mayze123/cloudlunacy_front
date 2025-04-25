@@ -65,9 +65,6 @@ const authMiddleware = require("../middleware/auth");
  *                 tlsEnabled:
  *                   type: boolean
  *                   description: Whether TLS is enabled for this connection
- *                 connectionTestResult:
- *                   type: object
- *                   description: Optional test results if connectivity testing was performed
  *       400:
  *         description: Missing required parameters
  *       404:
@@ -203,95 +200,6 @@ router.delete(
   authMiddleware.requireAgentAccess(),
   mongodbController.removeSubdomain
 );
-
-/**
- * @swagger
- * /api/mongodb/{agentId}/test:
- *   get:
- *     summary: Test MongoDB connectivity
- *     description: Tests the connectivity to an agent's MongoDB instance with comprehensive diagnostics
- *     tags: [MongoDB]
- *     security:
- *       - agentAuth: []
- *     parameters:
- *       - in: path
- *         name: agentId
- *         required: true
- *         schema:
- *           type: string
- *         description: ID of the agent to test MongoDB connectivity
- *       - in: query
- *         name: targetIp
- *         schema:
- *           type: string
- *         description: Optional override to test connectivity to a different IP address
- *     responses:
- *       200:
- *         description: Test results returned
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 message:
- *                   type: string
- *                 error:
- *                   type: string
- *                 direct:
- *                   type: object
- *                   description: Results of direct MongoDB connection test
- *                 proxy:
- *                   type: object
- *                   description: Results of connection through the proxy
- *                 diagnostics:
- *                   type: object
- *                   description: System diagnostics information
- *                 routing:
- *                   type: object
- *                   description: Routing configuration information
- *                 recommendations:
- *                   type: array
- *                   description: Automated recommendations based on test results
- *                   items:
- *                     type: string
- *       404:
- *         description: Agent not found
- *       500:
- *         description: Internal server error
- */
-router.get(
-  "/:agentId/test",
-  authMiddleware.requireAuth,
-  authMiddleware.requireAgentAccess(),
-  mongodbController.testConnection
-);
-
-/**
- * @swagger
- * /api/mongodb/test/{agentId}:
- *   get:
- *     summary: TEST ONLY - Test MongoDB connectivity without authentication
- *     description: For testing purposes only - Tests connectivity to a MongoDB instance without requiring authentication
- *     tags: [MongoDB, Testing]
- *     parameters:
- *       - in: path
- *         name: agentId
- *         required: true
- *         schema:
- *           type: string
- *         description: ID of the agent to test MongoDB connectivity
- *         example: "test-mongo-agent"
- *     responses:
- *       200:
- *         description: Test results returned
- *       404:
- *         description: Agent not found
- *       500:
- *         description: Internal server error
- */
-router.get("/test/:agentId", mongodbController.testConnection);
 
 /**
  * @swagger
