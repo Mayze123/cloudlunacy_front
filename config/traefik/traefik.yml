@@ -11,21 +11,32 @@ global:
 # Log configuration
 # -------------------------------
 log:
-  level: "INFO"
-  format: "common"
+  level: INFO
+  format: json
 
 # -------------------------------
 # Access logs
 # -------------------------------
 accessLog:
-  format: "common"
+  format: json
+  fields:
+    defaultMode: keep
+    headers:
+      names:
+        User-Agent: keep
+        Authorization: redact
+        Cookie: redact
+        Set-Cookie: redact
+        X-Forwarded-For: keep
+        X-Real-Ip: keep
 
 # -------------------------------
 # API & dashboard
 # -------------------------------
 api:
   dashboard: true
-  insecure: true # during initial setup
+  insecure: false
+  debug: false
 
 # -------------------------------
 # EntryPoints
@@ -41,6 +52,9 @@ entryPoints:
 
   websecure:
     address: ":443"
+    http:
+      tls:
+        certResolver: letsencrypt
 
   traefik:
     address: ":8081" # Traefik API / dashboard
@@ -65,23 +79,21 @@ providers:
 
   # 2) Docker provider (auto-discover services via labels)
   docker:
+    endpoint: "unix:///var/run/docker.sock"
     exposedByDefault: false
+    network: "cloudlunacy-frontend"
 
   # 3) Consul Service Catalog (Service Discovery)
-  consulCatalog:
-    prefix: "traefik" # tag namespace in Consul
-    defaultRule: "Host(`{{ normalize .Name }}.cloudlunacy.uk`)"
-    exposedByDefault: false
-    endpoint:
-      address: "consul:8500" # Consul agent
-      scheme: "http"
-    refreshInterval: "15s" # poll every 15s  [oai_citation:1‡Traefik Labs Documentation](https://doc.traefik.io/traefik/providers/consul-catalog/)
-
-  # 4) Consul KV store (Dynamic config store)
   consul:
     endpoints:
-      - "consul:8500" # list—even if single
-    rootKey: "traefik" # base path in KV  [oai_citation:2‡Traefik Labs Documentation](https://doc.traefik.io/traefik/providers/consul/)
+      - "consul:8500"
+    prefix: "traefik"
+    watch: true
+    refreshInterval: 15s
+    rateLimit:
+      period: 1s
+      average: 100
+      burst: 50
 
 # -------------------------------
 # TLS options
@@ -102,7 +114,10 @@ tls:
 certificatesResolvers:
   letsencrypt:
     acme:
-      email: "admin@cloudlunacy.uk"
-      storage: "/etc/traefik/acme/acme.json"
-      httpChallenge:
-        entryPoint: "web"
+      email: ${CF_EMAIL}
+      storage: /etc/traefik/acme/acme.json
+      dnsChallenge:
+        provider: cloudflare
+        resolvers:
+          - "1.1.1.1:53"
+          - "8.8.8.8:53"

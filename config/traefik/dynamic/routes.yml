@@ -8,7 +8,32 @@ http:
         - "traefik"
       rule: "Path(`/ping`)"
       service: "api@internal"
-  services: {}
+      middlewares:
+        - secure-headers
+
+    dashboard:
+      entryPoints:
+        - "websecure"
+      rule: "Host(`traefik.localhost`)"
+      service: "api@internal"
+      middlewares:
+        - auth-admin
+        - secure-headers
+      tls: {}
+
+    http-catchall:
+      entryPoints:
+        - "web"
+      rule: "hostregexp(`{host:.+}`)"
+      middlewares:
+        - redirect-to-https
+      service: "noop@internal"
+
+  services:
+    noop@internal:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:8080"
 
 tcp:
   routers:
