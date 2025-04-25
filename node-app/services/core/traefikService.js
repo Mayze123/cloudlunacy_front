@@ -153,13 +153,44 @@ class TraefikService {
       Object.entries(config.tcp.routers).forEach(([name, router]) => {
         if (name.startsWith("mongodb-")) {
           const agentId = name.replace("mongodb-", "");
+          const serviceName = router.service;
+
+          // Extract the targetHost and targetPort from the service configuration
+          let targetHost = "127.0.0.1";
+          let targetPort = 27017;
+
+          if (
+            config.tcp.services &&
+            config.tcp.services[serviceName] &&
+            config.tcp.services[serviceName].loadBalancer &&
+            config.tcp.services[serviceName].loadBalancer.servers &&
+            config.tcp.services[serviceName].loadBalancer.servers.length > 0
+          ) {
+            const addressParts =
+              config.tcp.services[
+                serviceName
+              ].loadBalancer.servers[0].address.split(":");
+            if (addressParts.length === 2) {
+              targetHost = addressParts[0];
+              targetPort = parseInt(addressParts[1], 10);
+            }
+          }
 
           this.routes.mongodb[agentId] = {
             agentId,
             router: name,
-            service: router.service,
+            service: serviceName,
             rule: router.rule,
+            targetHost,
+            targetPort,
           };
+
+          logger.debug(`Loaded MongoDB route for ${agentId}`, {
+            targetHost,
+            targetPort,
+            routerName: name,
+            serviceName,
+          });
         }
       });
 
@@ -233,9 +264,22 @@ class TraefikService {
           },
         };
 
+        // Add better debug logging to trace the issue
+        logger.debug(`Creating MongoDB route for ${route.agentId}`, {
+          targetHost: route.targetHost,
+          targetPort: route.targetPort,
+          routerName,
+          serviceName,
+        });
+
+        // Ensure we're using the targetHost and targetPort from the route
+        // and that they are not undefined, defaulting to 127.0.0.1:27017 only if missing
+        const targetHost = route.targetHost || "127.0.0.1";
+        const targetPort = route.targetPort || 27017;
+
         config.tcp.services[serviceName] = {
           loadBalancer: {
-            servers: [{ address: `${route.targetHost}:${route.targetPort}` }],
+            servers: [{ address: `${targetHost}:${targetPort}` }],
           },
         };
       });
@@ -993,6 +1037,103 @@ class TraefikService {
       return {
         running: false,
         error: err.message,
+      };
+    }
+  }
+
+  /**
+   * Diagnose MongoDB connection issues
+   * @param {string} agentId - Agent ID to diagnose
+   * @returns {Promise<Object>} Diagnostic result
+   */
+  async diagnoseMongoDBConnection(agentId) {
+    try {
+      if (!this.initialized) {
+        await this.initialize();
+      }
+
+      // Check if route exists
+      const mongoRoute = this.routes.mongodb[agentId];
+      if (!mongoRoute) {
+        return {
+          success: false,
+          message: `No MongoDB route found for agent ${agentId}`,
+          diagnostics: {
+            routeExists: false,
+          },
+        };
+      }
+
+      // Load configuration to verify what's actually in the file
+      const routesYaml = await fs.readFile(this.routesConfigPath, "utf8");
+      const config = yaml.load(routesYaml) || {};
+
+      const routerName = `mongodb-${agentId}`;
+      const serviceName = `mongodb-service-${agentId}`;
+
+      const configRouter = config.tcp?.routers?.[routerName];
+      const configService = config.tcp?.services?.[serviceName];
+
+      // Get the address from the config file
+      let configuredAddress = "unknown";
+      if (
+        configService?.loadBalancer?.servers &&
+        configService.loadBalancer.servers.length > 0
+      ) {
+        configuredAddress = configService.loadBalancer.servers[0].address;
+      }
+
+      // Run connectivity test
+      const { targetHost, targetPort } = mongoRoute;
+      let connectivityResult = false;
+      let errorMessage = null;
+
+      try {
+        // Check if port is open using netcat or telnet
+        const { stdout, stderr } = await exec(
+          `docker exec ${this.traefikContainer} timeout 5 bash -c "echo > /dev/tcp/${targetHost}/${targetPort}"`
+        );
+        connectivityResult = true;
+      } catch (err) {
+        connectivityResult = false;
+        errorMessage = err.message;
+      }
+
+      return {
+        success: true,
+        message: `MongoDB diagnostic complete for ${agentId}.${this.mongoDomain}`,
+        diagnostics: {
+          routeExists: true,
+          inMemoryRoute: {
+            targetHost: mongoRoute.targetHost,
+            targetPort: mongoRoute.targetPort,
+          },
+          configuredRoute: {
+            router: configRouter ? true : false,
+            service: configService ? true : false,
+            address: configuredAddress,
+          },
+          connectivityTest: {
+            success: connectivityResult,
+            error: errorMessage,
+          },
+          recommendation: connectivityResult
+            ? "Connection to MongoDB server appears available. Check if MongoDB is running and properly configured for TLS."
+            : `Cannot connect to MongoDB at ${targetHost}:${targetPort}. Ensure the host is reachable and the port is open.`,
+        },
+      };
+    } catch (err) {
+      logger.error(`Failed to diagnose MongoDB connection: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+      });
+
+      return {
+        success: false,
+        message: `Failed to diagnose MongoDB connection: ${err.message}`,
+        diagnostics: {
+          error: err.message,
+        },
       };
     }
   }

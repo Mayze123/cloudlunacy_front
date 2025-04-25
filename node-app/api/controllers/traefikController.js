@@ -167,3 +167,21 @@ exports.validateConfig = async (req, res, next) => {
     next(err);
   }
 };
+
+/**
+ * Diagnose MongoDB connection issues for an agent
+ */
+exports.diagnoseMongoDBConnection = async (req, res, next) => {
+  try {
+    const agentId = req.params.agentId || req.query.agentId;
+
+    if (!agentId) {
+      throw new AppError("Agent ID is required", 400);
+    }
+
+    const result = await traefikService.diagnoseMongoDBConnection(agentId);
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+};

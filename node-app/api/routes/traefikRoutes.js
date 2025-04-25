@@ -12,6 +12,10 @@ router.get("/traefik/health", traefikController.getHealth);
 
 // Test route without auth (for development/testing only)
 router.get("/traefik/routes/test", traefikController.getAllRoutes);
+router.get(
+  "/traefik/mongodb/diagnose/:agentId",
+  traefikController.diagnoseMongoDBConnection
+);
 
 // Protected routes (require authentication)
 router.get(
