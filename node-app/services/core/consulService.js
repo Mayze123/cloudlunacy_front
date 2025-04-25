@@ -13,7 +13,7 @@ class ConsulService {
     this.host = process.env.CONSUL_HOST || "localhost";
     this.port = process.env.CONSUL_PORT || 8500;
     this.baseUrl = `http://${this.host}:${this.port}/v1`;
-    this.prefix = "config";
+    this.prefix = "traefik";
     this.consul = null;
     this.isInitialized = false;
   }

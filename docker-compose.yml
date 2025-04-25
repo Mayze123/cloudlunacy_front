@@ -53,15 +53,15 @@ services:
     container_name: consul
     restart: unless-stopped
     ports:
-      - "8500:8500"  # HTTP API and Web UI
-      - "8600:8600/tcp"  # DNS Interface
-      - "8600:8600/udp"  # DNS Interface
+      - "8500:8500" # HTTP API and Web UI
+      - "8600:8600/tcp" # DNS Interface
+      - "8600:8600/udp" # DNS Interface
     networks:
       - frontend
       - backend
     volumes:
       - consul-data:/consul/data
-    command: agent -server -bootstrap-expect=1 -ui -client=0.0.0.0
+    command: agent -server -bootstrap-expect=1 -ui -client=0.0.0.0 -bind=0.0.0.0 -advertise=127.0.0.1
     healthcheck:
       test: ["CMD", "consul", "members"]
       interval: 30s
