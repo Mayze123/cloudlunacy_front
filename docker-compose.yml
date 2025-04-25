@@ -54,7 +54,11 @@ services:
       - backend
     volumes:
       - consul-data:/consul/data
-    command: agent -server -bootstrap-expect=1 -ui -client=0.0.0.0 -bind=0.0.0.0 -advertise=consul
+    command: >
+      agent -server -bootstrap-expect=1 
+      -ui -client=0.0.0.0 
+      -bind='{{ GetInterfaceIP "eth0" }}' 
+      -advertise='{{ GetInterfaceIP "eth0" }}'
     healthcheck:
       test: ["CMD", "consul", "members"]
       interval: 30s
@@ -157,6 +161,7 @@ volumes:
   traefik-acme-data:
   node-app-data:
   consul-data:
+    name: consul-data
 
 networks:
   frontend:
