@@ -152,7 +152,18 @@ services:
       - "traefik.http.routers.node-app.tls.certresolver=letsencrypt"
       - "traefik.http.routers.node-app.service=node-app-svc"
       - "traefik.http.services.node-app-svc.loadbalancer.server.port=${NODE_PORT:-3005}"
-      - "traefik.http.routers.node-app.middlewares=secure-headers@consulcatalog,cors-headers@consulcatalog"
+      - "traefik.http.middlewares.node-app-headers.headers.accesscontrolallowmethods=GET,POST,PUT,DELETE,OPTIONS"
+      - "traefik.http.middlewares.node-app-headers.headers.accesscontrolalloworiginlist=*"
+      - "traefik.http.middlewares.node-app-headers.headers.accesscontrolallowheaders=Content-Type,Authorization,X-Requested-With"
+      - "traefik.http.middlewares.node-app-headers.headers.accesscontrolallowcredentials=true"
+      - "traefik.http.middlewares.node-app-headers.headers.accesscontrolmaxage=100"
+      - "traefik.http.middlewares.node-app-headers.headers.addvaryheader=true"
+      - "traefik.http.middlewares.secure-headers.headers.forcestsheader=true"
+      - "traefik.http.middlewares.secure-headers.headers.sslredirect=true"
+      - "traefik.http.middlewares.secure-headers.headers.stsincludesubdomains=true"
+      - "traefik.http.middlewares.secure-headers.headers.stspreload=true"
+      - "traefik.http.middlewares.secure-headers.headers.stsseconds=31536000"
+      - "traefik.http.routers.node-app.middlewares=secure-headers,node-app-headers"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${NODE_PORT:-3005}/health"]
       interval: 30s

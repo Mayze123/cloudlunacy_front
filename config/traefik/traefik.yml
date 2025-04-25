@@ -48,18 +48,16 @@ providers:
 certificatesResolvers:
   letsencrypt:
     acme:
-      email: "m.taibou.i@gmail.com" # Hardcoded valid email instead of "${CF_EMAIL}"
+      email: "m.taibou.i@gmail.com" # Replace with your email
       storage: /etc/traefik/acme/acme.json
       # Use Cloudflare DNS challenge
       dnsChallenge:
         provider: cloudflare
-        delayBeforeCheck: 0 # Time to wait before checking DNS, adjust if needed
+        delayBeforeCheck: 90 # Increased delay to allow DNS propagation
         resolvers:
           - "1.1.1.1:53"
           - "8.8.8.8:53"
-        # Credentials are automatically picked up from environment variables:
-        # CF_API_KEY or CF_DNS_API_TOKEN, and CF_ZONE_API_TOKEN
-        # Ensure these are set correctly in your .env file and passed to the traefik service
+        # Environmental variable names must match exactly what the Traefik Cloudflare provider expects
 
 log:
   level: INFO # (DEBUG, ERROR, etc.)
