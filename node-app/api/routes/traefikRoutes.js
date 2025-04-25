@@ -10,6 +10,9 @@ const authMiddleware = require("../middleware/auth");
 // Public routes (for health checking)
 router.get("/traefik/health", traefikController.getHealth);
 
+// Test route without auth (for development/testing only)
+router.get("/traefik/routes/test", traefikController.getAllRoutes);
+
 // Protected routes (require authentication)
 router.get(
   "/traefik/routes",
