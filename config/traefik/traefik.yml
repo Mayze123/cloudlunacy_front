@@ -25,7 +25,7 @@ entryPoints:
     address: ":80"
     http:
       redirections:
-        entrypoint:
+        entryPoint:
           to: websecure
           scheme: https
 
@@ -40,7 +40,7 @@ entryPoints:
 
 # Ping endpoint for Docker healthcheck
 ping:
-  entrypoint: traefik
+  entryPoint: traefik
 
 # Configure providers
 providers:
@@ -84,4 +84,4 @@ certificatesResolvers:
       email: "admin@cloudlunacy.uk"
       storage: "/etc/traefik/acme/acme.json"
       httpChallenge:
-        entrypoint: "web"
+        entryPoint: "web"
