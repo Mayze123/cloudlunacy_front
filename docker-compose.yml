@@ -85,7 +85,7 @@ services:
         echo 'http:' >> /config/traefik/dynamic/routes.yml &&
         echo '  routers:' >> /config/traefik/dynamic/routes.yml &&
         echo '    traefik-healthcheck:' >> /config/traefik/dynamic/routes.yml &&
-        echo '      entryPoints:' >> /config/traefik/dynamic/routes.yml &&
+        echo '      entrypoints:' >> /config/traefik/dynamic/routes.yml &&
         echo '        - \"traefik\"' >> /config/traefik/dynamic/routes.yml &&
         echo '      rule: \"Path(`/ping`)\"' >> /config/traefik/dynamic/routes.yml &&
         echo '      service: \"api@internal\"' >> /config/traefik/dynamic/routes.yml &&
