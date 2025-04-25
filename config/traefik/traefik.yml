@@ -34,9 +34,16 @@ providers:
     endpoint: "unix:///var/run/docker.sock"
     exposedByDefault: false
     network: cloudlunacy-frontend # Use the frontend network defined in docker-compose
-  file:
-    directory: /etc/traefik/dynamic # Directory for dynamic configuration files
-    watch: true
+
+  # Enable Consul Catalog Provider
+  consulCatalog:
+    prefix: "traefik" # Default prefix for KV store keys
+    exposedByDefault: false
+    endpoint:
+      address: "consul:8500" # Address of the Consul agent
+      scheme: "http"
+    # Optional: Default rule template if needed globally
+    # defaultRule: "Host(`{{ .Name }}.example.com`)"
 
 certificatesResolvers:
   letsencrypt:
