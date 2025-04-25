@@ -273,8 +273,8 @@ class TraefikService {
         });
 
         // Ensure we're using the targetHost and targetPort from the route
-        // and that they are not undefined, defaulting to 127.0.0.1:27017 only if missing
-        const targetHost = route.targetHost || "127.0.0.1";
+        // Use the agent’s DNS entry so Traefik can resolve the remote host
+        const targetHost = `${route.agentId}.${this.mongoDomain}`;
         const targetPort = route.targetPort || 27017;
 
         config.tcp.services[serviceName] = {
@@ -1087,13 +1087,47 @@ class TraefikService {
       const { targetHost, targetPort } = mongoRoute;
       let connectivityResult = false;
       let errorMessage = null;
-
+      
       try {
-        // Check if port is open using netcat or telnet
-        const { stdout, stderr } = await exec(
-          `docker exec ${this.traefikContainer} timeout 5 bash -c "echo > /dev/tcp/${targetHost}/${targetPort}"`
-        );
-        connectivityResult = true;
+        // Try a more compatible approach to check connectivity
+        // Instead of bash, use a simple nc (netcat) command if available, or just check via HTTP
+        try {
+          // First try with nc (netcat) which is commonly available
+          const { stdout, stderr } = await exec(
+            `docker exec ${this.traefikContainer} timeout 5 nc -zv ${targetHost} ${targetPort}`
+          );
+          connectivityResult = true;
+        } catch (ncErr) {
+          // If netcat fails, try with wget or curl
+          try {
+            await exec(
+              `docker exec ${this.traefikContainer} timeout 5 wget -q -O /dev/null --spider ${targetHost}:${targetPort}`
+            );
+            connectivityResult = true;
+          } catch (wgetErr) {
+            // Last resort, try a direct TCP connection with the Node.js net module
+            const net = require('net');
+            await new Promise((resolve, reject) => {
+              const socket = net.createConnection({ host: targetHost, port: targetPort });
+              const timeout = setTimeout(() => {
+                socket.destroy();
+                reject(new Error('Connection timeout'));
+              }, 5000);
+              
+              socket.on('connect', () => {
+                clearTimeout(timeout);
+                socket.end();
+                connectivityResult = true;
+                resolve();
+              });
+              
+              socket.on('error', (err) => {
+                clearTimeout(timeout);
+                reject(err);
+              });
+            });
+          }
+        }
       } catch (err) {
         connectivityResult = false;
         errorMessage = err.message;
