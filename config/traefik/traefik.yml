@@ -54,6 +54,7 @@ providers:
     watch: true
 
   consulCatalog:
+    endpoint: "consul:8500"
     prefix: "traefik"
     exposedByDefault: false
 
