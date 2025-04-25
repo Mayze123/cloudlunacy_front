@@ -10,5 +10,16 @@ http:
       service: "api@internal"
   services: {}
 tcp:
-  routers: {}
-  services: {}
+  routers:
+    mongodb:
+      entryPoints:
+        - "mongodb"
+      rule: "HostSNI(`*.mongodb.cloudlunacy.uk`)"
+      service: "mongodb"
+      tls:
+        passthrough: true
+  services:
+    mongodb:
+      loadBalancer:
+        servers:
+          - address: "127.0.0.1:27017"

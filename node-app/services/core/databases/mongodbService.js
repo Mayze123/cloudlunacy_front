@@ -102,8 +102,15 @@ class MongoDBService extends DatabaseService {
       // Default options
       const { useTls = true, targetPort = 27017 } = options;
 
+      // Normalize the targetIp - if it's a Docker host IP (172.x.x.x), use 127.0.0.1 instead
+      // This ensures consistency between development and production environments
+      const normalizedTargetIp =
+        targetIp && (targetIp.startsWith("172.") || targetIp === "0.0.0.0")
+          ? "127.0.0.1"
+          : targetIp;
+
       logger.info(
-        `Registering MongoDB agent: ${agentId}, IP: ${targetIp}:${targetPort}`
+        `Registering MongoDB agent: ${agentId}, IP: ${targetIp} (normalized to ${normalizedTargetIp}):${targetPort}`
       );
 
       if (!this.traefikService) {
@@ -134,7 +141,7 @@ class MongoDBService extends DatabaseService {
         try {
           const routingResult = await this.traefikService.addMongoDBRoute(
             agentId,
-            targetIp,
+            normalizedTargetIp, // Use normalized IP here
             targetPort,
             { useTls }
           );
@@ -310,15 +317,23 @@ class MongoDBService extends DatabaseService {
         connectionInfo = this.connectionCache.get(agentId);
         logger.debug(`Using cached connection info for ${agentId}`);
       } else if (targetIp) {
+        // Normalize the targetIp just like in registerAgent
+        const normalizedTargetIp =
+          targetIp && (targetIp.startsWith("172.") || targetIp === "0.0.0.0")
+            ? "127.0.0.1"
+            : targetIp;
+
         // Create temporary connection info
         connectionInfo = {
           agentId,
-          targetIp,
+          targetIp: normalizedTargetIp,
           targetPort: 27017, // Default MongoDB port
           domain: `${agentId}.${this.mongoDomain}`,
           useTls: false,
         };
-        logger.debug(`Created temporary connection info for ${agentId}`);
+        logger.debug(
+          `Created temporary connection info for ${agentId} with normalized IP: ${normalizedTargetIp}`
+        );
       } else {
         logger.error(
           `No connection info available for agent ${agentId} and no targetIp provided`
