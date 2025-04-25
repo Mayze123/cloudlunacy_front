@@ -1,93 +1,64 @@
-# /etc/traefik/dynamic/routes.yml
+global:
+  checkNewVersion: true
+  sendAnonymousUsage: false
 
-# -------------------------------
-# HTTP Dynamic Configuration
-# -------------------------------
-http:
-  routers:
-    # Healthcheck endpoint on the "traefik" entryPoint
-    traefik-healthcheck:
-      entryPoints:
-        - traefik
-      rule: Path(`/ping`)
-      service: api@internal
+api:
+  dashboard: true
+  # insecure: true # Access dashboard via http://traefik.localhost:8081, use labels for secure access
 
-    # Secure dashboard with basic auth on HTTPS
-    dashboard:
-      entryPoints:
-        - websecure
-      rule: Host(`traefik.cloudlunacy.uk`)
-      service: api@internal
-      middlewares:
-        - auth-admin
-      tls: {}
-
-  middlewares:
-    # Basic auth for dashboard access
-    auth-admin:
-      basicAuth:
-        users:
-          - "admin:$apr1$ruca84Hq$mbjdMZBAG.KWn7vfN/SNK/" # change in production
-
-    # Default redirect from HTTP to HTTPS
-    web-to-websecure:
-      redirectScheme:
-        scheme: https
-        permanent: true
-
-    # Compression for HTTP responses
-    compress:
-      compress: {}
-
-    # Security headers to harden HTTP
-    secure-headers:
-      headers:
-        frameDeny: true
-        browserXssFilter: true
-        contentTypeNosniff: true
-        forceSTSHeader: true
-        stsIncludeSubdomains: true
-        stsPreload: true
-        stsSeconds: 31536000
-
-    # CORS policy for your applications
-    cors-headers:
-      headers:
-        accessControlAllowMethods:
-          - GET
-          - POST
-          - PUT
-          - DELETE
-          - OPTIONS
-        accessControlAllowOriginList:
-          - "https://*.cloudlunacy.uk"
-          - "https://*.apps.cloudlunacy.uk"
-        accessControlAllowCredentials: true
-        accessControlMaxAge: 100
-        addVaryHeader: true
-
-  services:
-    # Default backend service (updated dynamically by your app)
-    node-app-service:
-      loadBalancer:
-        servers:
-          - url: http://node-app:3005
-
-# -------------------------------
-# TCP Dynamic Configuration
-# -------------------------------
-tcp:
-  routers:
-    mongodb:
-      entryPoints:
-        - mongodb
-      rule: HostSNI(`*.mongodb.cloudlunacy.uk`)
-      service: mongodb
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+  websecure:
+    address: ":443"
+    http:
       tls:
-        passthrough: true
+        certResolver: letsencrypt # Default cert resolver
+        domains:
+          - main: "${APP_DOMAIN:-cloudlunacy.uk}" # Main domain from .env
+            sans:
+              - "api.${APP_DOMAIN:-cloudlunacy.uk}" # API subdomain
+              - "traefik.${APP_DOMAIN:-cloudlunacy.uk}" # Traefik dashboard domain (if needed securely)
+              # Add other domains/SANs as needed
+  mongodb:
+    address: ":27017" # Entrypoint for MongoDB
 
-  services:
-    mongodb:
-      loadBalancer:
-        servers:
-          - address: 127.0.0.1:27017
+providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+    network: cloudlunacy-frontend # Use the frontend network defined in docker-compose
+  file:
+    directory: /etc/traefik/dynamic # Directory for dynamic configuration files
+    watch: true
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: "${CF_EMAIL}" # Your Let's Encrypt email from .env
+      storage: /etc/traefik/acme/acme.json # Path inside the container to store certs
+      # Use Cloudflare DNS challenge
+      dnsChallenge:
+        provider: cloudflare
+        delayBeforeCheck: 0 # Time to wait before checking DNS, adjust if needed
+        resolvers:
+          - "1.1.1.1:53"
+          - "8.8.8.8:53"
+        # Credentials are automatically picked up from environment variables:
+        # CF_API_KEY or CF_DNS_API_TOKEN, and CF_ZONE_API_TOKEN
+        # Ensure these are set correctly in your .env file and passed to the traefik service
+
+log:
+  level: INFO # (DEBUG, ERROR, etc.)
+  # filePath: "/var/log/traefik.log" # Uncomment to log to a file inside the container
+
+accessLog:
+  {} # Enable access logs with default settings
+  # filePath: "/var/log/access.log" # Uncomment to log to a file
+  # format: json # Uncomment for JSON format
