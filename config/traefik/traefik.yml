@@ -49,19 +49,26 @@ providers:
     watch: true
 
   docker:
-    endpoint: "unix:///var/run/docker.sock"
     exposedByDefault: false
     watch: true
 
   consulCatalog:
-    endpoint: "consul:8500"
     prefix: "traefik"
     exposedByDefault: false
+    refreshInterval: "30s"
+    connectAware: true
+    connectByDefault: false
+    serviceName: "traefik"
+    providers:
+      consul:
+        address: "consul:8500"
+        scheme: "http"
 
   consul:
-    endpoint: "consul:8500"
     prefix: "traefik"
     watch: true
+    endpoints:
+      - "consul:8500"
 
 # TLS options
 tls:
