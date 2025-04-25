@@ -53,13 +53,13 @@ certificatesResolvers:
       # Use Cloudflare DNS challenge
       dnsChallenge:
         provider: cloudflare
-        delayBeforeCheck: 90 # Increased delay to allow DNS propagation
+        delayBeforeCheck: 120 # Increased delay to allow DNS propagation
         resolvers:
           - "1.1.1.1:53"
           - "8.8.8.8:53"
 
 log:
-  level: INFO # (DEBUG, ERROR, etc.)
+  level: DEBUG # Temporarily increased for troubleshooting
   # filePath: "/var/log/traefik.log" # Uncomment to log to a file inside the container
 
 accessLog:
