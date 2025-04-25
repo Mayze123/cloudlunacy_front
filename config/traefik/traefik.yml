@@ -50,7 +50,6 @@ providers:
 
   docker:
     exposedByDefault: false
-    watch: true
 
   consulCatalog:
     exposedByDefault: false
@@ -64,7 +63,6 @@ providers:
 
   consul:
     rootKey: "traefik"
-    watch: true
     endpoints:
       - "consul:8500"
 
