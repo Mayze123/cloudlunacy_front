@@ -57,7 +57,6 @@ certificatesResolvers:
         resolvers:
           - "1.1.1.1:53"
           - "8.8.8.8:53"
-        # Environmental variable names must match exactly what the Traefik Cloudflare provider expects
 
 log:
   level: INFO # (DEBUG, ERROR, etc.)

@@ -19,18 +19,22 @@ services:
       - ./config/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
       - ./config/certs:/etc/traefik/certs:ro
       - ./config/certs/acme:/etc/traefik/acme
+      - ./config/traefik/cloudflare:/etc/traefik/cloudflare:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     env_file:
       - ./.env
     environment:
       - TZ=UTC
-      # Set the CLOUDFLARE_EMAIL and CLOUDFLARE_API_KEY for Traefik's Cloudflare Provider
+      # Set the correct Cloudflare credentials for Traefik's DNS Challenge
       - CLOUDFLARE_EMAIL=${CF_EMAIL}
       - CLOUDFLARE_API_KEY=${CF_API_KEY}
-      # Keep the original variables for backward compatibility with other services
+      # Add this for Cloudflare API Token authentication (preferred over API key)
+      - CLOUDFLARE_DNS_API_TOKEN=${CF_DNS_API_TOKEN}
+      - CLOUDFLARE_ZONE_API_TOKEN=${CF_ZONE_API_TOKEN}
+      # Keep the original variables for backward compatibility
+      - CF_EMAIL=${CF_EMAIL}
       - CF_API_KEY=${CF_API_KEY}
       - CF_ZONE_API_TOKEN=${CF_ZONE_API_TOKEN}
-      - CLOUDFLARE_DNS_API_TOKEN=${CF_DNS_API_TOKEN}
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.dashboard.rule=Host(`traefik.${APP_DOMAIN:-cloudlunacy.uk}`)"
@@ -112,12 +116,17 @@ services:
       - backend
     volumes:
       - ./config/certs:/etc/letsencrypt
+      - ./config/certbot/www:/var/www/certbot
+      - ./config/certbot/cloudflare.ini:/etc/cloudflare/cloudflare.ini:ro
     environment:
       - CF_EMAIL=${CF_EMAIL}
       - CF_API_KEY=${CF_API_KEY}
       - CLOUDFLARE_DNS_API_TOKEN=${CF_DNS_API_TOKEN}
       - CF_ZONE_API_TOKEN=${CF_ZONE_API_TOKEN}
-    entrypoint: "/bin/sh -c 'sleep infinity'"
+      # Add these standardized variables for certbot Cloudflare plugin
+      - CLOUDFLARE_EMAIL=${CF_EMAIL}
+      - CLOUDFLARE_API_KEY=${CF_API_KEY}
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew --quiet; sleep 12h & wait $${!}; done;'"
 
   node-app:
     build:
