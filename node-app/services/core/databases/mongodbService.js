@@ -102,15 +102,8 @@ class MongoDBService extends DatabaseService {
       // Default options
       const { useTls = true, targetPort = 27017 } = options;
 
-      // Normalize the targetIp - if it's a Docker host IP (172.x.x.x), use 127.0.0.1 instead
-      // This ensures consistency between development and production environments
-      const normalizedTargetIp =
-        targetIp && (targetIp.startsWith("172.") || targetIp === "0.0.0.0")
-          ? "127.0.0.1"
-          : targetIp;
-
       logger.info(
-        `Registering MongoDB agent: ${agentId}, IP: ${targetIp} (normalized to ${normalizedTargetIp}):${targetPort}`
+        `Registering MongoDB agent: ${agentId}, IP: ${targetIp}:${targetPort}`
       );
 
       if (!this.traefikService) {
@@ -141,7 +134,7 @@ class MongoDBService extends DatabaseService {
         try {
           const routingResult = await this.traefikService.addMongoDBRoute(
             agentId,
-            normalizedTargetIp, // Use normalized IP here
+            targetIp,
             targetPort,
             { useTls }
           );
@@ -195,7 +188,7 @@ class MongoDBService extends DatabaseService {
       const now = new Date().toISOString();
       this.connectionCache.set(agentId, {
         agentId,
-        targetIp: normalizedTargetIp, // Store normalized IP in cache
+        targetIp,
         targetPort,
         domain,
         useTls,
@@ -214,14 +207,14 @@ class MongoDBService extends DatabaseService {
         success: true,
         message: `MongoDB agent ${agentId} registered successfully`,
         agentId,
-        targetIp: normalizedTargetIp,
+        targetIp,
         targetPort,
         domain,
         mongodbUrl: `mongodb://${domain}:27017`,
         routingService: "traefik",
         testResults: {
-          note: "MongoDB connection testing has been disabled in the frontend as it's architecturally more appropriate for the agent to verify its own MongoDB connection"
-        }
+          note: "MongoDB connection testing has been disabled in the frontend as it's architecturally more appropriate for the agent to verify its own MongoDB connection",
+        },
       };
     } catch (error) {
       logger.error(`Error registering MongoDB agent: ${error.message}`, {
@@ -362,9 +355,9 @@ class MongoDBService extends DatabaseService {
       try {
         // Increase timeouts for production environments with higher load or network latency
         const options = {
-          connectTimeoutMS: 10000,      // Increased from 5000
+          connectTimeoutMS: 10000, // Increased from 5000
           serverSelectionTimeoutMS: 10000, // Increased from 5000
-          socketTimeoutMS: 10000,       // Added to handle slow socket connections
+          socketTimeoutMS: 10000, // Added to handle slow socket connections
         };
 
         const directUrl = `mongodb://${connectionInfo.targetIp}:${connectionInfo.targetPort}`;
@@ -392,37 +385,43 @@ class MongoDBService extends DatabaseService {
         logger.warn(
           `Direct MongoDB connection to ${connectionInfo.targetIp} failed: ${directError.message}`
         );
-        
+
         // Try alternative direct connection to localhost as fallback
         try {
           await directClient?.close().catch(() => {});
-          
-          logger.debug(`Attempting fallback direct connection to localhost:${connectionInfo.targetPort}`);
+
+          logger.debug(
+            `Attempting fallback direct connection to localhost:${connectionInfo.targetPort}`
+          );
           const localhostUrl = `mongodb://localhost:${connectionInfo.targetPort}`;
-          
+
           directClient = new MongoClient(localhostUrl, {
             connectTimeoutMS: 10000,
             serverSelectionTimeoutMS: 10000,
             socketTimeoutMS: 10000,
           });
-          
+
           await directClient.connect();
           const adminDb = directClient.db("admin");
           const serverInfo = await adminDb.command({ serverStatus: 1 });
-          
-          logger.info(`Fallback direct MongoDB connection successful to localhost`);
-          
+
+          logger.info(
+            `Fallback direct MongoDB connection successful to localhost`
+          );
+
           result.direct = {
             success: true,
             serverVersion: serverInfo.version,
             uptime: serverInfo.uptime,
             note: "Connected via localhost fallback",
           };
-          
+
           // Set overall success to true
           result.success = true;
         } catch (localhostError) {
-          logger.error(`All direct MongoDB connection attempts failed. Last error: ${localhostError.message}`);
+          logger.error(
+            `All direct MongoDB connection attempts failed. Last error: ${localhostError.message}`
+          );
           result.direct = {
             success: false,
             error: directError.message,
@@ -455,11 +454,11 @@ class MongoDBService extends DatabaseService {
           );
 
           proxyClient = new MongoClient(proxyUrl, {
-            connectTimeoutMS: 10000,        // Increased from 5000
+            connectTimeoutMS: 10000, // Increased from 5000
             serverSelectionTimeoutMS: 10000, // Increased from 5000
-            socketTimeoutMS: 10000,         // Added for better handling
+            socketTimeoutMS: 10000, // Added for better handling
             // Allow invalid certificates for testing purposes
-            tlsAllowInvalidCertificates: true
+            tlsAllowInvalidCertificates: true,
           });
 
           // Just attempt to connect - we expect auth to fail but TCP connection to succeed
@@ -519,14 +518,17 @@ class MongoDBService extends DatabaseService {
       if (!result.success) {
         // We can see from the agent logs that MongoDB is running locally and the agent can connect
         // This means our test might be failing due to network restrictions, but the actual service is working
-        logger.warn("Connection test failed but agent reports MongoDB is running. Marking as partially successful.");
-        result.message = 
+        logger.warn(
+          "Connection test failed but agent reports MongoDB is running. Marking as partially successful."
+        );
+        result.message =
           "MongoDB connection test failed, but agent reports MongoDB is running locally. " +
           "This is likely due to network restrictions between the front server and the agent.";
         result.partialSuccess = true;
         result.success = true; // Mark as success to prevent registration failure
       } else {
-        result.message = "MongoDB connection test partially or fully successful";
+        result.message =
+          "MongoDB connection test partially or fully successful";
       }
 
       return result;
