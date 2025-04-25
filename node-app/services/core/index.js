@@ -1,7 +1,7 @@
 /**
  * Core Services Module
  *
- * Consolidated version of the core services using Traefik for proxying.
+ * Consolidated version of the core services using Consul for configuration storage and proxying.
  * Focuses on the primary goal of proxying traffic to agent VPSs using subdomains.
  */
 
@@ -9,21 +9,17 @@ const logger = require("../../utils/logger").getLogger("coreServices");
 const ProxyService = require("./proxyService");
 const AgentService = require("./agentService");
 const ConfigService = require("./configService");
-const TraefikService = require("./traefikService");
 const CertificateService = require("./certificateService");
 const CertificateRenewalService = require("./certificateRenewalService");
 const CertificateMetricsService = require("./certificateMetricsService");
 const MongoDBService = require("./databases/mongodbService");
+const ConsulService = require("./consulService");
 
 // Create instances of core services
 const certificateService = new CertificateService();
-
-// Create Traefik service
-const traefikService = new TraefikService(certificateService);
-
 const proxyService = new ProxyService();
-// Initialize MongoDB service with proxy and Traefik dependencies
-const mongodbService = new MongoDBService(proxyService, traefikService);
+// Initialize MongoDB service with proxy dependency
+const mongodbService = new MongoDBService(proxyService);
 const configService = new ConfigService();
 const certificateRenewalService = new CertificateRenewalService(
   certificateService
@@ -35,6 +31,9 @@ const certificateMetricsService = new CertificateMetricsService(
 // Initialize agent service with dependencies
 const agentService = new AgentService(configService);
 
+// Initialize Consul service
+const consulService = new ConsulService();
+
 // Export all service instances
 module.exports = {
   // Primary services
@@ -42,17 +41,17 @@ module.exports = {
   agentService,
   configService,
   mongodbService,
-  traefikService,
   certificateService,
   certificateRenewalService,
   certificateMetricsService,
+  consulService,
 
   /**
-   * Get the Traefik service instance
-   * @returns {TraefikService} Traefik service
+   * Get the Consul service instance
+   * @returns {ConsulService} Consul service
    */
-  getTraefikService: function () {
-    return traefikService;
+  getConsulService: function () {
+    return consulService;
   },
 
   /**
@@ -78,20 +77,20 @@ module.exports = {
         return false;
       }
 
-      // 3. Initialize Traefik service - continue even if it fails
+      // 3. Initialize Consul service for KV store
       try {
-        const traefikInitialized = await traefikService.initialize();
-        if (!traefikInitialized) {
+        const consulInitialized = await consulService.initialize();
+        if (!consulInitialized) {
           logger.warn(
-            "Traefik service initialization had issues but will continue with limited functionality"
+            "Consul service initialization had issues but will continue with limited functionality"
           );
           // Continue anyway - don't return false
         } else {
-          logger.info("Traefik service initialized successfully");
+          logger.info("Consul service initialized successfully");
         }
-      } catch (traefikError) {
+      } catch (consulError) {
         logger.warn(
-          `Traefik service initialization error: ${traefikError.message}. Continuing with limited functionality.`
+          `Consul service initialization error: ${consulError.message}. Continuing with limited functionality.`
         );
         // Continue anyway - don't return false
       }
@@ -147,5 +146,36 @@ module.exports = {
       });
       return false;
     }
+  },
+
+  /**
+   * Enhanced certificate service with additional functionality
+   */
+  enhancedCertificateService: {
+    certManager: certificateService,
+    renewAgentCertificate: async (agentId) => {
+      return await certificateService.renewAgentCertificate(agentId);
+    },
+    generateLetsEncryptCertificate: async (domain, options = {}) => {
+      return await certificateService.generateLetsEncryptCertificate(
+        domain,
+        options
+      );
+    },
+    renewLetsEncryptCertificate: async (certificate) => {
+      return await certificateService.renewLetsEncryptCertificate(certificate);
+    },
+    getCertificateReport: async () => {
+      return await certificateService.getCertificateReport();
+    },
+    getMetrics: async () => {
+      return await certificateMetricsService.getCurrentMetrics();
+    },
+    initialize: async () => {
+      if (!certificateService.initialized) {
+        return await certificateService.initialize();
+      }
+      return true;
+    },
   },
 };

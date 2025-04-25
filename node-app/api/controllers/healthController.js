@@ -51,7 +51,7 @@ exports.getHealth = asyncHandler(async (req, res) => {
       : "not-available",
     configService: coreServices.configService.initialized,
     routingService: coreServices.routingService.initialized,
-    traefikService: coreServices.traefikService ? "ok" : "not-available",
+    consulService: coreServices.consulService ? "ok" : "not-available",
     letsencryptService: coreServices.letsencryptService
       ? "ok"
       : "not-available",
@@ -92,26 +92,26 @@ exports.checkMongo = asyncHandler(async (req, res) => {
 });
 
 /**
- * Check Traefik health
+ * Check Consul health
  *
- * GET /api/health/traefik
+ * GET /api/health/consul
  */
-exports.checkTraefik = asyncHandler(async (req, res) => {
-  logger.info("Checking Traefik health");
+exports.checkConsul = asyncHandler(async (req, res) => {
+  logger.info("Checking Consul health");
 
-  // Check Traefik container status
-  const containerStatus = await checkTraefikContainer();
+  // Check Consul container status
+  const containerStatus = await checkConsulContainer();
 
-  // Check if dashboard (port 8081) is accessible
-  const dashboardAccessible = await checkPort(8081);
+  // Check if API (port 8500) is accessible
+  const apiAccessible = await checkPort(8500);
 
   // Check if configuration is valid
-  const configValid = await checkTraefikConfig();
+  const configValid = await checkConsulConfig();
 
   res.status(200).json({
     success: true,
     containerStatus,
-    dashboardAccessible,
+    apiAccessible,
     configValid,
   });
 });
@@ -127,13 +127,26 @@ exports.repair = asyncHandler(async (req, res) => {
   // Repair core services
   const servicesRepaired = await coreServices.repair();
 
-  // Restart Traefik
-  const traefikRestarted = await restartTraefik();
+  // Check consul service
+  let consulRepaired = false;
+  if (coreServices.consulService && coreServices.consulService.isInitialized) {
+    try {
+      // Try to rebuild the key structure in Consul
+      await coreServices.consulService.initializeKeyStructure();
+      consulRepaired = true;
+    } catch (err) {
+      logger.error(`Failed to repair Consul: ${err.message}`);
+    }
+  }
+
+  // Restart Consul
+  const consulRestarted = await restartConsul();
 
   res.status(200).json({
     success: true,
     servicesRepaired,
-    traefikRestarted,
+    consulRepaired,
+    consulRestarted,
     message: "System repair completed",
   });
 });
@@ -147,51 +160,65 @@ exports.repair = asyncHandler(async (req, res) => {
  */
 exports.checkMongoDBConnections = async (req, res) => {
   try {
-    await coreServices.configService.initialize();
+    // Check if Consul service is available
+    if (
+      !coreServices.consulService ||
+      !coreServices.consulService.isInitialized
+    ) {
+      return res.status(500).json({
+        success: false,
+        message: "Consul service is not available",
+      });
+    }
 
-    const traefikConfig = await coreServices.configService.getConfig("traefik");
+    // Get TCP routers and services from Consul
+    const tcpRouters = await coreServices.consulService.get("tcp/routers");
+    const tcpServices = await coreServices.consulService.get("tcp/services");
     const issues = [];
 
-    // Check MongoDB routers and services in Traefik configuration
-    if (
-      traefikConfig.http &&
-      traefikConfig.http.services &&
-      traefikConfig.http.services["mongodb-service"]
-    ) {
-      const service = traefikConfig.http.services["mongodb-service"];
+    // Check MongoDB routers and services in configuration
+    if (!tcpRouters || Object.keys(tcpRouters).length === 0) {
+      issues.push({
+        type: "missing_routers",
+        message: "No TCP routers configured in Consul",
+      });
+    } else {
+      // Check each router for its corresponding service
+      for (const [name, router] of Object.entries(tcpRouters)) {
+        const serviceName = router.service;
 
-      // Check if service has servers
-      if (
-        !service.loadBalancer ||
-        !service.loadBalancer.servers ||
-        service.loadBalancer.servers.length === 0
-      ) {
-        issues.push({
-          type: "missing_servers",
-          service: "mongodb-service",
-        });
-      } else {
-        // Check each server for issues
-        for (const server of service.loadBalancer.servers) {
-          // Extract agent ID from server URL
-          const urlMatch = server.url.match(/mongodb-([^.]+)\./);
-          const agentId = urlMatch ? urlMatch[1] : null;
+        if (!serviceName) {
+          issues.push({
+            type: "missing_service_reference",
+            router: name,
+          });
+          continue;
+        }
 
-          // Check if server has a URL
-          if (!server.url) {
-            issues.push({
-              type: "missing_url",
-              agentId,
-              serverUrl: server.url,
-            });
-          }
+        // Check if the service exists
+        if (!tcpServices || !tcpServices[serviceName]) {
+          issues.push({
+            type: "missing_service",
+            router: name,
+            service: serviceName,
+          });
+          continue;
+        }
+
+        // Check if service has servers
+        const service = tcpServices[serviceName];
+        if (
+          !service.loadBalancer ||
+          !service.loadBalancer.servers ||
+          service.loadBalancer.servers.length === 0
+        ) {
+          issues.push({
+            type: "missing_servers",
+            router: name,
+            service: serviceName,
+          });
         }
       }
-    } else {
-      issues.push({
-        type: "missing_service",
-        service: "mongodb-service",
-      });
     }
 
     // Return the results
@@ -200,6 +227,8 @@ exports.checkMongoDBConnections = async (req, res) => {
       mongodbConnections: {
         issues: issues,
         healthy: issues.length === 0,
+        routerCount: tcpRouters ? Object.keys(tcpRouters).length : 0,
+        serviceCount: tcpServices ? Object.keys(tcpServices).length : 0,
       },
     });
   } catch (err) {
@@ -244,19 +273,26 @@ async function checkMongoDBHealth() {
  */
 async function checkMongoDBConfig() {
   try {
-    // Make sure config is initialized
-    await coreServices.configService.initialize();
+    // Check if Consul service is available
+    if (
+      !coreServices.consulService ||
+      !coreServices.consulService.isInitialized
+    ) {
+      return {
+        valid: false,
+        error: "Consul service not available",
+      };
+    }
 
-    // Get Traefik config
-    const traefikConfig = await coreServices.configService.getConfig("traefik");
+    // Get TCP routers from Consul
+    const tcpRouters = await coreServices.consulService.get("tcp/routers");
 
-    // Check if MongoDB service exists
-    const serviceExists =
-      traefikConfig?.http?.services?.["mongodb-service"] !== undefined;
+    // Check if any TCP routers exist (for MongoDB)
+    const routersExist = tcpRouters && Object.keys(tcpRouters).length > 0;
 
     return {
-      valid: !!serviceExists,
-      serviceExists: !!serviceExists,
+      valid: routersExist,
+      routersExist,
     };
   } catch (err) {
     logger.error(`Failed to check MongoDB config: ${err.message}`);
@@ -268,12 +304,12 @@ async function checkMongoDBConfig() {
 }
 
 /**
- * Check Traefik health
+ * Check Consul health
  */
-async function checkTraefikHealth() {
+async function checkConsulHealth() {
   try {
-    // Check if Traefik container is running
-    const containerStatus = await checkTraefikContainer();
+    // Check if Consul container is running
+    const containerStatus = await checkConsulContainer();
 
     return {
       containerRunning: containerStatus.running,
@@ -281,7 +317,7 @@ async function checkTraefikHealth() {
       containerDetails: containerStatus,
     };
   } catch (err) {
-    logger.error(`Failed to check Traefik health: ${err.message}`);
+    logger.error(`Failed to check Consul health: ${err.message}`);
     return {
       containerRunning: false,
       status: "error",
@@ -291,18 +327,18 @@ async function checkTraefikHealth() {
 }
 
 /**
- * Check Traefik container status
+ * Check Consul container status
  */
-async function checkTraefikContainer() {
+async function checkConsulContainer() {
   try {
     const { stdout } = await execAsync(
-      'docker ps -a --format "{{.Names}},{{.Status}},{{.Ports}}" --filter "name=traefik"'
+      'docker ps -a --format "{{.Names}},{{.Status}},{{.Ports}}" --filter "name=consul"'
     );
 
     if (!stdout.trim()) {
       return {
         running: false,
-        error: "No Traefik container found",
+        error: "No Consul container found",
       };
     }
 
@@ -315,7 +351,7 @@ async function checkTraefikContainer() {
       ports,
     };
   } catch (err) {
-    logger.error(`Failed to check Traefik container: ${err.message}`);
+    logger.error(`Failed to check Consul container: ${err.message}`);
 
     return {
       running: false,
@@ -325,48 +361,49 @@ async function checkTraefikContainer() {
 }
 
 /**
- * Check if Traefik configuration is valid
+ * Check if Consul configuration is valid
  */
-async function checkTraefikConfig() {
+async function checkConsulConfig() {
   try {
-    // Make sure config manager is initialized
-    await coreServices.configService.initialize();
+    // Check if Consul service is available
+    if (
+      !coreServices.consulService ||
+      !coreServices.consulService.isInitialized
+    ) {
+      return {
+        valid: false,
+        error: "Consul service not available",
+      };
+    }
 
-    // Check if config has required sections
-    const traefikConfig = await coreServices.configService.getConfig("traefik");
+    // Check if config has required sections in Consul
+    const httpRouters = await coreServices.consulService.get("http/routers");
+    const httpServices = await coreServices.consulService.get("http/services");
 
-    const routersValid =
-      traefikConfig &&
-      traefikConfig.http &&
-      traefikConfig.http.routers &&
-      Object.keys(traefikConfig.http.routers).length > 0;
+    const routersValid = httpRouters && Object.keys(httpRouters).length > 0;
+    const servicesValid = httpServices && Object.keys(httpServices).length > 0;
 
-    const servicesValid =
-      traefikConfig &&
-      traefikConfig.http &&
-      traefikConfig.http.services &&
-      Object.keys(traefikConfig.http.services).length > 0;
-
-    // Also check Traefik configuration syntax using docker exec
-    let syntaxValid = false;
+    // Check Consul connectivity
+    let consulHealthy = false;
     try {
-      await execAsync("docker exec traefik traefik validate --check-config");
-      syntaxValid = true;
+      // Try to get Consul health info
+      const { stdout } = await execAsync("docker exec consul consul members");
+      consulHealthy = stdout.trim().length > 0;
     } catch (checkErr) {
-      logger.warn(`Traefik config syntax check failed: ${checkErr.message}`);
-      syntaxValid = false;
+      logger.warn(`Consul health check failed: ${checkErr.message}`);
+      consulHealthy = false;
     }
 
     return {
-      valid: routersValid && servicesValid && syntaxValid,
+      valid: routersValid && servicesValid && consulHealthy,
       details: {
         routersValid,
         servicesValid,
-        syntaxValid,
+        consulHealthy,
       },
     };
   } catch (err) {
-    logger.error(`Failed to check Traefik config: ${err.message}`);
+    logger.error(`Failed to check Consul config: ${err.message}`);
 
     return {
       valid: false,
@@ -391,15 +428,15 @@ async function checkPort(port) {
 }
 
 /**
- * Restart Traefik container
+ * Restart Consul container
  */
-async function restartTraefik() {
+async function restartConsul() {
   try {
-    logger.info("Restarting Traefik container");
-    await execAsync("docker restart traefik");
+    logger.info("Restarting Consul container");
+    await execAsync("docker restart consul");
     return true;
   } catch (err) {
-    logger.error(`Failed to restart Traefik: ${err.message}`);
+    logger.error(`Failed to restart Consul: ${err.message}`);
     return false;
   }
 }
@@ -470,201 +507,140 @@ exports.getSystemHealth = async (req, res) => {
       services: {},
     };
 
-    // Check Traefik health if enhanced service is initialized
+    // Check Consul health
     try {
-      if (coreServices.traefikService.initialized) {
-        // Force refresh the health status if requested
-        const forceRefresh = req.query.refresh === "true";
-        const traefikHealth = await coreServices.traefikService.getHealthStatus(
-          forceRefresh
-        );
+      if (
+        coreServices.consulService &&
+        coreServices.consulService.isInitialized
+      ) {
+        // Check if Consul is accessible by retrieving a value
+        const consulTest = await coreServices.consulService.get("http/routers");
 
-        health.services.traefik = {
-          status: traefikHealth.status,
-          circuitState: traefikHealth.circuitState,
-          lastCheck: traefikHealth.lastCheck?.timestamp,
-          metrics: {
-            routeCount: traefikHealth.routeCount,
-            connections: traefikHealth.metrics?.connections,
-          },
+        health.services.consul = {
+          status: consulTest !== null ? "healthy" : "degraded",
+          lastCheck: new Date().toISOString(),
         };
 
-        // Update overall health based on Traefik status
-        if (traefikHealth.status === "UNHEALTHY") {
+        // Check if Consul is running properly
+        const consulHealth = await checkConsulHealth();
+
+        health.services.consul = {
+          status: consulHealth.containerRunning ? "healthy" : "unhealthy",
+          containerRunning: consulHealth.containerRunning,
+          lastCheck: new Date().toISOString(),
+        };
+
+        // Update overall health based on Consul status
+        if (!consulTest || !consulHealth.containerRunning) {
           health.status = "degraded";
         }
       } else {
-        health.services.traefik = {
+        health.services.consul = {
           status: "not_initialized",
-          message: "Traefik service is not initialized",
+          message: "Consul service is not initialized",
         };
         health.status = "degraded";
       }
-    } catch (err) {
-      health.services.traefik = {
-        status: "error",
-        message: `Failed to check Traefik health: ${err.message}`,
+
+      // Additional health metrics
+      const systemLoad = os.loadavg()[0];
+      const cpuCount = os.cpus().length;
+      const loadPerCore = systemLoad / cpuCount;
+
+      health.metrics = {
+        cpu: {
+          loadAvg: systemLoad,
+          cores: cpuCount,
+          loadPerCore: loadPerCore,
+          highLoad: loadPerCore > 0.7, // Flag high load
+        },
+        memory: {
+          total: os.totalmem(),
+          free: os.freemem(),
+          usage: 1 - os.freemem() / os.totalmem(),
+          highUsage: os.freemem() / os.totalmem() < 0.2, // Flag high memory usage
+        },
       };
+
+      // Update status based on system metrics
+      if (health.metrics.cpu.highLoad || health.metrics.memory.highUsage) {
+        if (health.status === "healthy") {
+          health.status = "stressed";
+        }
+      }
+    } catch (error) {
+      logger.error(`Error checking system health: ${error.message}`, {
+        error: error.message,
+        stack: error.stack,
+      });
+
       health.status = "degraded";
+      health.error = error.message;
     }
 
-    // TODO: Add other services health checks here as needed
+    res.status(200).json(health);
+  } catch (error) {
+    logger.error(`Error in getSystemHealth: ${error.message}`, {
+      error: error.message,
+      stack: error.stack,
+    });
 
-    res.json(health);
-  } catch (err) {
-    logger.error(`Error in getSystemHealth: ${err.message}`);
     res.status(500).json({
       status: "error",
-      message: "Failed to retrieve system health status",
-      error: err.message,
+      timestamp: new Date().toISOString(),
+      error: error.message,
     });
   }
 };
 
 /**
- * Get detailed Traefik health metrics
+ * Recover Consul service
  * @param {Object} req - Express request object
  * @param {Object} res - Express response object
  */
-exports.getTraefikHealth = async (req, res) => {
+exports.recoverConsulService = async (req, res) => {
   try {
-    if (!coreServices.traefikService.initialized) {
-      return res.status(503).json({
+    logger.info("Attempting to recover Consul service");
+
+    if (!coreServices.consulService) {
+      return res.status(500).json({
         success: false,
-        message: "Traefik service is not initialized",
+        message: "Consul service is not available",
       });
     }
 
-    // Get detailed metrics with optional refresh
-    const forceRefresh = req.query.refresh === "true";
-    const health = await coreServices.traefikService.getHealthStatus(
-      forceRefresh
-    );
+    // Reinitialize the Consul service
+    try {
+      await coreServices.consulService.initialize();
 
-    res.json({
-      success: true,
-      health,
-    });
-  } catch (err) {
-    logger.error(`Error in getTraefikHealth: ${err.message}`);
-    res.status(500).json({
-      success: false,
-      message: "Failed to retrieve Traefik health",
-      error: err.message,
-    });
-  }
-};
+      // Verify connection by getting a test value
+      const testResult = await coreServices.consulService.get("http/routers");
 
-/**
- * Get Traefik stats and metrics
- * @param {Object} req - Express request object
- * @param {Object} res - Express response object
- */
-exports.getTraefikStats = async (req, res) => {
-  try {
-    if (!coreServices.traefikService.initialized) {
-      return res.status(503).json({
-        success: false,
-        message: "Traefik service is not initialized",
-      });
-    }
-
-    const stats = await coreServices.traefikService.getStats();
-
-    res.json({
-      success: true,
-      stats,
-    });
-  } catch (err) {
-    logger.error(`Error in getTraefikStats: ${err.message}`);
-    res.status(500).json({
-      success: false,
-      message: "Failed to retrieve Traefik stats",
-      error: err.message,
-    });
-  }
-};
-
-/**
- * Attempt to recover Traefik service
- * @param {Object} req - Express request object
- * @param {Object} res - Express response object
- */
-exports.recoverTraefikService = async (req, res) => {
-  try {
-    if (!coreServices.traefikService.initialized) {
-      return res.status(503).json({
-        success: false,
-        message: "Traefik service is not initialized",
-      });
-    }
-
-    // Check if administrator key is provided for this sensitive operation
-    const adminKey = req.headers["x-admin-key"] || "";
-    const configuredKey = process.env.ADMIN_KEY || "";
-
-    if (!configuredKey || adminKey !== configuredKey) {
-      logger.warn(`Unauthorized Traefik recovery attempt from ${req.ip}`);
-      return res.status(401).json({
-        success: false,
-        message: "Unauthorized: Admin key required for this operation",
-      });
-    }
-
-    // Attempt recovery
-    logger.info(`Manual Traefik recovery initiated by admin from ${req.ip}`);
-    const result = await coreServices.traefikService.recoverService();
-
-    if (result.success) {
-      res.json({
+      return res.status(200).json({
         success: true,
-        message: result.message,
-        action: result.action,
+        message: "Consul service recovered successfully",
+        connectionTest: testResult !== null,
       });
-    } else {
-      res.status(500).json({
+    } catch (error) {
+      logger.error(`Failed to recover Consul service: ${error.message}`, {
+        error: error.message,
+        stack: error.stack,
+      });
+
+      return res.status(500).json({
         success: false,
-        message: result.message,
-        error: result.error,
+        message: `Failed to recover Consul service: ${error.message}`,
       });
     }
-  } catch (err) {
-    logger.error(`Error in recoverTraefikService: ${err.message}`);
-    res.status(500).json({
-      success: false,
-      message: "Failed to recover Traefik service",
-      error: err.message,
+  } catch (error) {
+    logger.error(`Error in recoverConsulService: ${error.message}`, {
+      error: error.message,
+      stack: error.stack,
     });
-  }
-};
 
-/**
- * Validate Traefik configuration
- * @param {Object} req - Express request object
- * @param {Object} res - Express response object
- */
-exports.validateTraefikConfig = async (req, res) => {
-  try {
-    if (!coreServices.traefikService.initialized) {
-      return res.status(503).json({
-        success: false,
-        message: "Traefik service is not initialized",
-      });
-    }
-
-    const validationResult = await coreServices.traefikService.validateConfig();
-
-    res.json({
-      success: validationResult.success,
-      message: validationResult.message,
-      details: validationResult.details,
-    });
-  } catch (err) {
-    logger.error(`Error in validateTraefikConfig: ${err.message}`);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message: "Failed to validate Traefik configuration",
-      error: err.message,
+      message: `Error recovering Consul service: ${error.message}`,
     });
   }
 };
@@ -927,100 +903,60 @@ exports.getHealthDashboard = asyncHandler(async (req, res) => {
       recommendations: [],
     };
 
-    // Get Traefik health (with metrics if available)
+    // Get Consul health
     try {
       if (
-        coreServices.traefikService &&
-        coreServices.traefikService.initialized
+        coreServices.consulService &&
+        coreServices.consulService.isInitialized
       ) {
         const forceRefresh = req.query.refresh === "true";
-        const traefikHealth = await coreServices.traefikService.getHealthStatus(
-          forceRefresh
-        );
+        const consulHealth = await checkConsulHealth();
 
-        dashboard.components.traefik = {
-          status: traefikHealth.status,
-          lastCheck: traefikHealth.lastCheck?.timestamp,
-          circuitBreakerState: traefikHealth.circuitState || "UNKNOWN",
-          containerRunning: traefikHealth.containerRunning || false,
-          configValid: traefikHealth.configValid || false,
-          metrics: traefikHealth.metrics || null,
+        dashboard.components.consul = {
+          status: consulHealth.status,
+          lastCheck: new Date().toISOString(),
+          containerRunning: consulHealth.containerRunning || false,
+          configValid: (await checkConsulConfig()) || false,
         };
 
-        // Get detailed metrics if available
-        if (coreServices.traefikService.metricsCollector) {
-          const metrics =
-            coreServices.traefikService.metricsCollector.getCurrentMetrics();
-          if (metrics && metrics.traefik && metrics.traefik.summary) {
-            dashboard.components.traefik.detailedMetrics =
-              metrics.traefik.summary;
-
-            // Get anomalies
-            const anomalies =
-              coreServices.traefikService.metricsCollector.getAnomalies(5);
-            if (anomalies && anomalies.length > 0) {
-              dashboard.components.traefik.anomalies = anomalies;
-
-              // Add high severity anomalies to alerts
-              anomalies.forEach((anomaly) => {
-                if (anomaly.severity === "high") {
-                  dashboard.alerts.push({
-                    component: "traefik",
-                    severity: "high",
-                    message: anomaly.message,
-                    timestamp: anomaly.timestamp,
-                  });
-                }
-              });
-            }
-
-            // Get trends
-            const trends =
-              coreServices.traefikService.metricsCollector.calculateTrends();
-            if (trends && trends.status !== "insufficient_data") {
-              dashboard.components.traefik.trends = trends;
-            }
-          }
-        }
-
-        // Update overall status based on Traefik status
-        if (traefikHealth.status === "UNHEALTHY") {
+        // Update overall status based on Consul status
+        if (consulHealth.status === "error") {
           dashboard.status = "critical";
           dashboard.alerts.push({
-            component: "traefik",
+            component: "consul",
             severity: "critical",
-            message: "Traefik is unhealthy",
+            message: "Consul is unhealthy",
           });
 
-          // Add recommendations for Traefik issues
+          // Add recommendations for Consul issues
           dashboard.recommendations.push({
-            component: "traefik",
+            component: "consul",
             action: "Run manual recovery",
-            endpoint: "/api/health/traefik/recover",
-            description: "Attempt to automatically recover Traefik service",
+            endpoint: "/api/health/consul/recover",
+            description: "Attempt to automatically recover Consul service",
           });
-        } else if (traefikHealth.status === "DEGRADED") {
+        } else if (consulHealth.status === "inactive") {
           if (dashboard.status === "healthy") {
             dashboard.status = "degraded";
           }
           dashboard.alerts.push({
-            component: "traefik",
+            component: "consul",
             severity: "warning",
-            message: "Traefik is in a degraded state",
+            message: "Consul is not running",
           });
         }
       } else {
-        dashboard.components.traefik = {
+        dashboard.components.consul = {
           status: "unavailable",
-          message: "Traefik service is not initialized",
+          message: "Consul service is not initialized",
         };
         dashboard.status = "degraded";
       }
     } catch (err) {
-      logger.error(`Failed to get Traefik health: ${err.message}`);
-      dashboard.components.traefik = {
+      logger.error(`Failed to get Consul health: ${err.message}`);
+      dashboard.components.consul = {
         status: "error",
-        message: `Failed to get Traefik health: ${err.message}`,
+        message: `Failed to get Consul health: ${err.message}`,
       };
       dashboard.status = "degraded";
     }

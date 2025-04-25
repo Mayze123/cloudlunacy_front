@@ -11,14 +11,18 @@ const logger = require("../../utils/logger").getLogger("agentService");
 
 class AgentService {
   constructor(configManager, mongodbService) {
-    // Store the config manager (don't default to empty object)
+    // Store dependencies for other functionality
     this.configManager = configManager;
     this.mongodbService = mongodbService;
+
     this.initialized = false;
     this.agents = new Map();
     this.jwtSecret =
       process.env.JWT_SECRET || crypto.randomBytes(32).toString("hex");
     this.tokenExpiration = process.env.TOKEN_EXPIRATION || "30d";
+
+    // Will be loaded from core services during initialize
+    this.consulService = null;
   }
 
   /**
@@ -28,8 +32,18 @@ class AgentService {
     logger.info("Initializing agent service");
 
     try {
-      // Load existing agents from configuration if available
-      await this._loadAgents();
+      // Get consul service from core services
+      const coreServices = require("../core");
+      this.consulService = coreServices.consulService;
+
+      // Load existing agents from Consul if available
+      if (this.consulService && this.consulService.isInitialized) {
+        await this._loadAgentsFromConsul();
+      } else {
+        logger.warn(
+          "Consul service not available, agent data won't be persistent"
+        );
+      }
 
       this.initialized = true;
       logger.info("Agent service initialized successfully");
@@ -46,70 +60,79 @@ class AgentService {
   }
 
   /**
-   * Load agents from configuration
+   * Load agents from Consul KV store
    *
    * @private
    */
-  async _loadAgents() {
+  async _loadAgentsFromConsul() {
     try {
-      logger.info("Loading registered agents");
+      logger.info("Loading registered agents from Consul");
 
       // Clear existing registrations
       this.agents.clear();
 
-      // Check if config manager exists and is initialized
-      if (!this.configManager) {
-        logger.warn("Config manager is not available, skipping agent loading");
+      if (!this.consulService || !this.consulService.isInitialized) {
+        logger.warn("Consul service not initialized, skipping agent loading");
         return;
       }
 
-      // Check if config manager is initialized
-      if (
-        !this.configManager.initialized &&
-        typeof this.configManager.initialize === "function"
-      ) {
-        try {
-          logger.info("Initializing config manager before loading agents");
-          await this.configManager.initialize();
-        } catch (initErr) {
-          logger.warn(
-            `Failed to initialize config manager: ${initErr.message}`
-          );
-          return;
-        }
+      // Get all HTTP routers which represent our agents
+      const routersKey = "http/routers";
+      const routers = await this.consulService.get(routersKey);
+
+      if (!routers) {
+        logger.info("No agents found in Consul");
+        return;
       }
 
-      // Get agent configs from main configuration if available
-      const mainConfig =
-        this.configManager.configs && this.configManager.configs.main;
+      // Process each router to extract agent info
+      for (const [name, routerConfig] of Object.entries(routers)) {
+        // Skip special/system routers
+        if (name === "dashboard" || name === "traefik-healthcheck") {
+          continue;
+        }
 
-      // Check if agents section exists in config
-      if (mainConfig && mainConfig.agents) {
-        for (const [agentId, agentConfig] of Object.entries(
-          mainConfig.agents
-        )) {
-          if (agentConfig && agentConfig.registration) {
+        const serviceName = `${name}-http`;
+        const service = await this.consulService.get(
+          `http/services/${serviceName}`
+        );
+
+        if (
+          service &&
+          service.loadBalancer &&
+          service.loadBalancer.servers &&
+          service.loadBalancer.servers.length > 0
+        ) {
+          const serverUrl = service.loadBalancer.servers[0].url;
+
+          // Extract hostname from URL
+          // Format is typically http://hostname:port
+          const matches = serverUrl.match(/^http:\/\/([^:]+):(\d+)$/);
+
+          if (matches) {
+            const targetIp = matches[1];
+
             // Add to registry
-            this.agents.set(agentId, {
-              targetIp: agentConfig.registration.targetIp,
-              registeredAt:
-                agentConfig.registration.registeredAt ||
-                new Date().toISOString(),
-              lastSeen:
-                agentConfig.registration.lastSeen || new Date().toISOString(),
+            this.agents.set(name, {
+              targetIp,
+              registeredAt: new Date().toISOString(),
+              lastSeen: new Date().toISOString(),
             });
 
-            logger.debug(`Loaded agent: ${agentId}`);
+            logger.debug(`Loaded agent from Consul: ${name}`);
           }
         }
       }
 
-      logger.info(`Loaded ${this.agents.size} agents`);
+      logger.info(`Loaded ${this.agents.size} agents from Consul KV store`);
     } catch (err) {
-      logger.error(`Failed to load registered agents: ${err.message}`, {
-        error: err.message,
-        stack: err.stack,
-      });
+      logger.error(
+        `Failed to load registered agents from Consul: ${err.message}`,
+        {
+          error: err.message,
+          stack: err.stack,
+        }
+      );
       // Don't throw, just handle the error gracefully
     }
   }
@@ -133,41 +156,49 @@ class AgentService {
       // Generate a token for this agent
       const token = this.generateAgentToken(agentId);
 
-      // Save agent registration info first to ensure the agent is registered
-      // even if certificate generation fails
+      // Check if Consul is available
+      if (!this.consulService || !this.consulService.isInitialized) {
+        logger.error(
+          `Cannot register agent ${agentId}, Consul service not available`
+        );
+        throw new Error("Consul service not available for agent registration");
+      }
+
+      // Register in Consul
+      const appDomain = process.env.APP_DOMAIN || "cloudlunacy.uk";
+      const mongoDomain = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
+
+      // Prepare agent registration with Consul
+      const agentConfig = {
+        name: agentId,
+        subdomain: agentId,
+        hostname: targetIp,
+        httpPort: options.httpPort || 8080,
+        mongoPort: options.mongoPort || 27017,
+        secure: options.useTls !== false,
+      };
+
+      const consulRegistered = await this.consulService.registerAgent(
+        agentConfig
+      );
+
+      if (!consulRegistered) {
+        logger.error(`Failed to register agent ${agentId} in Consul`);
+        throw new Error(
+          `Failed to register agent ${agentId} in Consul KV store`
+        );
+      }
+
+      logger.info(
+        `Successfully registered agent ${agentId} in Consul KV store`
+      );
+
+      // Save agent registration info in memory cache
       this.agents.set(agentId, {
         targetIp,
         registeredAt: new Date().toISOString(),
         lastSeen: new Date().toISOString(),
       });
-
-      // Try to save to persistent storage if config manager is available
-      if (
-        this.configManager &&
-        typeof this.configManager.updateConfig === "function"
-      ) {
-        try {
-          await this.configManager.updateConfig(
-            "main",
-            {
-              agents: {
-                [agentId]: {
-                  registration: {
-                    targetIp,
-                    registeredAt: new Date().toISOString(),
-                    lastSeen: new Date().toISOString(),
-                  },
-                },
-              },
-            },
-            true
-          ); // Try to merge with existing config
-        } catch (configErr) {
-          logger.warn(
-            `Could not persist agent ${agentId} registration: ${configErr.message}`
-          );
-        }
-      }
 
       // MongoDB registration is now handled separately when agent explicitly installs MongoDB
       let certificates = null;
@@ -269,6 +300,7 @@ class AgentService {
         token,
         targetIp,
         tlsEnabled: options.useTls !== false,
+        consulRegistered: true,
       };
 
       // Add certificates if available
@@ -289,6 +321,53 @@ class AgentService {
         targetIp,
       });
       throw err;
+    }
+  }
+
+  /**
+   * Unregister an agent
+   *
+   * @param {string} agentId - The agent ID to unregister
+   * @returns {Promise<boolean>} Success status
+   */
+  async unregisterAgent(agentId) {
+    logger.info(`Unregistering agent ${agentId}`);
+
+    try {
+      if (!this.initialized) {
+        await this.initialize();
+      }
+
+      // Remove from memory registry
+      this.agents.delete(agentId);
+
+      // Check if Consul is available
+      if (!this.consulService || !this.consulService.isInitialized) {
+        logger.error(
+          `Cannot unregister agent ${agentId}, Consul service not available`
+        );
+        return false;
+      }
+
+      // Unregister from Consul
+      const consulResult = await this.consulService.unregisterAgent(agentId);
+
+      if (!consulResult) {
+        logger.error(`Failed to unregister agent ${agentId} from Consul`);
+        return false;
+      }
+
+      logger.info(
+        `Successfully unregistered agent ${agentId} from Consul KV store`
+      );
+      return true;
+    } catch (err) {
+      logger.error(`Failed to unregister agent ${agentId}: ${err.message}`, {
+        error: err.message,
+        stack: err.stack,
+        agentId,
+      });
+      return false;
     }
   }
 

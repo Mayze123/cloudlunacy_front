@@ -13,13 +13,15 @@
     "dev:docker:down": "cd .. && bash dev-down.sh",
     "cleanup:scripts": "node scripts/cleanup-shell-scripts.js",
     "certs:renew": "node scripts/renew-letsencrypt.js",
-    "certs:renew:force": "node scripts/renew-letsencrypt.js --force"
+    "certs:renew:force": "node scripts/renew-letsencrypt.js --force",
+    "verify:consul": "node scripts/verify-consul-traefik.js"
   },
   "dependencies": {
     "acme-client": "^5.0.0",
     "axios": "^1.8.4",
     "chalk": "^4.1.2",
     "cloudflare": "^2.9.1",
+    "consul": "^1.2.0",
     "dockerode": "^3.3.0",
     "dotenv": "^16.4.7",
     "express": "^4.18.2",

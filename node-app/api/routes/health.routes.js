@@ -32,83 +32,21 @@ router.get(
 router.get("/system", healthController.getSystemHealth);
 
 /**
- * Traefik Health
- * GET /api/health/traefik - Get detailed Traefik health metrics
+ * Consul Health
+ * GET /api/health/consul - Get detailed Consul health metrics
  */
-router.get("/traefik", healthController.getTraefikHealth);
+router.get("/consul", healthController.checkConsul);
 
 /**
- * Traefik Statistics
- * GET /api/health/traefik/stats - Get Traefik statistics
- */
-router.get(
-  "/traefik/stats",
-  authMiddleware.requireAuth,
-  healthController.getTraefikStats
-);
-
-/**
- * Traefik Recovery
- * POST /api/health/traefik/recover - Attempt to recover Traefik service
+ * Consul Recovery
+ * POST /api/health/consul/recover - Attempt to recover Consul service
  */
 router.post(
-  "/traefik/recover",
+  "/consul/recover",
   authMiddleware.requireAuth,
   authMiddleware.requireAdmin,
-  healthController.recoverTraefikService
+  healthController.recoverConsulService
 );
-
-/**
- * Traefik Configuration Validation
- * GET /api/health/traefik/validate - Validate Traefik configuration
- */
-router.get(
-  "/traefik/validate",
-  authMiddleware.requireAuth,
-  healthController.validateTraefikConfig
-);
-
-/**
- * Legacy HAProxy endpoints - redirect to Traefik equivalents
- * These routes are kept for backward compatibility during migration
- */
-
-/**
- * Legacy HAProxy Health
- * GET /api/health/haproxy - Redirects to Traefik health
- */
-router.get("/haproxy", (req, res) => {
-  res.redirect(307, "/api/health/traefik");
-});
-
-/**
- * Legacy HAProxy Statistics
- * GET /api/health/haproxy/stats - Redirects to Traefik stats
- */
-router.get("/haproxy/stats", authMiddleware.requireAuth, (req, res) => {
-  res.redirect(307, "/api/health/traefik/stats");
-});
-
-/**
- * Legacy HAProxy Recovery
- * POST /api/health/haproxy/recover - Redirects to Traefik recovery
- */
-router.post(
-  "/haproxy/recover",
-  authMiddleware.requireAuth,
-  authMiddleware.requireAdmin,
-  (req, res) => {
-    res.redirect(307, "/api/health/traefik/recover");
-  }
-);
-
-/**
- * Legacy HAProxy Configuration Validation
- * GET /api/health/haproxy/validate - Redirects to Traefik validation
- */
-router.get("/haproxy/validate", authMiddleware.requireAuth, (req, res) => {
-  res.redirect(307, "/api/health/traefik/validate");
-});
 
 /**
  * Certificate Status Report
@@ -166,6 +104,16 @@ router.get(
   "/mongodb-listener",
   authMiddleware.requireAuth,
   healthController.checkMongoDBListener
+);
+
+/**
+ * MongoDB Connections Check
+ * GET /api/health/mongodb-connections - Check MongoDB connections
+ */
+router.get(
+  "/mongodb-connections",
+  authMiddleware.requireAuth,
+  healthController.checkMongoDBConnections
 );
 
 module.exports = router;

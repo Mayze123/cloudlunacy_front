@@ -53,6 +53,15 @@ providers:
     exposedByDefault: false
     watch: true
 
+  consulCatalog:
+    prefix: "traefik"
+    exposedByDefault: false
+
+  consul:
+    endpoint: "consul:8500"
+    prefix: "traefik"
+    watch: true
+
 # TLS options
 tls:
   options:

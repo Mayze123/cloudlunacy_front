@@ -16,8 +16,7 @@ class ConfigService {
     this.paths = {
       base: process.env.CONFIG_BASE_PATH || "/app/config",
       agents: process.env.AGENTS_CONFIG_DIR || "/app/config/agents",
-      traefik:
-        process.env.TRAEFIK_CONFIG_PATH || "/app/config/traefik/traefik.yml",
+      consul: process.env.CONSUL_CONFIG_PATH || "/app/config/consul",
       docker: process.env.DOCKER_COMPOSE_PATH || "/app/docker-compose.yml",
     };
 
@@ -93,7 +92,7 @@ class ConfigService {
 
       // Resolve other paths based on base path
       this.paths.agents = path.join(this.paths.base, "agents");
-      this.paths.traefik = path.join(this.paths.base, "traefik/traefik.yml");
+      this.paths.consul = path.join(this.paths.base, "consul");
 
       logger.debug("Resolved configuration paths", { paths: this.paths });
       return true;
@@ -110,7 +109,7 @@ class ConfigService {
     // Use hardcoded paths as fallback
     this.paths.base = "/app/config";
     this.paths.agents = "/app/config/agents";
-    this.paths.traefik = "/app/config/traefik/traefik.yml";
+    this.paths.consul = "/app/config/consul";
 
     logger.debug("Using fallback configuration paths", { paths: this.paths });
     return true;
@@ -183,15 +182,15 @@ agent:
         };
       }
 
-      // Check Traefik routes for this agent through the Traefik service
+      // Check routes for this agent through the proxy service
       let mongoRouteExists = false;
       let redisRouteExists = false;
 
       try {
-        // Use the Traefik service if available
+        // Use the proxy service if available
         const coreServices = require("../core");
-        if (coreServices && coreServices.traefikService) {
-          const routeInfo = await coreServices.traefikService.getAgentRoutes(
+        if (coreServices && coreServices.consulService) {
+          const routeInfo = await coreServices.proxyService.getAgentRoutes(
             agentId
           );
           if (routeInfo && routeInfo.routes) {
@@ -203,9 +202,9 @@ agent:
             );
           }
         }
-      } catch (traefikErr) {
+      } catch (proxyErr) {
         logger.warn(
-          `Failed to check Traefik routes for agent ${agentId}: ${traefikErr.message}`
+          `Failed to check proxy routes for agent ${agentId}: ${proxyErr.message}`
         );
       }
 

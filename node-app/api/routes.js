@@ -16,7 +16,6 @@ const certificateRoutes = require("./routes/certificate.routes");
 const mongodbRoutes = require("./routes/mongodb.routes");
 const healthRoutes = require("./routes/health.routes");
 const metricsRoutes = require("./routes/metrics.routes");
-const traefikRoutes = require("./routes/traefikRoutes"); // Import Traefik routes
 
 // Import controllers
 const agentController = require("./controllers/agentController");
@@ -44,12 +43,11 @@ const configService = new ConfigService();
   }
 })();
 
-// Mount modular routes
-router.use("/certificates", certificateRoutes);
-router.use("/mongodb", mongodbRoutes);
+// Mount routes
 router.use("/health", healthRoutes);
 router.use("/metrics", metricsRoutes);
-router.use("/", traefikRoutes); // Mount Traefik routes
+router.use("/certificates", certificateRoutes);
+router.use("/mongodb", mongodbRoutes);
 
 /**
  * Agent Routes
@@ -69,49 +67,28 @@ router.post("/agents/register", (req, res) => {
   agentController.registerAgent(req, res);
 });
 
-router.post("/agents/authenticate", async (req, res, next) => {
-  try {
-    const { agentId, agentKey } = req.body;
-
-    if (!agentId || !agentKey) {
-      throw new AppError("Agent ID and agent key are required", 400);
-    }
-
-    const result = await agentService.authenticateAgent(agentId, agentKey);
-    res.json(result);
-  } catch (err) {
-    next(err);
-  }
-});
+router.post("/agents/authenticate", agentController.authenticateAgent);
 
 router.get(
   "/agents/:agentId",
   authMiddleware.requireAuth,
   authMiddleware.requireAgentAccess(),
-  async (req, res, next) => {
-    try {
-      const { agentId } = req.params;
-      const result = await agentService.getAgentInfo(agentId);
-      res.json(result);
-    } catch (err) {
-      next(err);
-    }
-  }
+  agentController.getAgentStatus
 );
 
 router.delete(
   "/agents/:agentId",
   authMiddleware.requireAuth,
   authMiddleware.requireAgentAccess(),
-  async (req, res, next) => {
-    try {
-      const { agentId } = req.params;
-      const result = await agentService.deregisterAgent(agentId);
-      res.json(result);
-    } catch (err) {
-      next(err);
-    }
-  }
+  agentController.deregisterAgent
+);
+
+// Additional route for new API style consistency
+router.delete(
+  "/agent/:agentId",
+  authMiddleware.requireAuth,
+  authMiddleware.requireAgentAccess(),
+  agentController.deregisterAgent
 );
 
 /**

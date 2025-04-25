@@ -44,8 +44,30 @@ services:
       retries: 3
       start_period: 30s
     depends_on:
-      setup-traefik-config:
-        condition: service_completed_successfully
+      - consul
+      - setup-traefik-config
+
+  # New Consul service for KV store
+  consul:
+    image: hashicorp/consul:latest
+    container_name: consul
+    restart: unless-stopped
+    ports:
+      - "8500:8500"  # HTTP API and Web UI
+      - "8600:8600/tcp"  # DNS Interface
+      - "8600:8600/udp"  # DNS Interface
+    networks:
+      - frontend
+      - backend
+    volumes:
+      - consul-data:/consul/data
+    command: agent -server -bootstrap-expect=1 -ui -client=0.0.0.0
+    healthcheck:
+      test: ["CMD", "consul", "members"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
   # New service to properly set up config directories and permissions
   setup-traefik-config:
@@ -127,9 +149,11 @@ services:
       - NODE_DEBUG=
       - LOG_DIR=/app/logs
       - TRAEFIK_CONFIG_PATH=/app/config/traefik
+      - CONSUL_HOST=consul
+      - CONSUL_PORT=8500
     depends_on:
-      setup-traefik-config:
-        condition: service_completed_successfully
+      - consul
+      - setup-traefik-config
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.node-app.rule=Host(`api.${APP_DOMAIN:-cloudlunacy.uk}`)"
@@ -151,6 +175,7 @@ volumes:
   certbot-data:
   traefik-data:
   node-app-data:
+  consul-data:
 
 networks:
   frontend:

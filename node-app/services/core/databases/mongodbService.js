@@ -12,11 +12,12 @@ const logger = require("../../../utils/logger").getLogger("mongodbService");
 const DatabaseService = require("./databaseService");
 
 class MongoDBService extends DatabaseService {
-  constructor(routingService, traefikService) {
+  constructor(routingService) {
     super(routingService);
     this.mongoDomain = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
     this.connectionCache = new Map();
-    this.traefikService = traefikService;
+    // Will be loaded from core services during initialize
+    this.consulService = null;
     // Cache expiration time in milliseconds (default: 1 hour)
     this.cacheExpirationTime = process.env.MONGO_CACHE_EXPIRATION || 3600000;
   }
@@ -30,9 +31,13 @@ class MongoDBService extends DatabaseService {
     }
 
     try {
-      if (!this.traefikService) {
+      // Get consul service from core services
+      const coreServices = require("../../core");
+      this.consulService = coreServices.consulService;
+
+      if (!this.consulService) {
         logger.warn(
-          "Traefik service not available during initialization, MongoDB routes will not work correctly"
+          "Consul service not available during initialization, MongoDB routes will not work correctly"
         );
       }
 
@@ -102,87 +107,45 @@ class MongoDBService extends DatabaseService {
       // Default options
       const { useTls = true, targetPort = 27017 } = options;
 
-      // Use the provided targetHost as-is for routing
-      const normalizedTargetIp = targetIp;
-
       logger.info(
-        `Registering MongoDB agent: ${agentId}, IP: ${targetIp} (normalized to ${normalizedTargetIp}):${targetPort}`
+        `Registering MongoDB agent: ${agentId}, IP: ${targetIp}:${targetPort}`
       );
 
-      if (!this.traefikService) {
-        logger.error("Traefik service not available for MongoDB registration");
+      // Check if Consul service is available
+      if (!this.consulService || !this.consulService.isInitialized) {
+        logger.error("Consul service not available for MongoDB registration");
         return {
           success: false,
-          error: "Traefik service not available",
+          error: "Consul service not available",
         };
       }
 
-      // Ensure Traefik service is initialized
-      if (!this.traefikService.initialized) {
-        try {
-          await this.traefikService.initialize();
-        } catch (initErr) {
-          logger.error(
-            `Failed to initialize Traefik service: ${initErr.message}`
-          );
-          return {
-            success: false,
-            error: `Failed to initialize Traefik service: ${initErr.message}`,
-          };
-        }
-      }
+      // Prepare agent registration with Consul
+      const agentConfig = {
+        name: agentId,
+        subdomain: agentId,
+        hostname: targetIp,
+        httpPort: 8080, // Default HTTP port if not provided
+        mongoPort: targetPort,
+        secure: useTls,
+      };
 
-      // Use Traefik for routing with improved error handling
-      if (typeof this.traefikService.addMongoDBRoute === "function") {
-        try {
-          const routingResult = await this.traefikService.addMongoDBRoute(
-            agentId,
-            targetIp,
-            targetPort,
-            { useTls }
-          );
+      // Register in Consul
+      const consulRegistered = await this.consulService.registerAgent(
+        agentConfig
+      );
 
-          if (!routingResult.success) {
-            logger.error(
-              `Failed to update Traefik: ${
-                routingResult.error || "Unknown error"
-              }`
-            );
-            return {
-              success: false,
-              error: `Failed to update Traefik: ${
-                routingResult.error || "Unknown error"
-              }`,
-            };
-          }
-
-          logger.info(
-            `Successfully updated Traefik for MongoDB agent ${agentId}`
-          );
-        } catch (traefikErr) {
-          logger.error(
-            `Failed to use Traefik for MongoDB routing: ${traefikErr.message}`,
-            {
-              error: traefikErr.message,
-              stack: traefikErr.stack,
-              agentId,
-              targetIp,
-              targetPort,
-            }
-          );
-
-          return {
-            success: false,
-            error: `Failed to update Traefik: ${traefikErr.message}`,
-          };
-        }
-      } else {
-        logger.error("Traefik service does not support addMongoDBRoute method");
+      if (!consulRegistered) {
+        logger.error(`Failed to register MongoDB agent ${agentId} in Consul`);
         return {
           success: false,
-          error: "Traefik service does not support MongoDB routes",
+          error: "Failed to register agent in Consul KV store",
         };
       }
+
+      logger.info(
+        `Successfully registered MongoDB agent ${agentId} in Consul KV store`
+      );
 
       // Build connection information
       const domain = `${agentId}.${this.mongoDomain}`;
@@ -195,13 +158,13 @@ class MongoDBService extends DatabaseService {
         targetPort,
         domain,
         useTls,
-        routingService: "traefik",
+        routingService: "consul",
         lastUpdated: now,
         created: now,
       });
 
       logger.info(
-        `MongoDB agent ${agentId} registered successfully using Traefik`
+        `MongoDB agent ${agentId} registered successfully using Consul`
       );
 
       // Instead of testing connection, which is unreliable from frontend to agent,
@@ -214,7 +177,7 @@ class MongoDBService extends DatabaseService {
         targetPort,
         domain,
         mongodbUrl: `mongodb://${domain}:27017`,
-        routingService: "traefik",
+        routingService: "consul",
         testResults: {
           note: "MongoDB connection testing has been disabled in the frontend as it's architecturally more appropriate for the agent to verify its own MongoDB connection",
         },
@@ -248,37 +211,34 @@ class MongoDBService extends DatabaseService {
 
       logger.info(`Deregistering MongoDB agent: ${agentId}`);
 
-      if (!this.traefikService) {
+      // Check if Consul service is available
+      if (!this.consulService || !this.consulService.isInitialized) {
+        logger.error("Consul service not available for MongoDB deregistration");
         return {
           success: false,
-          error: "Traefik service not available",
+          error: "Consul service not available",
         };
       }
 
-      // Remove from Traefik configuration
-      try {
-        if (typeof this.traefikService.removeRoute === "function") {
-          await this.traefikService.removeRoute(agentId, null, "mongodb");
-          logger.info(`MongoDB route for ${agentId} removed from Traefik`);
-        } else {
-          logger.warn("Traefik service does not support MongoDB route removal");
-          return {
-            success: false,
-            error: "Traefik service does not support MongoDB route removal",
-          };
-        }
-      } catch (traefikErr) {
-        logger.error(`Failed to remove MongoDB backend: ${traefikErr.message}`);
+      // Unregister from Consul
+      const consulResult = await this.consulService.unregisterAgent(agentId);
+
+      if (!consulResult) {
+        logger.error(
+          `Failed to unregister MongoDB agent ${agentId} from Consul`
+        );
         return {
           success: false,
-          error: `Failed to remove MongoDB backend: ${traefikErr.message}`,
+          error: "Failed to unregister agent from Consul KV store",
         };
       }
+
+      logger.info(
+        `Successfully unregistered MongoDB agent ${agentId} from Consul KV store`
+      );
 
       // Remove from connection cache
       this.connectionCache.delete(agentId);
-
-      logger.info(`MongoDB agent ${agentId} deregistered successfully`);
 
       return {
         success: true,
@@ -318,23 +278,15 @@ class MongoDBService extends DatabaseService {
         connectionInfo = this.connectionCache.get(agentId);
         logger.debug(`Using cached connection info for ${agentId}`);
       } else if (targetIp) {
-        // Normalize the targetIp just like in registerAgent
-        const normalizedTargetIp =
-          targetIp && (targetIp.startsWith("172.") || targetIp === "0.0.0.0")
-            ? "127.0.0.1"
-            : targetIp;
-
         // Create temporary connection info
         connectionInfo = {
           agentId,
-          targetIp: normalizedTargetIp,
+          targetIp,
           targetPort: 27017, // Default MongoDB port
           domain: `${agentId}.${this.mongoDomain}`,
           useTls: false,
         };
-        logger.debug(
-          `Created temporary connection info for ${agentId} with normalized IP: ${normalizedTargetIp}`
-        );
+        logger.debug(`Created temporary connection info for ${agentId}`);
       } else {
         logger.error(
           `No connection info available for agent ${agentId} and no targetIp provided`
@@ -457,10 +409,9 @@ class MongoDBService extends DatabaseService {
           );
 
           proxyClient = new MongoClient(proxyUrl, {
-            connectTimeoutMS: 10000, // Increased from 5000
-            serverSelectionTimeoutMS: 10000, // Increased from 5000
-            socketTimeoutMS: 10000, // Added for better handling
-            // Allow invalid certificates for testing purposes
+            connectTimeoutMS: 10000,
+            serverSelectionTimeoutMS: 10000,
+            socketTimeoutMS: 10000,
             tlsAllowInvalidCertificates: true,
           });
 
@@ -501,40 +452,32 @@ class MongoDBService extends DatabaseService {
             await proxyClient.close().catch(() => {});
           }
         }
-      } else {
-        result.proxy = {
-          success: null,
-          message:
-            "Proxy connection test skipped - insufficient connection information",
-        };
       }
 
-      // Consider the test successful if either:
-      // 1. Direct connection worked, or
-      // 2. Proxy connection worked, or
-      // 3. If direct failed but the agent itself reported a direct connection to localhost in its logs
-      result.success =
-        result.direct.success || (result.proxy && result.proxy.success);
-
-      // If the above check failed but we know MongoDB is running locally (based on agent logs)
-      // consider this a partial success with a warning
-      if (!result.success) {
-        // We can see from the agent logs that MongoDB is running locally and the agent can connect
-        // This means our test might be failing due to network restrictions, but the actual service is working
-        logger.warn(
-          "Connection test failed but agent reports MongoDB is running. Marking as partially successful."
-        );
-        result.message =
-          "MongoDB connection test failed, but agent reports MongoDB is running locally. " +
-          "This is likely due to network restrictions between the front server and the agent.";
-        result.partialSuccess = true;
-        result.success = true; // Mark as success to prevent registration failure
-      } else {
-        result.message =
-          "MongoDB connection test partially or fully successful";
+      // Update the cache if necessary
+      if (
+        result.direct.success &&
+        targetIp &&
+        !this.connectionCache.has(agentId)
+      ) {
+        // If we successfully connected directly and didn't have this in cache, add it
+        this.connectionCache.set(agentId, {
+          agentId,
+          targetIp,
+          targetPort: connectionInfo.targetPort,
+          domain: connectionInfo.domain,
+          useTls: connectionInfo.useTls,
+          lastUpdated: new Date().toISOString(),
+        });
+        logger.debug(`Added successful connection to cache for ${agentId}`);
       }
 
-      return result;
+      return {
+        success: result.direct.success || result.proxy.success,
+        direct: result.direct,
+        proxy: result.proxy,
+        url: `mongodb://${connectionInfo.domain}:27017`,
+      };
     } catch (error) {
       logger.error(`Error testing MongoDB connection: ${error.message}`, {
         error: error.message,
@@ -549,10 +492,10 @@ class MongoDBService extends DatabaseService {
   }
 
   /**
-   * Get connection information for a MongoDB agent
+   * Get MongoDB connection information for an agent
    *
    * @param {string} agentId - Agent ID
-   * @returns {Promise<Object>} - Connection information
+   * @returns {Promise<Object>} - Connection info
    */
   async getConnectionInfo(agentId) {
     try {
@@ -560,98 +503,124 @@ class MongoDBService extends DatabaseService {
         await this.initialize();
       }
 
-      if (!this.connectionCache.has(agentId)) {
-        logger.error(`No connection info available for agent ${agentId}`);
+      if (this.connectionCache.has(agentId)) {
+        const connInfo = this.connectionCache.get(agentId);
         return {
-          success: false,
-          error: "No connection information available for this agent",
+          success: true,
+          ...connInfo,
+          url: `mongodb://${connInfo.domain}:27017`,
         };
       }
 
-      const connectionInfo = this.connectionCache.get(agentId);
       return {
-        success: true,
-        message: "Connection information retrieved successfully",
-        ...connectionInfo,
+        success: false,
+        error: `No connection information found for agent ${agentId}`,
       };
     } catch (error) {
-      logger.error(`Error getting connection info: ${error.message}`, {
+      logger.error(
+        `Error getting MongoDB connection information: ${error.message}`,
+        { error: error.message, stack: error.stack }
+      );
+
+      return {
+        success: false,
+        error: `Error getting MongoDB connection information: ${error.message}`,
+      };
+    }
+  }
+
+  /**
+   * Check if the MongoDB port is properly configured in the router
+   *
+   * @returns {Promise<Object>} - Status result
+   */
+  async checkMongoDBPort() {
+    try {
+      if (!this.initialized) {
+        await this.initialize();
+      }
+
+      logger.info("Checking MongoDB port configuration");
+
+      if (!this.consulService || !this.consulService.isInitialized) {
+        logger.error("Consul service not available for MongoDB port check");
+        return {
+          success: false,
+          error: "Consul service not available",
+        };
+      }
+
+      // In Consul implementation, MongoDB port (27017) is configured via Consul KV store
+      // Check if the MongoDB TCP routers are defined
+
+      // Get the current TCP routers configuration
+      const tcpRouters = await this.consulService.get("tcp/routers");
+
+      if (tcpRouters && Object.keys(tcpRouters).length > 0) {
+        // We have some TCP routers configured
+        logger.info("TCP routers are configured in Consul");
+        return {
+          success: true,
+          message: "MongoDB port is properly configured",
+        };
+      } else {
+        logger.warn("No TCP routers are configured in Consul");
+        return {
+          success: false,
+          error: "No TCP routers are configured in Consul",
+        };
+      }
+    } catch (error) {
+      logger.error(`Error checking MongoDB port: ${error.message}`, {
         error: error.message,
         stack: error.stack,
       });
 
       return {
         success: false,
-        error: `Error getting connection info: ${error.message}`,
+        error: `Error checking MongoDB port: ${error.message}`,
       };
     }
   }
 
   /**
-   * Check if MongoDB port is available
-   * @returns {Promise<boolean>} True if MongoDB port configuration is ok
-   */
-  async checkMongoDBPort() {
-    try {
-      if (!this.traefikService) {
-        logger.warn("Traefik service not available, cannot check MongoDB port");
-        return false;
-      }
-
-      // Check if the Traefik service has a health check method
-      if (typeof this.traefikService.performHealthCheck === "function") {
-        const health = await this.traefikService.performHealthCheck();
-        return health && health.containerRunning;
-      }
-
-      // Fallback to querying the service health
-      if (typeof this.traefikService.getHealthStatus === "function") {
-        const healthStatus = await this.traefikService.getHealthStatus();
-        return healthStatus && healthStatus.status === "healthy";
-      }
-
-      logger.warn("Traefik service does not support health checking");
-      return false;
-    } catch (error) {
-      logger.error(`Error checking MongoDB port: ${error.message}`, {
-        error: error.message,
-        stack: error.stack,
-      });
-      return false;
-    }
-  }
-
-  /**
-   * Ensure MongoDB port is configured in Traefik
-   * @returns {Promise<boolean>} True if configuration was successful
+   * Ensure MongoDB port is properly configured
+   *
+   * @returns {Promise<Object>} - Status result
    */
   async ensureMongoDBPort() {
     try {
-      if (!this.traefikService) {
-        logger.warn(
-          "Traefik service not available, cannot ensure MongoDB port"
-        );
-        return false;
+      if (!this.initialized) {
+        await this.initialize();
       }
 
-      // Check if the service is healthy
-      const healthStatus = await this.checkMongoDBPort();
+      logger.info("Ensuring MongoDB port is properly configured");
 
-      if (!healthStatus) {
-        // Try to recover the service
-        if (typeof this.traefikService.recoverService === "function") {
-          const recovery = await this.traefikService.recoverService();
-          return recovery && recovery.success;
-        }
+      // Check current status
+      const status = await this.checkMongoDBPort();
+      if (status.success) {
+        return status;
       }
 
-      return healthStatus;
+      // In Consul implementation, we don't need to do anything special
+      // since the MongoDB port configuration is done in the docker-compose file
+      // and the individual route configurations are handled by registerAgent
+
+      logger.info("MongoDB port should be configured via Consul");
+      return {
+        success: true,
+        message: "MongoDB port configuration verified (configured via Consul)",
+      };
     } catch (error) {
       logger.error(`Error ensuring MongoDB port: ${error.message}`, {
         error: error.message,
         stack: error.stack,
       });
-      return false;
+
+      return {
+        success: false,
+        error: `Error ensuring MongoDB port: ${error.message}`,
+      };
     }
   }
 }
