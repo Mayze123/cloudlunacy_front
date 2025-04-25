@@ -240,44 +240,119 @@ class TraefikService {
         };
       });
 
-      // Save the configuration - ensure directory exists first
-      try {
-        // Create directory if it doesn't exist
-        await fs.mkdir(this.dynamicConfigPath, { recursive: true });
+      // Generate the YAML content
+      const yamlStr =
+        "# Dynamic routes configuration for Traefik\n" +
+        "# This file is managed by the CloudLunacy Front API\n\n" +
+        yaml.dump(config);
 
-        // Write YAML file with proper header
-        const yamlStr =
-          "# Dynamic routes configuration for Traefik\n" +
-          "# This file is managed by the CloudLunacy Front API\n\n" +
-          yaml.dump(config);
-
-        await fs.writeFile(this.routesConfigPath, yamlStr);
-
-        logger.info("Routes configuration saved successfully");
-        return true;
-      } catch (fsErr) {
-        // If we encounter a permission issue, log detailed information
-        logger.error(`Failed to save routes configuration: ${fsErr.message}`, {
-          error: fsErr.message,
-          code: fsErr.code,
-          path: this.routesConfigPath,
-          dynamicConfigPath: this.dynamicConfigPath,
-          configPath: this.configPath,
-          stack: fsErr.stack,
-        });
-
-        if (fsErr.code === "EACCES" || fsErr.code === "EPERM") {
-          logger.error(
-            `Permission denied when writing to ${this.routesConfigPath}. Check that the node process has write permissions to this directory.`
-          );
-        }
-
-        return false;
-      }
+      // Save the configuration using multiple fallback methods to ensure it works in all environments
+      return await this._saveRoutesWithFallback(yamlStr);
     } catch (err) {
       logger.error(`Failed to save routes: ${err.message}`, {
         error: err.message,
         stack: err.stack,
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Save routes using multiple fallback mechanisms to handle permission issues
+   * @param {string} yamlContent - The YAML content to save
+   * @returns {Promise<boolean>} Success flag
+   * @private
+   */
+  async _saveRoutesWithFallback(yamlContent) {
+    // First try: Direct file write using fs.promises
+    try {
+      // Create directory if it doesn't exist
+      await fs.mkdir(this.dynamicConfigPath, { recursive: true });
+      await fs.writeFile(this.routesConfigPath, yamlContent);
+      logger.info("Routes configuration saved successfully via direct write");
+      return true;
+    } catch (directWriteErr) {
+      logger.warn(
+        `Direct file write failed: ${directWriteErr.message}, trying fallback methods`,
+        {
+          error: directWriteErr.message,
+          code: directWriteErr.code,
+          path: this.routesConfigPath,
+        }
+      );
+
+      // Second try: Use Docker exec to write the file with proper permissions
+      try {
+        // Create a temporary file in /tmp which should be writable
+        const tempFilePath = `/tmp/traefik-routes-${Date.now()}.yml`;
+        await fs.writeFile(tempFilePath, yamlContent);
+
+        // Use docker cp to copy the file into the container
+        const { stdout, stderr } = await exec(
+          `docker cp ${tempFilePath} ${this.traefikContainer}:${this.routesConfigPath}`
+        );
+
+        // Clean up temp file
+        await fs
+          .unlink(tempFilePath)
+          .catch((e) => logger.debug(`Temp file cleanup failed: ${e.message}`));
+
+        logger.info("Routes configuration saved successfully via docker cp");
+
+        // Reload Traefik to apply the configuration
+        await this._reloadTraefikConfig();
+
+        return true;
+      } catch (dockerErr) {
+        logger.warn(`Docker file write failed: ${dockerErr.message}`, {
+          error: dockerErr.message,
+          stderr: dockerErr.stderr,
+        });
+
+        // Final attempt: Use shell script through Docker to write file
+        try {
+          const escapedContent = yamlContent.replace(/'/g, "'\\''");
+          const dockerCmd = `docker exec ${
+            this.traefikContainer
+          } /bin/sh -c 'mkdir -p ${path.dirname(
+            this.routesConfigPath
+          )} && echo '${escapedContent}' > ${this.routesConfigPath}'`;
+
+          await exec(dockerCmd);
+          logger.info(
+            "Routes configuration saved successfully via docker exec shell"
+          );
+
+          // Reload Traefik to apply the configuration
+          await this._reloadTraefikConfig();
+
+          return true;
+        } catch (shellErr) {
+          logger.error(`All file write methods failed: ${shellErr.message}`, {
+            directError: directWriteErr.message,
+            dockerError: dockerErr.message,
+            shellError: shellErr.message,
+          });
+          return false;
+        }
+      }
+    }
+  }
+
+  /**
+   * Reload the Traefik configuration
+   * @returns {Promise<boolean>} Success flag
+   * @private
+   */
+  async _reloadTraefikConfig() {
+    try {
+      // Send SIGHUP to Traefik process (standard reload signal)
+      await exec(`docker kill --signal=SIGHUP ${this.traefikContainer}`);
+      logger.info("Sent reload signal to Traefik");
+      return true;
+    } catch (err) {
+      logger.warn(`Failed to reload Traefik configuration: ${err.message}`, {
+        error: err.message,
       });
       return false;
     }
