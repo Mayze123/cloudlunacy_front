@@ -11,32 +11,21 @@ global:
 # Log configuration
 # -------------------------------
 log:
-  level: INFO
-  format: json
+  level: "INFO"
+  format: "common"
 
 # -------------------------------
 # Access logs
 # -------------------------------
 accessLog:
-  format: json
-  fields:
-    defaultMode: keep
-    headers:
-      names:
-        User-Agent: keep
-        Authorization: redact
-        Cookie: redact
-        Set-Cookie: redact
-        X-Forwarded-For: keep
-        X-Real-Ip: keep
+  format: "common"
 
 # -------------------------------
 # API & dashboard
 # -------------------------------
 api:
   dashboard: true
-  insecure: false
-  debug: false
+  insecure: true # during initial setup
 
 # -------------------------------
 # EntryPoints
@@ -52,9 +41,6 @@ entryPoints:
 
   websecure:
     address: ":443"
-    http:
-      tls:
-        certResolver: letsencrypt
 
   traefik:
     address: ":8081" # Traefik API / dashboard
@@ -75,25 +61,28 @@ providers:
   # 1) File-based provider (dynamic config from files)
   file:
     directory: "/etc/traefik/dynamic"
-    watch: true # auto-reload when files change  [oai_citation:0‡Traefik Labs Documentation](https://doc.traefik.io/traefik/providers/file/?utm_source=chatgpt.com)
+    watch: true # auto-reload when files change
 
   # 2) Docker provider (auto-discover services via labels)
   docker:
-    endpoint: "unix:///var/run/docker.sock"
     exposedByDefault: false
-    network: "cloudlunacy-frontend"
 
-  # 3) Consul KV Store
+  # 3) Consul Service Catalog (Service Discovery)
+  consulCatalog:
+    defaultRule: "Host(`{{ normalize .Name }}.cloudlunacy.uk`)"
+    exposedByDefault: false
+    refreshInterval: "15s"
+    connectAware: true
+    providers:
+      consul:
+        address: "consul:8500"
+        scheme: "http"
+
+  # 4) Consul KV store (Dynamic config store)
   consul:
+    rootKey: "traefik"
     endpoints:
       - "consul:8500"
-    rootKey: "traefik"
-    watch: true
-    refreshInterval: 15s
-    rateLimit:
-      period: 1s
-      average: 100
-      burst: 50
 
 # -------------------------------
 # TLS options
@@ -114,10 +103,7 @@ tls:
 certificatesResolvers:
   letsencrypt:
     acme:
-      email: ${CF_EMAIL}
-      storage: /etc/traefik/acme/acme.json
-      dnsChallenge:
-        provider: cloudflare
-        resolvers:
-          - "1.1.1.1:53"
-          - "8.8.8.8:53"
+      email: "admin@cloudlunacy.uk"
+      storage: "/etc/traefik/acme/acme.json"
+      httpChallenge:
+        entryPoint: "web"
