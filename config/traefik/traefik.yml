@@ -47,24 +47,16 @@ providers:
   file:
     directory: "/etc/traefik/dynamic"
     watch: true
-
   docker:
     exposedByDefault: false
-
   consulCatalog:
+    defaultRule: "Host(`{{ normalize .Name }}.cloudlunacy.uk`)"
     exposedByDefault: false
-    refreshInterval: "30s"
-    connectAware: true
-    connectByDefault: false
-    providers:
-      consul:
-        address: "consul:8500"
-        scheme: "http"
-
+    endpoint: "consul:8500"
+    prefix: "traefik"
   consul:
-    rootKey: "traefik"
-    endpoints:
-      - "consul:8500"
+    endpoint: "consul:8500"
+    prefix: "traefik"
 
 # TLS options
 tls:
