@@ -1,8 +1,7 @@
 ## Traefik Dynamic Configuration
 
-# Combined HTTP configuration
+# HTTP configuration including middlewares
 http:
-  # Middleware definitions
   middlewares:
     # Basic authentication for the dashboard
     auth-admin:
@@ -40,22 +39,3 @@ http:
         stsIncludeSubdomains: true
         stsPreload: true
         stsSeconds: 31536000
-
-  # Dashboard configuration
-  routers:
-    dashboard:
-      rule: "Host(`traefik.localhost`)"
-      service: "api@internal"
-      entrypoints:
-        - "websecure"
-      middlewares:
-        - "auth-admin"
-      tls: {}
-
-# Default TLS configuration
-tls:
-  stores:
-    default:
-      defaultCertificate:
-        certFile: "/etc/traefik/certs/default.crt"
-        keyFile: "/etc/traefik/certs/default.key"

@@ -9,10 +9,11 @@ http:
       rule: "Path(`/ping`)"
       service: "api@internal"
   services: {}
+
 tcp:
   routers:
     mongodb:
-      entrypoints:
+      entryPoints:
         - "mongodb"
       rule: "HostSNI(`*.mongodb.cloudlunacy.uk`)"
       service: "mongodb"

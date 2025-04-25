@@ -1,0 +1,19 @@
+# Dashboard router configuration
+http:
+  routers:
+    dashboard:
+      rule: "Host(`traefik.localhost`)"
+      service: "api@internal"
+      entryPoints:
+        - "websecure"
+      middlewares:
+        - "auth-admin@file"
+      tls: {}
+
+# Default TLS configuration
+tls:
+  stores:
+    default:
+      defaultCertificate:
+        certFile: "/etc/traefik/certs/default.crt"
+        keyFile: "/etc/traefik/certs/default.key"
