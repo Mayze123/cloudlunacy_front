@@ -1,25 +1,35 @@
 ## Traefik Main Configuration
 
+# -------------------------------
 # Global settings
+# -------------------------------
 global:
   checkNewVersion: true
   sendAnonymousUsage: false
 
+# -------------------------------
 # Log configuration
+# -------------------------------
 log:
   level: "INFO"
   format: "common"
 
+# -------------------------------
 # Access logs configuration
+# -------------------------------
 accessLog:
   format: "common"
 
+# -------------------------------
 # API and dashboard configuration
+# -------------------------------
 api:
   dashboard: true
   insecure: true # Allow API access without authentication during setup
 
+# -------------------------------
 # Entrypoints configuration
+# -------------------------------
 entryPoints:
   web:
     address: ":80"
@@ -33,32 +43,54 @@ entryPoints:
     address: ":443"
 
   traefik:
-    address: ":8081" # Specific entrypoint for Traefik API
+    address: ":8081" # Entrypoint for Traefik’s own API/dashboard
 
   mongodb:
-    address: ":27017"
+    address: ":27017" # Optional: expose MongoDB metrics or healthcheck
 
+# -------------------------------
 # Ping endpoint for Docker healthcheck
+# -------------------------------
 ping:
   entryPoint: traefik
 
-# Configure providers
+# -------------------------------
+# Providers configuration
+# -------------------------------
 providers:
+  # 1) File-based provider (static dynamic config)
   file:
     directory: "/etc/traefik/dynamic"
     watch: true
+
+  # 2) Docker provider (auto-discover Docker containers)
   docker:
     exposedByDefault: false
+
+  # 3) Consul Service Catalog provider
+  #    → Service Discovery: Traefik will watch Consul’s service catalog
+  #      and automatically create routers & services for registered services.
   consulCatalog:
+    prefix: "traefik" # namespace in Consul
     defaultRule: "Host(`{{ normalize .Name }}.cloudlunacy.uk`)"
     exposedByDefault: false
-    endpoint: "consul:8500"
-    prefix: "traefik"
-  consul:
-    endpoint: "consul:8500"
-    prefix: "traefik"
+    endpoint:
+      address: "consul:8500" # Consul agent address
+      scheme: "http" # HTTP communication
+    watch: true # auto-refresh on catalog changes
 
+  # 4) Consul Key/Value provider
+  #    → Dynamic Config Store: Traefik will read/write its own dynamic
+  #      configuration objects (routers, middlewares, TLS certs) in KV.
+  consul:
+    endpoints:
+      - "consul:8500" # list of Consul KV endpoints
+    rootKey: "traefik" # base path in KV for Traefik config
+    watch: true # auto-refresh on KV changes
+
+# -------------------------------
 # TLS options
+# -------------------------------
 tls:
   options:
     default:
@@ -69,7 +101,9 @@ tls:
       minVersion: "VersionTLS12"
       sniStrict: true
 
+# -------------------------------
 # Certificate resolvers for Let's Encrypt
+# -------------------------------
 certificatesResolvers:
   letsencrypt:
     acme:
