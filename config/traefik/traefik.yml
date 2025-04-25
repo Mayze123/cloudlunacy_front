@@ -53,19 +53,17 @@ providers:
     watch: true
 
   consulCatalog:
-    prefix: "traefik"
     exposedByDefault: false
     refreshInterval: "30s"
     connectAware: true
     connectByDefault: false
-    serviceName: "traefik"
     providers:
       consul:
         address: "consul:8500"
         scheme: "http"
 
   consul:
-    prefix: "traefik"
+    rootKey: "traefik"
     watch: true
     endpoints:
       - "consul:8500"
@@ -80,9 +78,6 @@ tls:
     mongodb:
       minVersion: "VersionTLS12"
       sniStrict: true
-      alpnProtocols:
-        - "h2"
-        - "http/1.1"
 
 # Certificate resolvers for Let's Encrypt
 certificatesResolvers:
