@@ -1,0 +1,9 @@
+# Default services - will be dynamically updated by the application
+services:
+  node-app-service:
+    loadBalancer:
+      servers:
+        - url: "http://node-app:3005"
+
+# TLS configuration
+tls:
