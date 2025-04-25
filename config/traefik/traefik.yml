@@ -1,109 +1,93 @@
-## Traefik Main Configuration
+# /etc/traefik/dynamic/routes.yml
 
 # -------------------------------
-# Global settings
+# HTTP Dynamic Configuration
 # -------------------------------
-global:
-  checkNewVersion: true
-  sendAnonymousUsage: false
+http:
+  routers:
+    # Healthcheck endpoint on the "traefik" entryPoint
+    traefik-healthcheck:
+      entryPoints:
+        - traefik
+      rule: Path(`/ping`)
+      service: api@internal
+
+    # Secure dashboard with basic auth on HTTPS
+    dashboard:
+      entryPoints:
+        - websecure
+      rule: Host(`traefik.cloudlunacy.uk`)
+      service: api@internal
+      middlewares:
+        - auth-admin
+      tls: {}
+
+  middlewares:
+    # Basic auth for dashboard access
+    auth-admin:
+      basicAuth:
+        users:
+          - "admin:$apr1$ruca84Hq$mbjdMZBAG.KWn7vfN/SNK/" # change in production
+
+    # Default redirect from HTTP to HTTPS
+    web-to-websecure:
+      redirectScheme:
+        scheme: https
+        permanent: true
+
+    # Compression for HTTP responses
+    compress:
+      compress: {}
+
+    # Security headers to harden HTTP
+    secure-headers:
+      headers:
+        frameDeny: true
+        browserXssFilter: true
+        contentTypeNosniff: true
+        forceSTSHeader: true
+        stsIncludeSubdomains: true
+        stsPreload: true
+        stsSeconds: 31536000
+
+    # CORS policy for your applications
+    cors-headers:
+      headers:
+        accessControlAllowMethods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
+        accessControlAllowOriginList:
+          - "https://*.cloudlunacy.uk"
+          - "https://*.apps.cloudlunacy.uk"
+        accessControlAllowCredentials: true
+        accessControlMaxAge: 100
+        addVaryHeader: true
+
+  services:
+    # Default backend service (updated dynamically by your app)
+    node-app-service:
+      loadBalancer:
+        servers:
+          - url: http://node-app:3005
 
 # -------------------------------
-# Log configuration
+# TCP Dynamic Configuration
 # -------------------------------
-log:
-  level: "INFO"
-  format: "common"
-
-# -------------------------------
-# Access logs
-# -------------------------------
-accessLog:
-  format: "common"
-
-# -------------------------------
-# API & dashboard
-# -------------------------------
-api:
-  dashboard: true
-  insecure: true # during initial setup
-
-# -------------------------------
-# EntryPoints
-# -------------------------------
-entryPoints:
-  web:
-    address: ":80"
-    http:
-      redirections:
-        entryPoint:
-          to: websecure
-          scheme: https
-
-  websecure:
-    address: ":443"
-
-  traefik:
-    address: ":8081" # Traefik API / dashboard
-
-  mongodb:
-    address: ":27017" # exposing Mongo for healthchecks, metrics, etc.
-
-# -------------------------------
-# Healthcheck ping
-# -------------------------------
-ping:
-  entryPoint: traefik
-
-# -------------------------------
-# Providers
-# -------------------------------
-providers:
-  # 1) File-based provider (dynamic config from files)
-  file:
-    directory: "/etc/traefik/dynamic"
-    watch: true # auto-reload when files change
-
-  # 2) Docker provider (auto-discover services via labels)
-  docker:
-    exposedByDefault: false
-
-  # 3) Consul Service Catalog (Service Discovery)
-  consulCatalog:
-    defaultRule: "Host(`{{ normalize .Name }}.cloudlunacy.uk`)"
-    exposedByDefault: false
-    refreshInterval: "15s"
-    connectAware: true
-    providers:
-      consul:
-        address: "consul:8500"
-        scheme: "http"
-
-  # 4) Consul KV store (Dynamic config store)
-  consul:
-    rootKey: "traefik"
-    endpoints:
-      - "consul:8500"
-
-# -------------------------------
-# TLS options
-# -------------------------------
-tls:
-  options:
-    default:
-      minVersion: "VersionTLS12"
-      sniStrict: true
-
+tcp:
+  routers:
     mongodb:
-      minVersion: "VersionTLS12"
-      sniStrict: true
+      entryPoints:
+        - mongodb
+      rule: HostSNI(`*.mongodb.cloudlunacy.uk`)
+      service: mongodb
+      tls:
+        passthrough: true
 
-# -------------------------------
-# Let's Encrypt
-# -------------------------------
-certificatesResolvers:
-  letsencrypt:
-    acme:
-      email: "admin@cloudlunacy.uk"
-      storage: "/etc/traefik/acme/acme.json"
-      httpChallenge:
-        entryPoint: "web"
+  services:
+    mongodb:
+      loadBalancer:
+        servers:
+          - address: 127.0.0.1:27017
