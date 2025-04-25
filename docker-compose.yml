@@ -84,47 +84,21 @@ services:
       - ./config/traefik/dynamic:/etc/traefik/dynamic # Mount dynamic specifically
     command: >
       sh -c "
+        echo 'Ensuring Traefik dynamic config directory exists...' &&
         mkdir -p /etc/traefik/dynamic &&
-        touch /etc/traefik/dynamic/middlewares.yml &&
-        echo 'http:' > /etc/traefik/dynamic/middlewares.yml &&
-        echo '  middlewares:' >> /etc/traefik/dynamic/middlewares.yml &&
-        echo '    auth-admin:' >> /etc/traefik/dynamic/middlewares.yml &&
-        echo '      basicAuth:' >> /etc/traefik/dynamic/middlewares.yml &&
-        echo '        users:' >> /etc/traefik/dynamic/middlewares.yml &&
-        echo '          - "admin:$$apr1$$7aaks1pj$$8G80W2g3vVfCuck.EwjZ80" # Default: admin/password, CHANGE THIS!' >> /etc/traefik/dynamic/middlewares.yml &&
-        echo '    redirect-to-https:' >> /etc/traefik/dynamic/middlewares.yml &&
-        echo '      redirectScheme:' >> /etc/traefik/dynamic/middlewares.yml &&
-        echo '        scheme: https' >> /etc/traefik/dynamic/middlewares.yml &&
-        echo '        permanent: true' >> /etc/traefik/dynamic/middlewares.yml &&
-        touch /etc/traefik/dynamic/routes.yml &&
-        echo '# Dynamic routes managed primarily via Consul KV' > /etc/traefik/dynamic/routes.yml &&
-        echo 'http:' >> /etc/traefik/dynamic/routes.yml &&
-        echo '  routers: {}' >> /etc/traefik/dynamic/routes.yml &&
-        echo '  services: {}' >> /etc/traefik/dynamic/routes.yml &&
-        echo 'tcp:' >> /etc/traefik/dynamic/routes.yml &&
-        echo '  routers: {}' >> /etc/traefik/dynamic/routes.yml &&
-        echo '  services: {}' >> /etc/traefik/dynamic/routes.yml &&
-        chmod -R 777 /etc/traefik/dynamic && # Ensure permissions are correct inside the container path
-        echo 'Traefik dynamic configuration files and permissions set up successfully'
+        touch /etc/traefik/dynamic/.keep && # Create a keep file instead of actual config
+        chmod -R 777 /etc/traefik/dynamic && # Ensure permissions
+        echo 'Traefik dynamic configuration directory ensured.'
       "
     labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.node-app.rule=Host(`api.${APP_DOMAIN:-cloudlunacy.uk}`)"
-      - "traefik.http.routers.node-app.entrypoints=websecure"
-      - "traefik.http.routers.node-app.tls=true"
-      - "traefik.http.services.node-app.loadbalancer.server.port=3005"
-      # Use a standard security middleware (assuming headers middleware defined elsewhere or using defaults)
-      # Define security headers middleware if needed, e.g., in dynamic config or another label set
-      # - "traefik.http.middlewares.node-app-security.headers.frameDeny=true" # Keep if needed
-      # Removed deprecated sslRedirect, handled by global redirect-to-https middleware
-      # - "traefik.http.middlewares.node-app-security.headers.sslRedirect=true"
-      # - "traefik.http.routers.node-app.middlewares=node-app-security" # Apply if middleware is defined
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3005/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
+      - "traefik.enable=false" # Disable traefik labels for this setup container
+    # Remove healthcheck as it's not relevant for this short-lived setup container
+    # healthcheck:
+    #   test: ["CMD", "wget", "-qO-", "http://localhost:3005/health"] # This healthcheck belongs to node-app
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+    #   start_period: 10s
 
   certbot:
     image: certbot/certbot:latest
