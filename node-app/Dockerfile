@@ -30,9 +30,11 @@ COPY start.js /app/start.js
 COPY . .
 
 # Create necessary directories with proper permissions
-RUN mkdir -p /app/scripts /app/config/certs /app/config/certs/agents /app/config/certs/private /app/logs && \
-    # Ensure cert directories are writable by the node user
-    chown -R node:node /app/config/certs /app/logs
+RUN mkdir -p /app/scripts /app/config/certs /app/config/certs/agents /app/config/certs/private /app/logs \
+    /app/config/agents /app/config/backups /app/backups /home/node/logs && \
+    # Ensure all directories are writable by the node user
+    chown -R node:node /app/config /app/logs /app/backups /home/node/logs && \
+    chmod -R 755 /app/config /app/logs /app/backups /home/node/logs
 
 # Make scripts executable
 RUN find /app/scripts -type f -name "*.sh" -exec chmod +x {} \;
