@@ -38,24 +38,6 @@ http:
         servers:
           - url: "http://node-app:3005"
 
-# TCP Configuration for MongoDB routing
-tcp:
-  routers:
-    # Default MongoDB router
-    mongodb-default:
-      entryPoints:
-        - "mongodb"
-      rule: "HostSNI(`*.mongodb.cloudlunacy.uk`)"
-      service: "mongodb-default"
-      tls:
-        passthrough: true
-
-  services:
-    # Default MongoDB service - will be populated dynamically
-    mongodb-default:
-      loadBalancer:
-        servers: []
-
 # TLS configuration
 tls:
   options:
