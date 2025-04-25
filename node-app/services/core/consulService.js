@@ -63,6 +63,8 @@ class ConsulService {
       { key: `${this.prefix}/http/services`, value: JSON.stringify({}) },
       { key: `${this.prefix}/tcp/routers`, value: JSON.stringify({}) },
       { key: `${this.prefix}/tcp/services`, value: JSON.stringify({}) },
+      { key: `${this.prefix}/http/middlewares`, value: JSON.stringify({}) },
+      { key: `${this.prefix}/tls/certificates`, value: JSON.stringify({}) },
     ];
 
     for (const { key, value } of baseKeys) {
@@ -75,6 +77,25 @@ class ConsulService {
       } catch (error) {
         logger.warn(`Failed to initialize key ${key}: ${error.message}`);
       }
+    }
+
+    // Also create an empty entrypoints configuration
+    try {
+      const entrypointsKey = `${this.prefix}/entrypoints`;
+      const exists = await this.consul.kv.get(entrypointsKey);
+      if (!exists) {
+        await this.consul.kv.set(
+          entrypointsKey,
+          JSON.stringify({
+            web: { address: ":80" },
+            websecure: { address: ":443" },
+            mongodb: { address: ":27017" },
+          })
+        );
+        logger.debug(`Created entrypoints key`);
+      }
+    } catch (error) {
+      logger.warn(`Failed to initialize entrypoints key: ${error.message}`);
     }
   }
 
