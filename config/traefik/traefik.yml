@@ -48,8 +48,8 @@ providers:
 certificatesResolvers:
   letsencrypt:
     acme:
-      email: "${CF_EMAIL}" # Your Let's Encrypt email from .env
-      storage: /etc/traefik/acme/acme.json # Path inside the container to store certs
+      email: "m.taibou.i@gmail.com" # Hardcoded valid email instead of "${CF_EMAIL}"
+      storage: /etc/traefik/acme/acme.json
       # Use Cloudflare DNS challenge
       dnsChallenge:
         provider: cloudflare

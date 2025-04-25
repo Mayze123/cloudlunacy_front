@@ -26,6 +26,7 @@ services:
       - TZ=UTC
       - CF_API_KEY=${CF_API_KEY}
       - CF_ZONE_API_TOKEN=${CF_ZONE_API_TOKEN}
+      - CLOUDFLARE_DNS_API_TOKEN=${CF_DNS_API_TOKEN}
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.dashboard.rule=Host(`traefik.${APP_DOMAIN:-cloudlunacy.uk}`)"
@@ -77,11 +78,13 @@ services:
     entrypoint: "/bin/sh"
     command: >
       -c "
-        echo 'Waiting for Consul to be healthy...' &&
-        while ! wget -q -O /dev/null http://consul:8500/v1/status/leader; do
-          echo -n '.' ; sleep 1;
+        echo 'Waiting for Consul to be healthy and have a leader...' &&
+        while ! wget -q -O - http://consul:8500/v1/status/leader | grep -q .; do
+          echo -n '.' ; sleep 2;
         done; 
-        echo '\nConsul is up! Populating KV...' &&
+        echo '\nConsul has a leader! Waiting a bit more for stability...' &&
+        sleep 5 &&
+        echo 'Populating KV store...' &&
         sh /usr/local/bin/populate_traefik_kv.sh
       "
     depends_on:
