@@ -100,8 +100,48 @@ class ConsulService {
   }
 
   /**
-   * Set a key-value pair in Consul
-   * @param {string} key - The key to set
+   * Recursively sets individual keys in Consul KV from a nested object.
+   * @param {string} basePath - The base key path (e.g., 'traefik/tcp/routers/myrouter')
+   * @param {object} obj - The configuration object to flatten into KV pairs.
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _setConsulKeysFromObject(basePath, obj) {
+    for (const key in obj) {
+      if (Object.prototype.hasOwnProperty.call(obj, key)) {
+        const value = obj[key];
+        const fullKey = `${basePath}/${key}`;
+
+        if (Array.isArray(value)) {
+          // Handle arrays: create indexed keys (e.g., /entrypoints/0, /entrypoints/1)
+          for (let i = 0; i < value.length; i++) {
+            const indexedKey = `${fullKey}/${i}`;
+            const itemValue = value[i];
+            if (typeof itemValue === "object" && itemValue !== null) {
+              await this._setConsulKeysFromObject(indexedKey, itemValue);
+            } else {
+              await this.consul.kv.set(indexedKey, String(itemValue));
+              logger.debug(`Set array key: ${indexedKey}`);
+            }
+          }
+        } else if (typeof value === "object" && value !== null) {
+          // Handle nested objects: recurse
+          await this._setConsulKeysFromObject(fullKey, value);
+        } else if (value !== null && value !== undefined) {
+          // Handle primitive values: set directly
+          await this.consul.kv.set(fullKey, String(value));
+          logger.debug(`Set key: ${fullKey}`);
+        }
+      }
+    }
+  }
+
+  /**
+   * Set a key-value pair in Consul - DEPRECATED for complex objects,
+   * use _setConsulKeysFromObject for Traefik configs.
+   * Kept for simple values or direct use if needed.
+   *
+   * @param {string} key - The key to set (relative to prefix)
    * @param {any} value - The value to set
    * @returns {Promise<boolean>} Success status
    */
@@ -110,16 +150,15 @@ class ConsulService {
       if (!this.isInitialized) {
         throw new Error("Consul service not initialized");
       }
-
       const fullKey = `${this.prefix}/${key}`;
       const valueStr =
-        typeof value === "object" ? JSON.stringify(value) : value;
+        typeof value === "object" ? JSON.stringify(value) : String(value);
 
       await this.consul.kv.set(fullKey, valueStr);
-      logger.debug(`Set key: ${fullKey}`);
+      logger.debug(`Set key (legacy): ${fullKey}`);
       return true;
     } catch (error) {
-      logger.error(`Failed to set key ${key}: ${error.message}`);
+      logger.error(`Failed to set key (legacy) ${key}: ${error.message}`);
       return false;
     }
   }
@@ -155,8 +194,8 @@ class ConsulService {
   }
 
   /**
-   * Delete a key from Consul
-   * @param {string} key - The key to delete
+   * Delete a key or hierarchy from Consul
+   * @param {string} key - The key to delete (relative to prefix)
    * @returns {Promise<boolean>} Success status
    */
   async delete(key) {
@@ -166,8 +205,9 @@ class ConsulService {
       }
 
       const fullKey = `${this.prefix}/${key}`;
-      await this.consul.kv.del(fullKey);
-      logger.debug(`Deleted key: ${fullKey}`);
+      // Use recurse: true to delete the hierarchy under the key
+      await this.consul.kv.del({ key: fullKey, recurse: true });
+      logger.debug(`Deleted key/hierarchy: ${fullKey}`);
       return true;
     } catch (error) {
       logger.error(`Failed to delete key ${key}: ${error.message}`);
@@ -182,6 +222,9 @@ class ConsulService {
    * @returns {Promise<boolean>} Success status
    */
   async addHttpRouter(name, routerConfig) {
+    // TODO: Update this similarly if HTTP routes use Consul KV
+    // For now, keep the old method if it works for HTTP
+    logger.warn("Using legacy set for addHttpRouter. Consider updating.");
     return this.set(`http/routers/${name}`, routerConfig);
   }
 
@@ -192,27 +235,54 @@ class ConsulService {
    * @returns {Promise<boolean>} Success status
    */
   async addHttpService(name, serviceConfig) {
+    // TODO: Update this similarly if HTTP routes use Consul KV
+    // For now, keep the old method if it works for HTTP
+    logger.warn("Using legacy set for addHttpService. Consider updating.");
     return this.set(`http/services/${name}`, serviceConfig);
   }
 
   /**
-   * Add TCP router configuration to Consul
+   * Add TCP router configuration to Consul using individual keys.
    * @param {string} name - Router name
    * @param {object} routerConfig - Router configuration
    * @returns {Promise<boolean>} Success status
    */
   async addTcpRouter(name, routerConfig) {
-    return this.set(`tcp/routers/${name}`, routerConfig);
+    try {
+      if (!this.isInitialized) {
+        throw new Error("Consul service not initialized");
+      }
+      const basePath = `${this.prefix}/tcp/routers/${name}`;
+      await this._setConsulKeysFromObject(basePath, routerConfig);
+      return true;
+    } catch (error) {
+      logger.error(
+        `Failed to set TCP router keys for ${name}: ${error.message}`
+      );
+      return false;
+    }
   }
 
   /**
-   * Add TCP service configuration to Consul
+   * Add TCP service configuration to Consul using individual keys.
    * @param {string} name - Service name
    * @param {object} serviceConfig - Service configuration
    * @returns {Promise<boolean>} Success status
    */
   async addTcpService(name, serviceConfig) {
-    return this.set(`tcp/services/${name}`, serviceConfig);
+    try {
+      if (!this.isInitialized) {
+        throw new Error("Consul service not initialized");
+      }
+      const basePath = `${this.prefix}/tcp/services/${name}`;
+      await this._setConsulKeysFromObject(basePath, serviceConfig);
+      return true;
+    } catch (error) {
+      logger.error(
+        `Failed to set TCP service keys for ${name}: ${error.message}`
+      );
+      return false;
+    }
   }
 
   /**
