@@ -30,7 +30,8 @@ services:
       - "traefik.http.routers.dashboard.rule=Host(`traefik.${APP_DOMAIN:-cloudlunacy.uk}`)"
       - "traefik.http.routers.dashboard.entrypoints=websecure"
       - "traefik.http.routers.dashboard.tls.certresolver=letsencrypt"
-      - "traefik.http.routers.dashboard.middlewares=auth-admin@consulcatalog"
+      - "traefik.http.routers.dashboard.middlewares=auth-admin@docker"
+      - "traefik.http.middlewares.auth-admin.basicauth.users=admin:.KWn7vfN/SNK/"
     healthcheck:
       test: ["CMD", "traefik", "healthcheck", "--ping"]
       interval: 30s
