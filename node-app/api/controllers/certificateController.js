@@ -753,3 +753,45 @@ exports.getCertificateMetrics = asyncHandler(async (req, res) => {
     );
   }
 });
+
+/**
+ * List all certificates in the system (public version)
+ * This endpoint doesn't require authentication but returns limited information
+ *
+ * GET /api/certificates/public
+ */
+exports.getPublicCertificateList = asyncHandler(async (req, res) => {
+  // Initialize certificate service if needed
+  if (!coreServices.certificateService) {
+    throw new AppError("Certificate service not available", 500);
+  }
+
+  if (!coreServices.certificateService.initialized) {
+    await coreServices.certificateService.initialize();
+  }
+
+  logger.info("Listing public certificates");
+
+  try {
+    const certificates =
+      await coreServices.certificateService.getAllCertificates();
+
+    // Filter sensitive information
+    const filteredCertificates = certificates.certificates.map((cert) => ({
+      agentId: cert.agentId,
+      exists: cert.exists,
+      expiry: cert.expiry,
+      daysRemaining: cert.daysRemaining,
+      isExpired: cert.isExpired,
+    }));
+
+    return res.status(200).json({
+      success: true,
+      count: filteredCertificates.length,
+      certificates: filteredCertificates,
+    });
+  } catch (error) {
+    logger.error(`Error listing public certificates: ${error.message}`);
+    throw new AppError(`Failed to list certificates: ${error.message}`, 500);
+  }
+});

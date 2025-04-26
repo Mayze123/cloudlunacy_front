@@ -23,6 +23,18 @@ const { requireRole } = require("../middleware/auth");
 router.get("/mongodb-ca", certificateController.getMongoCA);
 
 /**
+ * List all certificates in the system (public version)
+ * Returns limited information without sensitive data
+ *
+ * GET /api/certificates/public
+ * Public endpoint, no authentication required
+ */
+router.get(
+  "/public",
+  asyncHandler(certificateController.getPublicCertificateList)
+);
+
+/**
  * TEMPORARY: Force renewal of all certificates without auth
  * Remove this endpoint after testing is complete!
  *
