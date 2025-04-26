@@ -46,15 +46,16 @@ put_kv "http/middlewares/cors-headers/headers/accesscontrolmaxage" "100"
 put_kv "http/middlewares/cors-headers/headers/addvaryheader" "true"
 
 # --- TCP Router (mongodb) ---
-MONGO_ROUTER_RULE="${MONGO_ROUTER_RULE:-HostSNI(\\`*\\`)}" # Default to wildcard, escape backticks for shell
-put_kv "tcp/routers/mongodb/entrypoints" "mongodb"
-put_kv "tcp/routers/mongodb/rule" "$MONGO_ROUTER_RULE" # e.g., HostSNI(\`mongodb.cloudlunacy.uk\`)
-put_kv "tcp/routers/mongodb/service" "mongodb-service"
-put_kv "tcp/routers/mongodb/tls/passthrough" "true"
+# COMMENTED OUT: We don't want a wildcard router that would conflict with agent-specific routers
+# MONGO_ROUTER_RULE="${MONGO_ROUTER_RULE:-HostSNI(\\`*\\`)}" # Default to wildcard, escape backticks for shell
+# put_kv "tcp/routers/mongodb/entrypoints" "mongodb"
+# put_kv "tcp/routers/mongodb/rule" "$MONGO_ROUTER_RULE" # e.g., HostSNI(\`mongodb.cloudlunacy.uk\`)
+# put_kv "tcp/routers/mongodb/service" "mongodb-service"
+# put_kv "tcp/routers/mongodb/tls/passthrough" "true"
 
 # --- TCP Service (mongodb-service) ---
-# IMPORTANT: Replace 'mongo:27017' if your MongoDB service is named differently
-MONGO_SERVICE_ADDRESS="${MONGO_SERVICE_ADDRESS:-mongo:27017}"
-put_kv "tcp/services/mongodb-service/loadbalancer/servers/0/address" "$MONGO_SERVICE_ADDRESS"
+# COMMENTED OUT: We don't want a default service that would conflict with agent-specific services
+# MONGO_SERVICE_ADDRESS="${MONGO_SERVICE_ADDRESS:-mongo:27017}"
+# put_kv "tcp/services/mongodb-service/loadbalancer/servers/0/address" "$MONGO_SERVICE_ADDRESS"
 
 echo "Traefik dynamic configuration populated in Consul KV." 
