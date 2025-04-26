@@ -24,7 +24,8 @@ services:
       - ./.env
     environment:
       - TZ=UTC
-      - CF_DNS_API_TOKEN=${CF_DNS_API_TOKEN}
+      - CLOUDFLARE_DNS_API_TOKEN=yNocoCu1-ndjekxS-tqDbp7oEbxjFgLOUHeVrXWl
+      - CLOUDFLARE_EMAIL=m.taibou.i@gmail.com
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.dashboard.rule=Host(`traefik.${APP_DOMAIN:-cloudlunacy.uk}`)"
