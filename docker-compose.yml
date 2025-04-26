@@ -22,10 +22,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     env_file:
       - ./.env
+      - ./cloudflare.env
     environment:
       - TZ=UTC
-      - CLOUDFLARE_DNS_API_TOKEN=yNocoCu1-ndjekxS-tqDbp7oEbxjFgLOUHeVrXWl
-      - CLOUDFLARE_EMAIL=m.taibou.i@gmail.com
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.dashboard.rule=Host(`traefik.${APP_DOMAIN:-cloudlunacy.uk}`)"
