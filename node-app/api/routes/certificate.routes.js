@@ -23,6 +23,51 @@ const { requireRole } = require("../middleware/auth");
 router.get("/mongodb-ca", certificateController.getMongoCA);
 
 /**
+ * TEMPORARY: Force renewal of all certificates without auth
+ * Remove this endpoint after testing is complete!
+ *
+ * GET /api/certificates/temp-renew-all
+ * No authentication required - FOR DEVELOPMENT USE ONLY
+ */
+router.get(
+  "/temp-renew-all",
+  asyncHandler(async (req, res) => {
+    try {
+      const coreServices = require("../../services/core");
+
+      if (!coreServices.certificateService) {
+        return res.status(500).json({
+          success: false,
+          message: "Certificate service not available",
+        });
+      }
+
+      if (!coreServices.certificateService.initialized) {
+        await coreServices.certificateService.initialize();
+      }
+
+      const result =
+        await coreServices.certificateService.checkAndRenewCertificates({
+          forceRenewal: true,
+          renewBeforeDays: 30,
+        });
+
+      return res.status(200).json({
+        success: true,
+        message: "All certificates have been renewed",
+        result,
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        message: "Certificate renewal failed",
+        error: error.message,
+      });
+    }
+  })
+);
+
+/**
  * Get certificate status
  *
  * GET /api/certificates/status
