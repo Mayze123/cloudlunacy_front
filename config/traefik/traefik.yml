@@ -43,7 +43,7 @@ providers:
   consul:
     endpoints:
       - "consul:8500"
-    prefix: "traefik" # Default prefix for KV store keys
+    rootKey: "traefik" # Default prefix for KV store keys
     watch: true
 
   # Enable Consul Catalog Provider
