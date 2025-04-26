@@ -5,11 +5,6 @@
  * Run it with: node scripts/renew-all-certificates.js
  */
 
-// Set up environment
-require("dotenv").config();
-const path = require("path");
-const fs = require("fs");
-
 // Configure logger
 const logger = {
   info: (msg) => console.log(`[INFO] ${msg}`),
