@@ -302,7 +302,6 @@ class ConsulService {
         tls: secure
           ? {
               passthrough: true,
-              options: "mongodb",
             }
           : null,
       };
