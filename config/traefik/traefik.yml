@@ -39,6 +39,12 @@ providers:
     exposedByDefault: false
     network: cloudlunacy-frontend # Use the frontend network defined in docker-compose
 
+  # Enable Consul KV Provider (for TCP routes)
+  consul:
+    endpoint: "consul:8500"
+    prefix: "traefik" # Default prefix for KV store keys
+    watch: true
+
   # Enable Consul Catalog Provider
   consulCatalog:
     prefix: "traefik" # Default prefix for KV store keys
