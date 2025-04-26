@@ -129,12 +129,37 @@ class SelfSignedProvider extends BaseCertProvider {
       // Set permissions on the key
       await fs.chmod(this.caKeyPath, 0o600);
 
-      // Create the CA certificate
-      const subj = `/C=${this.country}/ST=${this.state}/L=${this.locality}/O=${this.organization}/OU=${this.organizationalUnit}/CN=CloudLunacy CA`;
-      const genCertCmd = `openssl req -new -x509 -key "${this.caKeyPath}" -out "${this.caCertPath}" -days 3650 -subj "${subj}"`;
+      // Create OpenSSL config for CA with proper extensions
+      const caCnfPath = path.join(this.certsDir, `ca.cnf`);
+      const caCnfContent = `
+[req]
+distinguished_name = req_distinguished_name
+req_extensions = v3_ca
+prompt = no
+
+[req_distinguished_name]
+C = ${this.country}
+ST = ${this.state}
+L = ${this.locality}
+O = ${this.organization}
+OU = ${this.organizationalUnit}
+CN = CloudLunacy CA
+
+[v3_ca]
+basicConstraints = critical,CA:TRUE
+keyUsage = critical,keyCertSign,cRLSign,digitalSignature
+`;
+
+      await fs.writeFile(caCnfPath, caCnfContent);
+
+      // Create the CA certificate with proper extensions
+      const genCertCmd = `openssl req -new -x509 -key "${this.caKeyPath}" -out "${this.caCertPath}" -days 3650 -config "${caCnfPath}" -extensions v3_ca`;
 
       logger.info(`Generating CA certificate: ${genCertCmd}`);
       await execAsync(genCertCmd);
+
+      // Clean up temporary config file
+      await fs.unlink(caCnfPath);
 
       logger.info("CA certificate and key generated successfully");
       return true;
@@ -182,7 +207,7 @@ class SelfSignedProvider extends BaseCertProvider {
       await execAsync(genKeyCmd);
       await fs.chmod(keyPath, 0o600);
 
-      // Step 2: Create OpenSSL config for SAN support
+      // Step 2: Create OpenSSL config for SAN support with proper KeyUsage and ExtendedKeyUsage for MongoDB Compass
       let cnfContent = `
 [req]
 distinguished_name = req_distinguished_name
@@ -199,8 +224,8 @@ CN = ${domain}
 
 [v3_req]
 basicConstraints = CA:FALSE
-keyUsage = nonRepudiation, digitalSignature, keyEncipherment
-extendedKeyUsage = serverAuth
+keyUsage = critical,digitalSignature,keyEncipherment
+extendedKeyUsage = serverAuth,clientAuth
 subjectAltName = @alt_names
 
 [alt_names]
