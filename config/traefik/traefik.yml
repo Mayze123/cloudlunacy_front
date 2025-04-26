@@ -6,6 +6,10 @@ api:
   dashboard: true
   # insecure: true # Access dashboard via http://traefik.localhost:8081, use labels for secure access
 
+# Add ping endpoint for Docker healthchecks
+ping:
+  entryPoint: "web" # Use the web entrypoint for health checks
+
 entryPoints:
   web:
     address: ":80"
