@@ -24,16 +24,10 @@ services:
       - ./.env
     environment:
       - TZ=UTC
-      # Cloudflare credentials in exact format expected by Traefik's DNS challenge
-      - CF_API_EMAIL=${CF_EMAIL}
+      - CF_EMAIL=${CF_EMAIL}
       - CF_API_KEY=${CF_API_KEY}
-      - CF_DNS_API_TOKEN=${CF_DNS_API_TOKEN}
-      - CF_ZONE_API_TOKEN=${CF_ZONE_API_TOKEN}
-      # Standard environment variables that Traefik expects
-      - CLOUDFLARE_EMAIL=${CF_EMAIL}
-      - CLOUDFLARE_API_KEY=${CF_API_KEY}
       - CLOUDFLARE_DNS_API_TOKEN=${CF_DNS_API_TOKEN}
-      - CLOUDFLARE_ZONE_API_TOKEN=${CF_ZONE_API_TOKEN}
+      - CF_ZONE_API_TOKEN=${CF_ZONE_API_TOKEN}
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.dashboard.rule=Host(`traefik.${APP_DOMAIN:-cloudlunacy.uk}`)"
