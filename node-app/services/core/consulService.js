@@ -301,8 +301,7 @@ class ConsulService {
         service: `${name}-mongo`,
         tls: secure
           ? {
-              passthrough: false,
-              certResolver: "letsencrypt",
+              passthrough: true,
               options: "mongodb",
             }
           : null,
