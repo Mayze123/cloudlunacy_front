@@ -19,6 +19,7 @@ const metricsRoutes = require("./routes/metrics.routes");
 
 // Import controllers
 const agentController = require("./controllers/agentController");
+const certificateController = require("./controllers/certificateController");
 
 // Import core services
 const ProxyService = require("../services/core/proxyService");
@@ -201,6 +202,28 @@ router.get(
       next(err);
     }
   }
+);
+
+// Certificate routes
+router.get(
+  "/certificates/agent/:agentId",
+  //authMiddleware.requireAuth,
+  //authMiddleware.requireAgentAccess(),
+  certificateController.getAgentCertificates
+);
+
+// Temporary endpoint to regenerate certificates for an agent (without auth)
+router.post(
+  "/certificates/temp-regenerate/:agentId",
+  certificateController.tempRegenerateAgentCertificate
+);
+
+// Certificate regeneration
+router.post(
+  "/certificates/agent/:agentId/regenerate",
+  authMiddleware.requireAuth,
+  authMiddleware.requireAgentAccess(),
+  certificateController.regenerateAgentCertificate
 );
 
 // Apply error handling middleware
