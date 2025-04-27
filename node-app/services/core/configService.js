@@ -208,14 +208,12 @@ agent:
         );
       }
 
-      // Generate certificates if they don't exist or need refreshing
+      // Get certificates using the CertificateService's single source of truth
       let certificates = null;
       try {
         // Check if we have access to the certificate service
         const coreServices = require("../core");
         if (coreServices && coreServices.certificateService) {
-          logger.info(`Generating certificates for agent ${agentId}`);
-
           // Get the agent's IP address from agent service if available
           let agentIp = null;
           if (coreServices.agentService) {
@@ -235,34 +233,80 @@ agent:
 
           // If no IP found, use a fallback that works with the agent
           if (!agentIp) {
-            // Use a more appropriate fallback than localhost
-            // Extract IP from request if possible or use a default
             agentIp = "0.0.0.0"; // This is better than 127.0.0.1 for certificates
             logger.warn(
               `Using fallback IP ${agentIp} for agent ${agentId} certificates`
             );
           }
 
-          // Generate certificates
-          const certResult =
-            await coreServices.certificateService.generateAgentCertificate(
-              agentId,
-              agentIp
+          // First, try to get existing certificates from the single source of truth
+          try {
+            logger.info(`Retrieving certificates for agent ${agentId}`);
+            const existingCerts =
+              await coreServices.certificateService.getAgentCertificates(
+                agentId
+              );
+
+            if (existingCerts && !existingCerts.error) {
+              certificates = {
+                caCert: existingCerts.caCert,
+                serverCert: existingCerts.serverCert,
+                serverKey: existingCerts.serverKey,
+                source: existingCerts.usedFallback ? "fallback" : "primary",
+              };
+              logger.info(
+                `Certificates retrieved for agent ${agentId} from ${certificates.source} location`
+              );
+            } else {
+              // No existing certificates, generate new ones
+              logger.info(
+                `No existing certificates found, generating new ones for agent ${agentId}`
+              );
+              const certResult =
+                await coreServices.certificateService.generateAgentCertificate(
+                  agentId,
+                  agentIp
+                );
+
+              if (certResult && certResult.success) {
+                certificates = {
+                  caCert: certResult.caCert,
+                  serverCert: certResult.serverCert,
+                  serverKey: certResult.serverKey,
+                  source: "generated",
+                };
+                logger.info(`Certificates generated for agent ${agentId}`);
+              } else {
+                logger.warn(
+                  `Failed to generate certificates for agent ${agentId}: ${
+                    certResult ? certResult.error : "Unknown error"
+                  }`
+                );
+              }
+            }
+          } catch (retrieveErr) {
+            logger.warn(
+              `Failed to retrieve certificates, generating new ones: ${retrieveErr.message}`
             );
 
-          if (certResult && certResult.success) {
-            certificates = {
-              caCert: certResult.caCert,
-              serverCert: certResult.serverCert,
-              serverKey: certResult.serverKey,
-            };
-            logger.info(`Certificates generated for agent ${agentId}`);
-          } else {
-            logger.warn(
-              `Failed to generate certificates for agent ${agentId}: ${
-                certResult ? certResult.error : "Unknown error"
-              }`
-            );
+            // If retrieval fails, fall back to generate new certificates
+            const certResult =
+              await coreServices.certificateService.generateAgentCertificate(
+                agentId,
+                agentIp
+              );
+
+            if (certResult && certResult.success) {
+              certificates = {
+                caCert: certResult.caCert,
+                serverCert: certResult.serverCert,
+                serverKey: certResult.serverKey,
+                source: "generated-fallback",
+              };
+              logger.info(
+                `Certificates generated as fallback for agent ${agentId}`
+              );
+            }
           }
         } else {
           logger.warn(
@@ -271,7 +315,7 @@ agent:
         }
       } catch (certErr) {
         logger.error(
-          `Error generating certificates for agent ${agentId}: ${certErr.message}`
+          `Error handling certificates for agent ${agentId}: ${certErr.message}`
         );
       }
 

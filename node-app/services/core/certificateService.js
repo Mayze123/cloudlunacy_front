@@ -34,6 +34,18 @@ class CertificateService {
     this.caKeyPath = null;
     this.mongoDomain = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
 
+    // Single source of truth for agent certificates
+    this.agentCertsBaseDir = null;
+
+    // Consistent path structure for all certificate files
+    this.certificatePathStructure = {
+      agentKey: "server.key", // Private key
+      agentCert: "server.crt", // Certificate
+      agentPem: "server.pem", // Combined PEM
+      haproxyCert: "haproxy.pem", // HAProxy format
+      traefikCert: "traefik.pem", // Traefik format
+    };
+
     // Fallback base for writable certs when config mounts are read-only
     this.localCertsDir =
       process.env.LOCAL_CERTS_BASE_PATH ||
@@ -118,6 +130,9 @@ class CertificateService {
       this.caCertPath = pathManager.getPath("caCert");
       this.caKeyPath = pathManager.getPath("caKey");
 
+      // Set single source of truth for agent certificates
+      this.agentCertsBaseDir = path.join(this.certsDir, "agents");
+
       // Ensure certificates directory exists
       await this._ensureCertsDir();
 
@@ -125,8 +140,14 @@ class CertificateService {
       await this._ensureCA();
 
       // Initialize the certificate provider
-      // Note: We don't need to check needsInitialization as all providers should be initialized
       try {
+        // Update provider with correct paths
+        this.provider.updateConfig({
+          certsDir: this.certsDir,
+          caCertPath: this.caCertPath,
+          caKeyPath: this.caKeyPath,
+        });
+
         await this.provider.initialize();
         logger.info("Certificate provider initialized successfully");
       } catch (providerErr) {
@@ -577,7 +598,7 @@ DNS.2 = localhost
   }
 
   /**
-   * Get agent certificate files
+   * Get agent certificates with consolidated approach
    * @param {string} agentId - Agent ID
    * @returns {Promise<Object>} Certificate files and paths
    */
@@ -587,24 +608,79 @@ DNS.2 = localhost
         await this.initialize();
       }
 
-      const agentCertDir = path.join(this.certsDir, "agents", agentId);
-      const keyPath = path.join(agentCertDir, "server.key");
-      const certPath = path.join(agentCertDir, "server.crt");
-      const pemPath = path.join(agentCertDir, "server.pem");
+      // Use the single source of truth for agent certificates
+      const agentCertDir = path.join(this.agentCertsBaseDir, agentId);
+      const keyPath = path.join(
+        agentCertDir,
+        this.certificatePathStructure.agentKey
+      );
+      const certPath = path.join(
+        agentCertDir,
+        this.certificatePathStructure.agentCert
+      );
+      const pemPath = path.join(
+        agentCertDir,
+        this.certificatePathStructure.agentPem
+      );
 
       // Check if certificate exists
       try {
         await fs.access(certPath);
         await fs.access(keyPath);
       } catch (err) {
-        logger.warn(`Certificates for agent ${agentId} not found`);
-        return {
-          success: false,
-          error: `Certificates for agent ${agentId} not found`,
-        };
+        logger.warn(
+          `Certificates for agent ${agentId} not found in primary location: ${err.message}`
+        );
+
+        // Try fallback location if exists
+        const fallbackDir = path.join(this.localCertsDir, agentId);
+        const fallbackKeyPath = path.join(
+          fallbackDir,
+          this.certificatePathStructure.agentKey
+        );
+        const fallbackCertPath = path.join(
+          fallbackDir,
+          this.certificatePathStructure.agentCert
+        );
+
+        try {
+          await fs.access(fallbackCertPath);
+          await fs.access(fallbackKeyPath);
+
+          // Found in fallback location
+          logger.info(
+            `Found certificates for agent ${agentId} in fallback location`
+          );
+
+          // Read certificate files from fallback location
+          const serverCert = await fs.readFile(fallbackCertPath, "utf8");
+          const serverKey = await fs.readFile(fallbackKeyPath, "utf8");
+          const caCert = await fs.readFile(this.caCertPath, "utf8");
+
+          return {
+            agentId,
+            domain: `${agentId}.${this.mongoDomain}`,
+            serverKey,
+            serverCert,
+            caCert,
+            keyPath: fallbackKeyPath,
+            certPath: fallbackCertPath,
+            caPath: this.caCertPath,
+            usedFallback: true,
+          };
+        } catch (fallbackErr) {
+          // Not found in fallback location either
+          logger.error(
+            `Certificates not found for agent ${agentId} in any location`
+          );
+          return {
+            success: false,
+            error: `Certificates for agent ${agentId} not found`,
+          };
+        }
       }
 
-      // Read certificate files
+      // Read certificate files from primary location
       const serverCert = await fs.readFile(certPath, "utf8");
       const serverKey = await fs.readFile(keyPath, "utf8");
       const caCert = await fs.readFile(this.caCertPath, "utf8");
@@ -619,6 +695,7 @@ DNS.2 = localhost
         certPath,
         caPath: this.caCertPath,
         pemPath,
+        usedFallback: false,
       };
     } catch (err) {
       logger.error(
@@ -1301,9 +1378,9 @@ DNS.2 = localhost
 
             // Use lock to prevent concurrent renewal of the same certificate
             const lockId = `${CERTIFICATE_LOCK_PREFIX}_renewal_${agentId}`;
-            const lock = await FileLock.acquire(lockId, 5000);
+            const lockResult = await FileLock.acquire(lockId, 5000);
 
-            if (!lock.success) {
+            if (!lockResult.success) {
               logger.warn(
                 `Skipping renewal for ${agentId} - another process is already renewing it`
               );
@@ -1334,8 +1411,20 @@ DNS.2 = localhost
                 });
               }
             } finally {
-              // Always release the lock
-              await lock.release();
+              // Always release the lock with proper error handling
+              if (
+                lockResult &&
+                lockResult.lock &&
+                typeof lockResult.lock.release === "function"
+              ) {
+                try {
+                  await lockResult.lock.release();
+                } catch (releaseErr) {
+                  logger.warn(
+                    `Failed to release lock for ${agentId}: ${releaseErr.message}`
+                  );
+                }
+              }
             }
           } else {
             // Certificate doesn't need renewal yet
