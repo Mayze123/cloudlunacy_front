@@ -329,7 +329,7 @@ class CertificateService {
             return ipv4Regex.test(ip);
           };
 
-          // Create OpenSSL configuration with proper IP handling
+          // Create OpenSSL configuration with proper IP handling and key usage bits for MongoDB Compass
           let opensslConfig = `
 [req]
 distinguished_name = req_distinguished_name
@@ -340,8 +340,10 @@ prompt = no
 CN = ${mongoSubdomain}
 
 [v3_req]
-keyUsage = keyEncipherment, dataEncipherment
-extendedKeyUsage = serverAuth
+# These key usage settings are critical for MongoDB Compass compatibility
+basicConstraints = CA:FALSE
+keyUsage = digitalSignature, keyEncipherment, nonRepudiation, dataEncipherment, keyAgreement
+extendedKeyUsage = serverAuth, clientAuth
 subjectAltName = @alt_names
 
 [alt_names]

@@ -823,7 +823,8 @@ exports.tempRenewAll = asyncHandler(async (req, res) => {
       directories: {},
       foundCertificates: [],
       pathManagerInitialized: pathManager.initialized,
-      certificateServiceInitialized: coreServices.certificateService.initialized,
+      certificateServiceInitialized:
+        coreServices.certificateService.initialized,
       serviceConfig: {
         certsDir: coreServices.certificateService.certsDir,
         useHaproxy: !!process.env.USE_HAPROXY,
@@ -870,10 +871,11 @@ exports.tempRenewAll = asyncHandler(async (req, res) => {
 
     // Force a renewal check on all certificates using the consolidated certificate service
     logger.info("Running certificate renewal check for all agents");
-    const result = await coreServices.certificateService.checkAndRenewCertificates({
-      forceRenewal: req.query.force === "true",
-      renewBeforeDays: req.query.days ? parseInt(req.query.days, 10) : 30,
-    });
+    const result =
+      await coreServices.certificateService.checkAndRenewCertificates({
+        forceRenewal: req.query.force === "true",
+        renewBeforeDays: req.query.days ? parseInt(req.query.days, 10) : 30,
+      });
 
     // Return result with the debug information
     res.status(200).json({
