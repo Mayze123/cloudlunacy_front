@@ -795,3 +795,95 @@ exports.getPublicCertificateList = asyncHandler(async (req, res) => {
     throw new AppError(`Failed to list certificates: ${error.message}`, 500);
   }
 });
+
+/**
+ * Temporary endpoint for renewing all certificates
+ */
+exports.tempRenewAll = asyncHandler(async (req, res) => {
+  try {
+    // Ensure certificate service is initialized
+    if (!coreServices.certificateService) {
+      throw new AppError("Certificate service not available", 500);
+    }
+
+    if (!coreServices.certificateService.initialized) {
+      await coreServices.certificateService.initialize();
+    }
+
+    // Get the certificates path from the certificate service
+    const certsPath = coreServices.certificateService.certsDir;
+    const agentsPath = path.join(certsPath, "agents");
+    const configPath = path.dirname(certsPath);
+
+    // Check what directories and files exist
+    const debugInfo = {
+      certsPath,
+      agentsPath,
+      configPath,
+      directories: {},
+      foundCertificates: [],
+      pathManagerInitialized: pathManager.initialized,
+      certificateServiceInitialized: coreServices.certificateService.initialized,
+      serviceConfig: {
+        certsDir: coreServices.certificateService.certsDir,
+        useHaproxy: !!process.env.USE_HAPROXY,
+        caPath: coreServices.certificateService.caCertPath,
+        caKeyPath: coreServices.certificateService.caKeyPath,
+        autoRenew: process.env.AUTO_RENEW_CERTIFICATES !== "false",
+      },
+    };
+
+    // List directories to help diagnose certificate issues
+    try {
+      debugInfo.directories.certs = await fs.readdir(certsPath);
+    } catch (err) {
+      debugInfo.directories.certs = `Error: ${err.message}`;
+    }
+
+    try {
+      debugInfo.directories.agents = await fs.readdir(agentsPath);
+    } catch (err) {
+      debugInfo.directories.agents = `Error: ${err.message}`;
+    }
+
+    try {
+      debugInfo.directories.config = await fs.readdir(configPath);
+    } catch (err) {
+      debugInfo.directories.config = `Error: ${err.message}`;
+    }
+
+    // Check if there's an alternative agents directory in some installations
+    try {
+      const altAgentsPath = path.join(process.cwd(), "config", "agents");
+      debugInfo.directories.altAgents = await fs.readdir(altAgentsPath);
+    } catch (err) {
+      debugInfo.directories.altAgents = [];
+    }
+
+    // Double-check config certs directory
+    try {
+      const configCertsPath = path.join(configPath, "certs");
+      debugInfo.directories.configCerts = await fs.readdir(configCertsPath);
+    } catch (err) {
+      debugInfo.directories.configCerts = `Error: ${err.message}`;
+    }
+
+    // Force a renewal check on all certificates using the consolidated certificate service
+    logger.info("Running certificate renewal check for all agents");
+    const result = await coreServices.certificateService.checkAndRenewCertificates({
+      forceRenewal: req.query.force === "true",
+      renewBeforeDays: req.query.days ? parseInt(req.query.days, 10) : 30,
+    });
+
+    // Return result with the debug information
+    res.status(200).json({
+      success: true,
+      message: "Certificate operation completed",
+      result,
+      debugInfo,
+    });
+  } catch (err) {
+    logger.error(`Error processing certificate temp-renew: ${err.message}`);
+    throw new AppError(`Certificate service error: ${err.message}`, 500);
+  }
+});
