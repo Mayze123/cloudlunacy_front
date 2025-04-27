@@ -2,6 +2,8 @@
  * Certificate Controller
  */
 const fs = require("fs").promises;
+const os = require("os");
+const path = require("path");
 const logger = require("../../utils/logger").getLogger("certificateController");
 const coreServices = require("../../services/core");
 const { asyncHandler, AppError } = require("../../utils/errorHandler");
@@ -10,6 +12,11 @@ const { execSync } = require("child_process");
 const CertificateService = require("../../services/core/certificateService");
 const CertificateMetricsService = require("../../services/core/certificateMetricsService");
 const CertificateProviderFactory = require("../../utils/certProviders/providerFactory");
+const FileLock = require("../../utils/fileLock");
+
+// Constants
+const CERTIFICATE_LOCK_PREFIX = "cert";
+const MONGODB_DOMAIN = process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk";
 
 const certificateService = new CertificateService();
 const certificateMetricsService = new CertificateMetricsService();
