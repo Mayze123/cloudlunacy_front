@@ -16,8 +16,7 @@ class ConfigService {
     this.paths = {
       base: process.env.CONFIG_BASE_PATH || "/app/config",
       agents: process.env.AGENTS_CONFIG_DIR || "/app/config/agents",
-      haproxy:
-        process.env.HAPROXY_CONFIG_PATH || "/app/config/haproxy/haproxy.cfg",
+      consul: process.env.CONSUL_CONFIG_PATH || "/app/config/consul",
       docker: process.env.DOCKER_COMPOSE_PATH || "/app/docker-compose.yml",
     };
 
@@ -93,7 +92,7 @@ class ConfigService {
 
       // Resolve other paths based on base path
       this.paths.agents = path.join(this.paths.base, "agents");
-      this.paths.haproxy = path.join(this.paths.base, "haproxy/haproxy.cfg");
+      this.paths.consul = path.join(this.paths.base, "consul");
 
       logger.debug("Resolved configuration paths", { paths: this.paths });
       return true;
@@ -110,7 +109,7 @@ class ConfigService {
     // Use hardcoded paths as fallback
     this.paths.base = "/app/config";
     this.paths.agents = "/app/config/agents";
-    this.paths.haproxy = "/app/config/haproxy/haproxy.cfg";
+    this.paths.consul = "/app/config/consul";
 
     logger.debug("Using fallback configuration paths", { paths: this.paths });
     return true;
@@ -183,39 +182,38 @@ agent:
         };
       }
 
-      // Check HAProxy routes for this agent through the HAProxy service
-      let mongoBackendExists = false;
-      let redisBackendExists = false;
+      // Check routes for this agent through the proxy service
+      let mongoRouteExists = false;
+      let redisRouteExists = false;
 
       try {
-        // Use the enhanced HAProxy service if available
+        // Use the proxy service if available
         const coreServices = require("../core");
-        if (coreServices && coreServices.enhancedHAProxyService) {
-          const routeInfo =
-            await coreServices.enhancedHAProxyService.getAgentRoutes(agentId);
+        if (coreServices && coreServices.consulService) {
+          const routeInfo = await coreServices.proxyService.getAgentRoutes(
+            agentId
+          );
           if (routeInfo && routeInfo.routes) {
-            mongoBackendExists = routeInfo.routes.some(
+            mongoRouteExists = routeInfo.routes.some(
               (route) => route.type === "mongodb"
             );
-            redisBackendExists = routeInfo.routes.some(
+            redisRouteExists = routeInfo.routes.some(
               (route) => route.type === "redis"
             );
           }
         }
-      } catch (haproxyErr) {
+      } catch (proxyErr) {
         logger.warn(
-          `Failed to check HAProxy routes for agent ${agentId}: ${haproxyErr.message}`
+          `Failed to check proxy routes for agent ${agentId}: ${proxyErr.message}`
         );
       }
 
-      // Generate certificates if they don't exist or need refreshing
+      // Get certificates using the CertificateService's single source of truth
       let certificates = null;
       try {
         // Check if we have access to the certificate service
         const coreServices = require("../core");
         if (coreServices && coreServices.certificateService) {
-          logger.info(`Generating certificates for agent ${agentId}`);
-
           // Get the agent's IP address from agent service if available
           let agentIp = null;
           if (coreServices.agentService) {
@@ -235,34 +233,80 @@ agent:
 
           // If no IP found, use a fallback that works with the agent
           if (!agentIp) {
-            // Use a more appropriate fallback than localhost
-            // Extract IP from request if possible or use a default
             agentIp = "0.0.0.0"; // This is better than 127.0.0.1 for certificates
             logger.warn(
               `Using fallback IP ${agentIp} for agent ${agentId} certificates`
             );
           }
 
-          // Generate certificates
-          const certResult =
-            await coreServices.certificateService.generateAgentCertificate(
-              agentId,
-              agentIp
+          // First, try to get existing certificates from the single source of truth
+          try {
+            logger.info(`Retrieving certificates for agent ${agentId}`);
+            const existingCerts =
+              await coreServices.certificateService.getAgentCertificates(
+                agentId
+              );
+
+            if (existingCerts && !existingCerts.error) {
+              certificates = {
+                caCert: existingCerts.caCert,
+                serverCert: existingCerts.serverCert,
+                serverKey: existingCerts.serverKey,
+                source: existingCerts.usedFallback ? "fallback" : "primary",
+              };
+              logger.info(
+                `Certificates retrieved for agent ${agentId} from ${certificates.source} location`
+              );
+            } else {
+              // No existing certificates, generate new ones
+              logger.info(
+                `No existing certificates found, generating new ones for agent ${agentId}`
+              );
+              const certResult =
+                await coreServices.certificateService.generateAgentCertificate(
+                  agentId,
+                  agentIp
+                );
+
+              if (certResult && certResult.success) {
+                certificates = {
+                  caCert: certResult.caCert,
+                  serverCert: certResult.serverCert,
+                  serverKey: certResult.serverKey,
+                  source: "generated",
+                };
+                logger.info(`Certificates generated for agent ${agentId}`);
+              } else {
+                logger.warn(
+                  `Failed to generate certificates for agent ${agentId}: ${
+                    certResult ? certResult.error : "Unknown error"
+                  }`
+                );
+              }
+            }
+          } catch (retrieveErr) {
+            logger.warn(
+              `Failed to retrieve certificates, generating new ones: ${retrieveErr.message}`
             );
 
-          if (certResult && certResult.success) {
-            certificates = {
-              caCert: certResult.caCert,
-              serverCert: certResult.serverCert,
-              serverKey: certResult.serverKey,
-            };
-            logger.info(`Certificates generated for agent ${agentId}`);
-          } else {
-            logger.warn(
-              `Failed to generate certificates for agent ${agentId}: ${
-                certResult ? certResult.error : "Unknown error"
-              }`
-            );
+            // If retrieval fails, fall back to generate new certificates
+            const certResult =
+              await coreServices.certificateService.generateAgentCertificate(
+                agentId,
+                agentIp
+              );
+
+            if (certResult && certResult.success) {
+              certificates = {
+                caCert: certResult.caCert,
+                serverCert: certResult.serverCert,
+                serverKey: certResult.serverKey,
+                source: "generated-fallback",
+              };
+              logger.info(
+                `Certificates generated as fallback for agent ${agentId}`
+              );
+            }
           }
         } else {
           logger.warn(
@@ -271,7 +315,7 @@ agent:
         }
       } catch (certErr) {
         logger.error(
-          `Error generating certificates for agent ${agentId}: ${certErr.message}`
+          `Error handling certificates for agent ${agentId}: ${certErr.message}`
         );
       }
 
@@ -279,14 +323,12 @@ agent:
       const result = {
         success: true,
         agentId,
-        haproxy: {
-          mongodb: mongoBackendExists,
-          redis: redisBackendExists,
+        routing: {
+          mongodb: mongoRouteExists,
+          redis: redisRouteExists,
         },
         domains: {
-          mongodb: mongoBackendExists
-            ? `${agentId}.${this.domains.mongo}`
-            : null,
+          mongodb: mongoRouteExists ? `${agentId}.${this.domains.mongo}` : null,
           app: `*.${agentId}.${this.domains.app}`,
         },
       };

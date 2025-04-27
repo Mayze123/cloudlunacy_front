@@ -1,0 +1,41 @@
+## Traefik Dynamic Configuration
+
+# HTTP configuration including middlewares
+http:
+  middlewares:
+    # Basic authentication for the dashboard
+    auth-admin:
+      basicAuth:
+        users:
+          - "admin:$apr1$ruca84Hq$mbjdMZBAG.KWn7vfN/SNK/" # Password: adminpass
+
+    # Compression middleware
+    compress:
+      compress: {}
+
+    # CORS headers middleware
+    cors-headers:
+      headers:
+        accessControlAllowMethods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
+        accessControlAllowOriginList:
+          - "https://*.cloudlunacy.uk"
+          - "https://*.apps.cloudlunacy.uk"
+        accessControlAllowCredentials: true
+        accessControlMaxAge: 100
+        addVaryHeader: true
+
+    # Security headers middleware
+    secure-headers:
+      headers:
+        frameDeny: true
+        browserXssFilter: true
+        contentTypeNosniff: true
+        forceSTSHeader: true
+        stsIncludeSubdomains: true
+        stsPreload: true
+        stsSeconds: 31536000

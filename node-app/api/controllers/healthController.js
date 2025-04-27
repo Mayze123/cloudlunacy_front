@@ -10,10 +10,7 @@ const { exec } = require("child_process");
 const { promisify } = require("util");
 const execAsync = promisify(exec);
 const coreServices = require("../../services/core");
-const {
-  enhancedHAProxyService,
-  enhancedCertificateService,
-} = require("../../services/core");
+const { enhancedCertificateService } = require("../../services/core");
 const logger = require("../../utils/logger").getLogger("healthController");
 const { asyncHandler } = require("../../utils/errorHandler");
 const path = require("path");
@@ -54,7 +51,7 @@ exports.getHealth = asyncHandler(async (req, res) => {
       : "not-available",
     configService: coreServices.configService.initialized,
     routingService: coreServices.routingService.initialized,
-    haproxyService: coreServices.haproxyService ? "ok" : "not-available",
+    consulService: coreServices.consulService ? "ok" : "not-available",
     letsencryptService: coreServices.letsencryptService
       ? "ok"
       : "not-available",
@@ -95,26 +92,26 @@ exports.checkMongo = asyncHandler(async (req, res) => {
 });
 
 /**
- * Check HAProxy health
+ * Check Consul health
  *
- * GET /api/health/haproxy
+ * GET /api/health/consul
  */
-exports.checkHAProxy = asyncHandler(async (req, res) => {
-  logger.info("Checking HAProxy health");
+exports.checkConsul = asyncHandler(async (req, res) => {
+  logger.info("Checking Consul health");
 
-  // Check HAProxy container status
-  const containerStatus = await checkHAProxyContainer();
+  // Check Consul container status
+  const containerStatus = await checkConsulContainer();
 
-  // Check if stats page (port 8081) is accessible
-  const statsAccessible = await checkPort(8081);
+  // Check if API (port 8500) is accessible
+  const apiAccessible = await checkPort(8500);
 
   // Check if configuration is valid
-  const configValid = await checkHAProxyConfig();
+  const configValid = await checkConsulConfig();
 
   res.status(200).json({
     success: true,
     containerStatus,
-    statsAccessible,
+    apiAccessible,
     configValid,
   });
 });
@@ -130,13 +127,26 @@ exports.repair = asyncHandler(async (req, res) => {
   // Repair core services
   const servicesRepaired = await coreServices.repair();
 
-  // Restart HAProxy
-  const haproxyRestarted = await restartHAProxy();
+  // Check consul service
+  let consulRepaired = false;
+  if (coreServices.consulService && coreServices.consulService.isInitialized) {
+    try {
+      // Try to rebuild the key structure in Consul
+      await coreServices.consulService.initializeKeyStructure();
+      consulRepaired = true;
+    } catch (err) {
+      logger.error(`Failed to repair Consul: ${err.message}`);
+    }
+  }
+
+  // Restart Consul
+  const consulRestarted = await restartConsul();
 
   res.status(200).json({
     success: true,
     servicesRepaired,
-    haproxyRestarted,
+    consulRepaired,
+    consulRestarted,
     message: "System repair completed",
   });
 });
@@ -150,54 +160,65 @@ exports.repair = asyncHandler(async (req, res) => {
  */
 exports.checkMongoDBConnections = async (req, res) => {
   try {
-    await coreServices.configService.initialize();
+    // Check if Consul service is available
+    if (
+      !coreServices.consulService ||
+      !coreServices.consulService.isInitialized
+    ) {
+      return res.status(500).json({
+        success: false,
+        message: "Consul service is not available",
+      });
+    }
 
-    const haproxyConfig = await coreServices.configService.getConfig("haproxy");
+    // Get TCP routers and services from Consul
+    const tcpRouters = await coreServices.consulService.get("tcp/routers");
+    const tcpServices = await coreServices.consulService.get("tcp/services");
     const issues = [];
 
-    // Check MongoDB backend
-    if (
-      haproxyConfig.backends &&
-      haproxyConfig.backends["mongodb-backend-dyn"]
-    ) {
-      const backend = haproxyConfig.backends["mongodb-backend-dyn"];
+    // Check MongoDB routers and services in configuration
+    if (!tcpRouters || Object.keys(tcpRouters).length === 0) {
+      issues.push({
+        type: "missing_routers",
+        message: "No TCP routers configured in Consul",
+      });
+    } else {
+      // Check each router for its corresponding service
+      for (const [name, router] of Object.entries(tcpRouters)) {
+        const serviceName = router.service;
 
-      // Check if backend has servers
-      if (!backend.servers || backend.servers.length === 0) {
-        issues.push({
-          type: "missing_servers",
-          backend: "mongodb-backend-dyn",
-        });
-      } else {
-        // Check each server for issues
-        for (const server of backend.servers) {
-          // Extract agent ID from server name
-          const agentId = server.name.replace("mongodb-", "");
+        if (!serviceName) {
+          issues.push({
+            type: "missing_service_reference",
+            router: name,
+          });
+          continue;
+        }
 
-          // Check if SNI is configured correctly
-          if (!server.sni || !server.sni.includes(agentId)) {
-            issues.push({
-              type: "invalid_sni",
-              agentId,
-              serverName: server.name,
-            });
-          }
+        // Check if the service exists
+        if (!tcpServices || !tcpServices[serviceName]) {
+          issues.push({
+            type: "missing_service",
+            router: name,
+            service: serviceName,
+          });
+          continue;
+        }
 
-          // Check if server has an address
-          if (!server.address) {
-            issues.push({
-              type: "missing_address",
-              agentId,
-              serverName: server.name,
-            });
-          }
+        // Check if service has servers
+        const service = tcpServices[serviceName];
+        if (
+          !service.loadBalancer ||
+          !service.loadBalancer.servers ||
+          service.loadBalancer.servers.length === 0
+        ) {
+          issues.push({
+            type: "missing_servers",
+            router: name,
+            service: serviceName,
+          });
         }
       }
-    } else {
-      issues.push({
-        type: "missing_backend",
-        backend: "mongodb-backend-dyn",
-      });
     }
 
     // Return the results
@@ -206,6 +227,8 @@ exports.checkMongoDBConnections = async (req, res) => {
       mongodbConnections: {
         issues: issues,
         healthy: issues.length === 0,
+        routerCount: tcpRouters ? Object.keys(tcpRouters).length : 0,
+        serviceCount: tcpServices ? Object.keys(tcpServices).length : 0,
       },
     });
   } catch (err) {
@@ -218,24 +241,6 @@ exports.checkMongoDBConnections = async (req, res) => {
       message: "Failed to check MongoDB connections",
       error: err.message,
     });
-  }
-};
-
-/**
- * Check HAProxy connections
- *
- * @param {object} req - The request object
- * @param {object} res - The response object
- * @returns {Promise<void>}
- */
-exports.checkHaproxy = async (req, res) => {
-  try {
-    await coreServices.configService.initialize();
-
-    const haproxyConfig = await coreServices.configService.getConfig("haproxy");
-    // ... existing code ...
-  } catch (err) {
-    // ... existing code ...
   }
 };
 
@@ -268,18 +273,26 @@ async function checkMongoDBHealth() {
  */
 async function checkMongoDBConfig() {
   try {
-    // Make sure config is initialized
-    await coreServices.configService.initialize();
+    // Check if Consul service is available
+    if (
+      !coreServices.consulService ||
+      !coreServices.consulService.isInitialized
+    ) {
+      return {
+        valid: false,
+        error: "Consul service not available",
+      };
+    }
 
-    // Get HAProxy config
-    const haproxyConfig = await coreServices.configService.getConfig("haproxy");
+    // Get TCP routers from Consul
+    const tcpRouters = await coreServices.consulService.get("tcp/routers");
 
-    // Check if MongoDB backend exists
-    const backendExists = haproxyConfig?.backends?.["mongodb-backend-dyn"];
+    // Check if any TCP routers exist (for MongoDB)
+    const routersExist = tcpRouters && Object.keys(tcpRouters).length > 0;
 
     return {
-      valid: !!backendExists,
-      backendExists: !!backendExists,
+      valid: routersExist,
+      routersExist,
     };
   } catch (err) {
     logger.error(`Failed to check MongoDB config: ${err.message}`);
@@ -291,12 +304,12 @@ async function checkMongoDBConfig() {
 }
 
 /**
- * Check HAProxy health
+ * Check Consul health
  */
-async function checkHAProxyHealth() {
+async function checkConsulHealth() {
   try {
-    // Check if HAProxy container is running
-    const containerStatus = await checkHAProxyContainer();
+    // Check if Consul container is running
+    const containerStatus = await checkConsulContainer();
 
     return {
       containerRunning: containerStatus.running,
@@ -304,7 +317,7 @@ async function checkHAProxyHealth() {
       containerDetails: containerStatus,
     };
   } catch (err) {
-    logger.error(`Failed to check HAProxy health: ${err.message}`);
+    logger.error(`Failed to check Consul health: ${err.message}`);
     return {
       containerRunning: false,
       status: "error",
@@ -314,18 +327,18 @@ async function checkHAProxyHealth() {
 }
 
 /**
- * Check HAProxy container status
+ * Check Consul container status
  */
-async function checkHAProxyContainer() {
+async function checkConsulContainer() {
   try {
     const { stdout } = await execAsync(
-      'docker ps -a --format "{{.Names}},{{.Status}},{{.Ports}}" --filter "name=haproxy"'
+      'docker ps -a --format "{{.Names}},{{.Status}},{{.Ports}}" --filter "name=consul"'
     );
 
     if (!stdout.trim()) {
       return {
         running: false,
-        error: "No HAProxy container found",
+        error: "No Consul container found",
       };
     }
 
@@ -338,7 +351,7 @@ async function checkHAProxyContainer() {
       ports,
     };
   } catch (err) {
-    logger.error(`Failed to check HAProxy container: ${err.message}`);
+    logger.error(`Failed to check Consul container: ${err.message}`);
 
     return {
       running: false,
@@ -348,50 +361,49 @@ async function checkHAProxyContainer() {
 }
 
 /**
- * Check if HAProxy configuration is valid
+ * Check if Consul configuration is valid
  */
-async function checkHAProxyConfig() {
+async function checkConsulConfig() {
   try {
-    // Make sure config manager is initialized
-    await coreServices.configService.initialize();
+    // Check if Consul service is available
+    if (
+      !coreServices.consulService ||
+      !coreServices.consulService.isInitialized
+    ) {
+      return {
+        valid: false,
+        error: "Consul service not available",
+      };
+    }
 
-    // Check if config has required sections
-    const haproxyConfig = await coreServices.configService.getConfig("haproxy");
+    // Check if config has required sections in Consul
+    const httpRouters = await coreServices.consulService.get("http/routers");
+    const httpServices = await coreServices.consulService.get("http/services");
 
-    const frontendsValid =
-      haproxyConfig &&
-      haproxyConfig.frontends &&
-      haproxyConfig.frontends["https-in"] &&
-      haproxyConfig.frontends["mongodb-in"];
+    const routersValid = httpRouters && Object.keys(httpRouters).length > 0;
+    const servicesValid = httpServices && Object.keys(httpServices).length > 0;
 
-    const backendsValid =
-      haproxyConfig &&
-      haproxyConfig.backends &&
-      haproxyConfig.backends["mongodb-backend-dyn"] &&
-      haproxyConfig.backends["node-app-backend"];
-
-    // Also check HAProxy configuration syntax using docker exec
-    let syntaxValid = false;
+    // Check Consul connectivity
+    let consulHealthy = false;
     try {
-      await execAsync(
-        "docker exec haproxy haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg"
-      );
-      syntaxValid = true;
+      // Try to get Consul health info
+      const { stdout } = await execAsync("docker exec consul consul members");
+      consulHealthy = stdout.trim().length > 0;
     } catch (checkErr) {
-      logger.warn(`HAProxy config syntax check failed: ${checkErr.message}`);
-      syntaxValid = false;
+      logger.warn(`Consul health check failed: ${checkErr.message}`);
+      consulHealthy = false;
     }
 
     return {
-      valid: frontendsValid && backendsValid && syntaxValid,
+      valid: routersValid && servicesValid && consulHealthy,
       details: {
-        frontendsValid,
-        backendsValid,
-        syntaxValid,
+        routersValid,
+        servicesValid,
+        consulHealthy,
       },
     };
   } catch (err) {
-    logger.error(`Failed to check HAProxy config: ${err.message}`);
+    logger.error(`Failed to check Consul config: ${err.message}`);
 
     return {
       valid: false,
@@ -416,15 +428,15 @@ async function checkPort(port) {
 }
 
 /**
- * Restart HAProxy container
+ * Restart Consul container
  */
-async function restartHAProxy() {
+async function restartConsul() {
   try {
-    logger.info("Restarting HAProxy container");
-    await execAsync("docker restart haproxy");
+    logger.info("Restarting Consul container");
+    await execAsync("docker restart consul");
     return true;
   } catch (err) {
-    logger.error(`Failed to restart HAProxy: ${err.message}`);
+    logger.error(`Failed to restart Consul: ${err.message}`);
     return false;
   }
 }
@@ -495,200 +507,140 @@ exports.getSystemHealth = async (req, res) => {
       services: {},
     };
 
-    // Check HAProxy health if enhanced service is initialized
+    // Check Consul health
     try {
-      if (enhancedHAProxyService.initialized) {
-        // Force refresh the health status if requested
-        const forceRefresh = req.query.refresh === "true";
-        const haproxyHealth = await enhancedHAProxyService.getHealthStatus(
-          forceRefresh
-        );
+      if (
+        coreServices.consulService &&
+        coreServices.consulService.isInitialized
+      ) {
+        // Check if Consul is accessible by retrieving a value
+        const consulTest = await coreServices.consulService.get("http/routers");
 
-        health.services.haproxy = {
-          status: haproxyHealth.status,
-          circuitState: haproxyHealth.circuitState,
-          lastCheck: haproxyHealth.lastCheck?.timestamp,
-          metrics: {
-            routeCount: haproxyHealth.routeCount,
-            connections: haproxyHealth.metrics?.connections,
-          },
+        health.services.consul = {
+          status: consulTest !== null ? "healthy" : "degraded",
+          lastCheck: new Date().toISOString(),
         };
 
-        // Update overall health based on HAProxy status
-        if (haproxyHealth.status === "UNHEALTHY") {
+        // Check if Consul is running properly
+        const consulHealth = await checkConsulHealth();
+
+        health.services.consul = {
+          status: consulHealth.containerRunning ? "healthy" : "unhealthy",
+          containerRunning: consulHealth.containerRunning,
+          lastCheck: new Date().toISOString(),
+        };
+
+        // Update overall health based on Consul status
+        if (!consulTest || !consulHealth.containerRunning) {
           health.status = "degraded";
         }
       } else {
-        health.services.haproxy = {
+        health.services.consul = {
           status: "not_initialized",
-          message: "HAProxy service is not initialized",
+          message: "Consul service is not initialized",
         };
         health.status = "degraded";
       }
-    } catch (err) {
-      health.services.haproxy = {
-        status: "error",
-        message: `Failed to check HAProxy health: ${err.message}`,
+
+      // Additional health metrics
+      const systemLoad = os.loadavg()[0];
+      const cpuCount = os.cpus().length;
+      const loadPerCore = systemLoad / cpuCount;
+
+      health.metrics = {
+        cpu: {
+          loadAvg: systemLoad,
+          cores: cpuCount,
+          loadPerCore: loadPerCore,
+          highLoad: loadPerCore > 0.7, // Flag high load
+        },
+        memory: {
+          total: os.totalmem(),
+          free: os.freemem(),
+          usage: 1 - os.freemem() / os.totalmem(),
+          highUsage: os.freemem() / os.totalmem() < 0.2, // Flag high memory usage
+        },
       };
+
+      // Update status based on system metrics
+      if (health.metrics.cpu.highLoad || health.metrics.memory.highUsage) {
+        if (health.status === "healthy") {
+          health.status = "stressed";
+        }
+      }
+    } catch (error) {
+      logger.error(`Error checking system health: ${error.message}`, {
+        error: error.message,
+        stack: error.stack,
+      });
+
       health.status = "degraded";
+      health.error = error.message;
     }
 
-    // TODO: Add other services health checks here as needed
+    res.status(200).json(health);
+  } catch (error) {
+    logger.error(`Error in getSystemHealth: ${error.message}`, {
+      error: error.message,
+      stack: error.stack,
+    });
 
-    res.json(health);
-  } catch (err) {
-    logger.error(`Error in getSystemHealth: ${err.message}`);
     res.status(500).json({
       status: "error",
-      message: "Failed to retrieve system health status",
-      error: err.message,
+      timestamp: new Date().toISOString(),
+      error: error.message,
     });
   }
 };
 
 /**
- * Get detailed HAProxy health metrics
+ * Recover Consul service
  * @param {Object} req - Express request object
  * @param {Object} res - Express response object
  */
-exports.getHAProxyHealth = async (req, res) => {
+exports.recoverConsulService = async (req, res) => {
   try {
-    if (!enhancedHAProxyService.initialized) {
-      return res.status(503).json({
+    logger.info("Attempting to recover Consul service");
+
+    if (!coreServices.consulService) {
+      return res.status(500).json({
         success: false,
-        message: "HAProxy service is not initialized",
+        message: "Consul service is not available",
       });
     }
 
-    // Get detailed metrics with optional refresh
-    const forceRefresh = req.query.refresh === "true";
-    const health = await enhancedHAProxyService.getHealthStatus(forceRefresh);
+    // Reinitialize the Consul service
+    try {
+      await coreServices.consulService.initialize();
 
-    res.json({
-      success: true,
-      health,
-    });
-  } catch (err) {
-    logger.error(`Error in getHAProxyHealth: ${err.message}`);
-    res.status(500).json({
-      success: false,
-      message: "Failed to retrieve HAProxy health",
-      error: err.message,
-    });
-  }
-};
+      // Verify connection by getting a test value
+      const testResult = await coreServices.consulService.get("http/routers");
 
-/**
- * Get HAProxy stats and metrics
- * @param {Object} req - Express request object
- * @param {Object} res - Express response object
- */
-exports.getHAProxyStats = async (req, res) => {
-  try {
-    if (!enhancedHAProxyService.initialized) {
-      return res.status(503).json({
-        success: false,
-        message: "HAProxy service is not initialized",
-      });
-    }
-
-    const stats = await enhancedHAProxyService.getStats();
-
-    res.json({
-      success: true,
-      stats,
-    });
-  } catch (err) {
-    logger.error(`Error in getHAProxyStats: ${err.message}`);
-    res.status(500).json({
-      success: false,
-      message: "Failed to retrieve HAProxy stats",
-      error: err.message,
-    });
-  }
-};
-
-/**
- * Attempt to recover HAProxy service
- * @param {Object} req - Express request object
- * @param {Object} res - Express response object
- */
-exports.recoverHAProxyService = async (req, res) => {
-  try {
-    if (!enhancedHAProxyService.initialized) {
-      return res.status(503).json({
-        success: false,
-        message: "HAProxy service is not initialized",
-      });
-    }
-
-    // Check if administrator key is provided for this sensitive operation
-    const adminKey = req.headers["x-admin-key"] || "";
-    const configuredKey = process.env.ADMIN_KEY || "";
-
-    if (!configuredKey || adminKey !== configuredKey) {
-      logger.warn(`Unauthorized HAProxy recovery attempt from ${req.ip}`);
-      return res.status(401).json({
-        success: false,
-        message: "Unauthorized: Admin key required for this operation",
-      });
-    }
-
-    // Attempt recovery
-    logger.info(`Manual HAProxy recovery initiated by admin from ${req.ip}`);
-    const result = await enhancedHAProxyService.recoverService();
-
-    if (result.success) {
-      res.json({
+      return res.status(200).json({
         success: true,
-        message: result.message,
-        action: result.action,
+        message: "Consul service recovered successfully",
+        connectionTest: testResult !== null,
       });
-    } else {
-      res.status(500).json({
+    } catch (error) {
+      logger.error(`Failed to recover Consul service: ${error.message}`, {
+        error: error.message,
+        stack: error.stack,
+      });
+
+      return res.status(500).json({
         success: false,
-        message: result.message,
-        error: result.error,
+        message: `Failed to recover Consul service: ${error.message}`,
       });
     }
-  } catch (err) {
-    logger.error(`Error in recoverHAProxyService: ${err.message}`);
-    res.status(500).json({
-      success: false,
-      message: "Failed to recover HAProxy service",
-      error: err.message,
+  } catch (error) {
+    logger.error(`Error in recoverConsulService: ${error.message}`, {
+      error: error.message,
+      stack: error.stack,
     });
-  }
-};
 
-/**
- * Validate HAProxy configuration
- * @param {Object} req - Express request object
- * @param {Object} res - Express response object
- */
-exports.validateHAProxyConfig = async (req, res) => {
-  try {
-    if (!enhancedHAProxyService.initialized) {
-      return res.status(503).json({
-        success: false,
-        message: "HAProxy service is not initialized",
-      });
-    }
-
-    const validationResult = await enhancedHAProxyService.validateConfig();
-
-    res.json({
-      success: true,
-      valid: validationResult.valid,
-      message: validationResult.message,
-      error: validationResult.error,
-    });
-  } catch (err) {
-    logger.error(`Error in validateHAProxyConfig: ${err.message}`);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message: "Failed to validate HAProxy configuration",
-      error: err.message,
+      message: `Error recovering Consul service: ${error.message}`,
     });
   }
 };
@@ -951,103 +903,60 @@ exports.getHealthDashboard = asyncHandler(async (req, res) => {
       recommendations: [],
     };
 
-    // Get HAProxy health (with metrics if available)
+    // Get Consul health
     try {
       if (
-        coreServices.enhancedHAProxyService &&
-        coreServices.enhancedHAProxyService.initialized
+        coreServices.consulService &&
+        coreServices.consulService.isInitialized
       ) {
         const forceRefresh = req.query.refresh === "true";
-        const haproxyHealth =
-          await coreServices.enhancedHAProxyService.getHealthStatus(
-            forceRefresh
-          );
+        const consulHealth = await checkConsulHealth();
 
-        dashboard.components.haproxy = {
-          status: haproxyHealth.status,
-          lastCheck: haproxyHealth.lastCheck?.timestamp,
-          circuitBreakerState: haproxyHealth.circuitState || "UNKNOWN",
-          containerRunning: haproxyHealth.containerRunning || false,
-          configValid: haproxyHealth.configValid || false,
-          metrics: haproxyHealth.metrics || null,
+        dashboard.components.consul = {
+          status: consulHealth.status,
+          lastCheck: new Date().toISOString(),
+          containerRunning: consulHealth.containerRunning || false,
+          configValid: (await checkConsulConfig()) || false,
         };
 
-        // Get detailed metrics if available
-        if (coreServices.enhancedHAProxyService.metricsCollector) {
-          const metrics =
-            coreServices.enhancedHAProxyService.metricsCollector.getCurrentMetrics();
-          if (metrics && metrics.haproxy && metrics.haproxy.summary) {
-            dashboard.components.haproxy.detailedMetrics =
-              metrics.haproxy.summary;
-
-            // Get anomalies
-            const anomalies =
-              coreServices.enhancedHAProxyService.metricsCollector.getAnomalies(
-                5
-              );
-            if (anomalies && anomalies.length > 0) {
-              dashboard.components.haproxy.anomalies = anomalies;
-
-              // Add high severity anomalies to alerts
-              anomalies.forEach((anomaly) => {
-                if (anomaly.severity === "high") {
-                  dashboard.alerts.push({
-                    component: "haproxy",
-                    severity: "high",
-                    message: anomaly.message,
-                    timestamp: anomaly.timestamp,
-                  });
-                }
-              });
-            }
-
-            // Get trends
-            const trends =
-              coreServices.enhancedHAProxyService.metricsCollector.calculateTrends();
-            if (trends && trends.status !== "insufficient_data") {
-              dashboard.components.haproxy.trends = trends;
-            }
-          }
-        }
-
-        // Update overall status based on HAProxy status
-        if (haproxyHealth.status === "UNHEALTHY") {
+        // Update overall status based on Consul status
+        if (consulHealth.status === "error") {
           dashboard.status = "critical";
           dashboard.alerts.push({
-            component: "haproxy",
+            component: "consul",
             severity: "critical",
-            message: "HAProxy is unhealthy",
+            message: "Consul is unhealthy",
           });
 
-          // Add recommendations for HAProxy issues
+          // Add recommendations for Consul issues
           dashboard.recommendations.push({
-            component: "haproxy",
+            component: "consul",
             action: "Run manual recovery",
-            endpoint: "/api/health/haproxy/recover",
-            description: "Attempt to automatically recover HAProxy service",
+            endpoint: "/api/health/consul/recover",
+            description: "Attempt to automatically recover Consul service",
           });
-        } else if (haproxyHealth.status === "DEGRADED") {
+        } else if (consulHealth.status === "inactive") {
           if (dashboard.status === "healthy") {
             dashboard.status = "degraded";
           }
           dashboard.alerts.push({
-            component: "haproxy",
+            component: "consul",
             severity: "warning",
-            message: "HAProxy is in a degraded state",
+            message: "Consul is not running",
           });
         }
       } else {
-        dashboard.components.haproxy = {
+        dashboard.components.consul = {
           status: "unavailable",
-          message: "HAProxy service is not initialized",
+          message: "Consul service is not initialized",
         };
         dashboard.status = "degraded";
       }
     } catch (err) {
-      logger.error(`Failed to get HAProxy health: ${err.message}`);
-      dashboard.components.haproxy = {
+      logger.error(`Failed to get Consul health: ${err.message}`);
+      dashboard.components.consul = {
         status: "error",
-        message: `Failed to get HAProxy health: ${err.message}`,
+        message: `Failed to get Consul health: ${err.message}`,
       };
       dashboard.status = "degraded";
     }

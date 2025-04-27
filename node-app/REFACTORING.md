@@ -29,9 +29,16 @@ This document outlines the refactoring work done to streamline the CloudLunacy F
    - Automatic SSL/TLS certificate generation for MongoDB connections
 
 5. **Production-grade HAProxy Data Plane API**
+
    - Migrated to the official HAProxy Data Plane API image
    - Enhanced API security and reliability
    - Improved configuration management with transactions
+
+6. **Migration to Traefik and Consul KV Store**
+   - Replaced HAProxy with Traefik for reverse proxy functionality
+   - Implemented Consul as a centralized key-value store for configuration
+   - Eliminated file-based configuration for improved reliability and scalability
+   - Added ConsulService for managing dynamic Traefik configuration
 
 ## Implemented File Structure
 
@@ -39,7 +46,8 @@ This document outlines the refactoring work done to streamline the CloudLunacy F
 node-app/
 ├── services/
 │   └── core/
-│       ├── haproxyService.js      # Unified HAProxy service using Data Plane API
+│       ├── traefikService.js      # Traefik routing service
+│       ├── consulService.js       # Consul KV store service
 │       ├── proxyService.js        # Focused proxy service
 │       ├── certificateService.js  # Certificate management service
 │       └── index.js               # Core services index
@@ -58,14 +66,14 @@ The following legacy components were removed as part of the refactoring:
    - `startup-check.js` - Validated HAProxy configuration, now handled through the API
 
 2. **Legacy Services**
-   - `haproxyManager.js` - Replaced by unified HAProxyService
-   - `haproxyConfigManager.js` - Replaced by unified HAProxyService
+   - `haproxyManager.js` - Replaced by unified HAProxyService (now replaced by TraefikService)
+   - `haproxyConfigManager.js` - Replaced by unified HAProxyService (now replaced by ConsulService)
    - `routingService.js` - Replaced by ProxyService
    - `routingManager.js` - Replaced by ProxyService
    - `mongodbService.js` - MongoDB-specific functionality now in HAProxyService
    - `certificateManager.js` - Certificate management now in CertificateService
    - `letsencryptManager.js` - Let's Encrypt integration now in CertificateService
-   - `configManager.js` - Replaced by ConfigService
+   - `configManager.js` - Replaced by ConfigService and now ConsulService
 
 All removed files were backed up in case they need to be referenced.
 
@@ -88,53 +96,68 @@ All removed files were backed up in case they need to be referenced.
    - Improved error handling
    - Better separation of concerns
 
-## HAProxy Data Plane API Integration
+## Consul Key-Value Store Integration
 
-The new HAProxyService now uses the HAProxy Data Plane API for all operations, making the codebase:
+The new architecture leverages Consul for robust configuration management:
 
-1. More reliable through use of the official API
-2. Easier to maintain with standardized interactions
-3. More secure by using proper API authentication
-4. Better able to handle configuration changes atomically
+1. **Centralized Configuration Storage**
 
-### Implementation Details
+   - All dynamic routing configurations are stored in Consul KV
+   - Eliminates issues with file locks, permissions, and synchronization
+   - Provides reliable, distributed storage for configuration data
 
-The HAProxy Data Plane API implementation includes:
+2. **Dynamic Traefik Integration**
 
-1. **Docker Configuration**
+   - Traefik watches Consul for configuration changes
+   - Real-time configuration updates without service restarts
+   - Improved reliability for routing configuration
 
-   - Using the official `haproxytech/haproxy-debian-dataplaneapi` image
-   - Exposed port 5555 for the Data Plane API
-   - Added a persistent volume for the Data Plane API storage
-   - Updated environment variables for API authentication
+3. **Fault Tolerance**
 
-2. **HAProxy Configuration**
+   - Consul's distributed architecture improves reliability
+   - Automatic leader election and replication for high availability
+   - Atomic operations prevent configuration corruption
 
-   - Simplified HAProxy configuration by removing manual Data Plane API setup
-   - Leveraged built-in API features of the official image
-   - Configured proper socket access for runtime API
+4. **Scalability**
+   - Horizontally scalable architecture
+   - Support for multi-node deployments in the future
+   - Clean separation of configuration from routing logic
 
-3. **API Interaction**
-   - Implemented transaction-based configuration updates
-   - Added support for backend and server management
-   - Created utility methods for common operations
-   - Implemented error handling and retry logic
+## Traefik Reverse Proxy
+
+Traefik has been implemented to replace HAProxy:
+
+1. **Modern Architecture**
+
+   - Auto-discovery of services
+   - First-class support for modern container environments
+   - Simpler configuration model
+
+2. **Native Consul Integration**
+
+   - Built-in provider for Consul KV store
+   - Real-time configuration updates
+   - Optimized for dynamic environments
+
+3. **Improved Certificate Management**
+   - Automatic certificate generation via Let's Encrypt
+   - Certificate renewal handling
+   - Simplified TLS configuration
 
 ## Certificate Management
 
-The CertificateService now integrates with the HAProxy Data Plane API to:
+The CertificateService now integrates with Traefik to:
 
 1. Generate and manage SSL/TLS certificates for MongoDB connections
-2. Automatically update HAProxy configuration with new certificates
-3. Provide certificate renewal and management functionality
-4. Support secure connections to MongoDB backends
+2. Automatically provide certificates for new agent registrations
+3. Support secure connections to MongoDB backends
 
 ## Documentation
 
-New documentation has been added to explain the HAProxy Data Plane API implementation:
+New documentation has been added:
 
-1. `PRODUCTION_DPAPI.md` - Details about the production implementation
-2. Updated architecture diagrams showing the Data Plane API integration
+1. `PRODUCTION_DPAPI.md` - Details about the production implementation (to be updated for Traefik/Consul)
+2. Updated architecture diagrams showing the Traefik/Consul integration
 3. Troubleshooting guides for common issues
 
 ## Future Improvements
@@ -143,4 +166,5 @@ New documentation has been added to explain the HAProxy Data Plane API implement
 2. Further improve error handling and logging
 3. Enhance documentation for the API endpoints
 4. Consider breaking out database functionality into a separate microservice
-5. Implement HTTPS for the Data Plane API in production environments
+5. Add Consul cluster support for high availability
+6. Implement Consul Access Control Lists (ACLs) for improved security

@@ -6,31 +6,30 @@ This diagram explains how data flows through the CloudLunacy Front Server when h
 flowchart LR
     %% External entities
     CLIENT[Client] <--> DOMAINS{Domain Type}
-    DOMAINS -->|app.subdomain| HTTP_FRONT[HTTP Frontend]
-    DOMAINS -->|mongodb.subdomain| MONGO_FRONT[MongoDB Frontend]
+    DOMAINS -->|app.subdomain| HTTP_FRONT[HTTP Router]
+    DOMAINS -->|mongodb.subdomain| MONGO_FRONT[MongoDB Router]
 
-    %% HAProxy
-    subgraph HAPROXY[HAProxy]
-        HTTP_FRONT --> FRONTEND[Frontend Processing]
-        MONGO_FRONT --> FRONTEND
-        FRONTEND --> ACL{ACL Matching}
-        ACL -->|Match Found| BACKEND_SELECT[Backend Selection]
-        BACKEND_SELECT --> BACKENDS[(Configured Backends)]
+    %% Traefik
+    subgraph TRAEFIK[Traefik]
+        HTTP_FRONT --> ROUTER[Router Processing]
+        MONGO_FRONT --> ROUTER
+        ROUTER --> MATCHER{Rule Matching}
+        MATCHER -->|Match Found| SERVICE_SELECT[Service Selection]
+        SERVICE_SELECT --> SERVICES[(Configured Services)]
     end
 
     %% Backend targets
-    BACKENDS --> APP_SERVERS[Application Servers]
-    BACKENDS --> DB_SERVERS[Database Servers]
+    SERVICES --> APP_SERVERS[Application Servers]
+    SERVICES --> DB_SERVERS[Database Servers]
 
     %% Management flow
     ADMIN[Administrator] --> API_SERVER[API Server]
     API_SERVER --> PROXY_SERVICE[Proxy Service]
-    PROXY_SERVICE --> HAPROXY_SERVICE[HAProxy Service]
+    PROXY_SERVICE --> TRAEFIK_SERVICE[Traefik Service]
 
-    %% Data plane API
-    HAPROXY_SERVICE <-->|Data Plane API| DATAPLANE[HAProxy Data Plane API]
-    DATAPLANE <--> CONFIG[HAProxy Configuration]
-    CONFIG --> HAPROXY
+    %% File provider
+    TRAEFIK_SERVICE -->|File Updates| CONFIG_FILES[Dynamic Configuration Files]
+    CONFIG_FILES --> TRAEFIK
 
     %% Agent registration
     AGENT[Agent VPS] --> REGISTER[Register]
@@ -43,8 +42,8 @@ flowchart LR
     classDef config fill:#dfd, stroke:#080,stroke-width:1px;
 
     class CLIENT,ADMIN,AGENT,APP_SERVERS,DB_SERVERS external;
-    class API_SERVER,PROXY_SERVICE,HAPROXY_SERVICE,AGENT_SERVICE internal;
-    class DATAPLANE,CONFIG,BACKENDS config;
+    class API_SERVER,PROXY_SERVICE,TRAEFIK_SERVICE,AGENT_SERVICE internal;
+    class CONFIG_FILES,SERVICES config;
 ```
 
 ## Data Flow Explanation
@@ -55,15 +54,15 @@ flowchart LR
 
    - A client makes a request to a subdomain (e.g., `app.cloudlunacy.uk` for HTTP or `mongodb.cloudlunacy.uk` for MongoDB)
 
-2. **HAProxy Processing**:
+2. **Traefik Processing**:
 
-   - The request reaches HAProxy frontends (HTTP or MongoDB)
-   - HAProxy uses ACL rules to identify the correct backend based on the domain
+   - The request reaches Traefik routers (HTTP or MongoDB)
+   - Traefik uses rule matchers to identify the correct service based on the domain
    - The request is forwarded to the appropriate backend server
 
 3. **Backend Response**:
    - The backend application or database server processes the request
-   - The response flows back through HAProxy to the client
+   - The response flows back through Traefik to the client
 
 ### Management Flow
 
@@ -74,11 +73,11 @@ flowchart LR
 2. **API Processing**:
 
    - The API server validates the request and passes it to the Proxy Service
-   - The Proxy Service coordinates with the HAProxy Service
+   - The Proxy Service coordinates with the Traefik Service
 
-3. **HAProxy Configuration**:
-   - The HAProxy Service uses the Data Plane API to modify HAProxy configuration
-   - Changes are applied to HAProxy without disrupting existing connections
+3. **Traefik Configuration**:
+   - The Traefik Service updates the dynamic configuration files
+   - Traefik automatically detects and applies configuration changes without disruption
 
 ### Agent Registration
 
@@ -89,14 +88,14 @@ flowchart LR
 
 2. **Route Creation**:
    - Upon successful registration, appropriate routes are created
-   - The HAProxy configuration is updated to include the new agent's endpoints
+   - The Traefik configuration is updated to include the new agent's endpoints
 
 ## Key Concepts
 
-| Concept        | Description                                       |
-| -------------- | ------------------------------------------------- |
-| Frontends      | HAProxy entry points that listen for requests     |
-| ACLs           | Access Control Lists that determine routing rules |
-| Backends       | Destination servers for forwarded requests        |
-| Data Plane API | API for managing HAProxy configuration            |
-| Agents         | Remote servers that register for routing          |
+| Concept              | Description                                   |
+| -------------------- | --------------------------------------------- |
+| Routers              | Traefik entry points that listen for requests |
+| Rule Matchers        | Rules that determine routing logic            |
+| Services             | Destination services for forwarded requests   |
+| Dynamic Config Files | YAML files for managing Traefik configuration |
+| Agents               | Remote servers that register for routing      |

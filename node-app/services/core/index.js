@@ -1,7 +1,7 @@
 /**
  * Core Services Module
  *
- * Consolidated version of the core services using the HAProxy Data Plane API.
+ * Consolidated version of the core services using Consul for configuration storage and proxying.
  * Focuses on the primary goal of proxying traffic to agent VPSs using subdomains.
  */
 
@@ -9,27 +9,17 @@ const logger = require("../../utils/logger").getLogger("coreServices");
 const ProxyService = require("./proxyService");
 const AgentService = require("./agentService");
 const ConfigService = require("./configService");
-const HAProxyService = require("./haproxyService");
-const EnhancedHAProxyService = require("./enhancedHAProxyService");
 const CertificateService = require("./certificateService");
 const CertificateRenewalService = require("./certificateRenewalService");
 const CertificateMetricsService = require("./certificateMetricsService");
 const MongoDBService = require("./databases/mongodbService");
+const ConsulService = require("./consulService");
 
 // Create instances of core services
 const certificateService = new CertificateService();
-
-// Create both HAProxy service implementations
-// Legacy service for backward compatibility
-const haproxyService = new HAProxyService(certificateService);
-// Enhanced service with improved reliability features
-const enhancedHAProxyService = new EnhancedHAProxyService({
-  monitorInterval: 60000, // Check health every minute
-});
-
 const proxyService = new ProxyService();
-// Initialize MongoDB service with proxy and HAProxy dependencies
-const mongodbService = new MongoDBService(proxyService, enhancedHAProxyService);
+// Initialize MongoDB service with proxy dependency
+const mongodbService = new MongoDBService(proxyService);
 const configService = new ConfigService();
 const certificateRenewalService = new CertificateRenewalService(
   certificateService
@@ -41,6 +31,9 @@ const certificateMetricsService = new CertificateMetricsService(
 // Initialize agent service with dependencies
 const agentService = new AgentService(configService);
 
+// Initialize Consul service
+const consulService = new ConsulService();
+
 // Export all service instances
 module.exports = {
   // Primary services
@@ -48,11 +41,18 @@ module.exports = {
   agentService,
   configService,
   mongodbService,
-  haproxyService,
-  enhancedHAProxyService,
   certificateService,
   certificateRenewalService,
   certificateMetricsService,
+  consulService,
+
+  /**
+   * Get the Consul service instance
+   * @returns {ConsulService} Consul service
+   */
+  getConsulService: function () {
+    return consulService;
+  },
 
   /**
    * Initialize all core services
@@ -77,56 +77,39 @@ module.exports = {
         return false;
       }
 
-      // 3. Initialize Enhanced HAProxy service - continue even if it fails
+      // 3. Initialize Consul service for KV store
       try {
-        const enhancedHAProxyInitialized =
-          await enhancedHAProxyService.initialize();
-        if (!enhancedHAProxyInitialized) {
+        const consulInitialized = await consulService.initialize();
+        if (!consulInitialized) {
           logger.warn(
-            "Enhanced HAProxy service initialization had issues but will continue with limited functionality"
+            "Consul service initialization had issues but will continue with limited functionality"
           );
           // Continue anyway - don't return false
         } else {
-          logger.info("Enhanced HAProxy service initialized successfully");
+          logger.info("Consul service initialized successfully");
         }
-      } catch (enhancedHAProxyError) {
+      } catch (consulError) {
         logger.warn(
-          `Enhanced HAProxy service initialization error: ${enhancedHAProxyError.message}. Continuing with limited functionality.`
+          `Consul service initialization error: ${consulError.message}. Continuing with limited functionality.`
         );
         // Continue anyway - don't return false
       }
 
-      // 4. Initialize legacy HAProxy service as fallback - continue even if it fails
-      try {
-        const haproxyInitialized = await haproxyService.initialize();
-        if (!haproxyInitialized) {
-          logger.warn(
-            "Legacy HAProxy service initialization had issues but will continue with limited functionality"
-          );
-          // Continue anyway - don't return false
-        }
-      } catch (haproxyError) {
-        logger.warn(
-          `Legacy HAProxy service initialization error: ${haproxyError.message}. Continuing with limited functionality.`
-        );
-        // Continue anyway - don't return false
-      }
-
-      // 5. Initialize proxy service
+      // 4. Initialize proxy service
       const proxyInitialized = await proxyService.initialize();
       if (!proxyInitialized) {
         logger.error("Failed to initialize proxy service");
         return false;
       }
 
-      // 6. Initialize agent service
+      // 5. Initialize agent service
       const agentInitialized = await agentService.initialize();
       if (!agentInitialized) {
         logger.error("Failed to initialize agent service");
         return false;
       }
 
-      // 7. Initialize certificate renewal service
+      // 6. Initialize certificate renewal service
       try {
         const renewalInitialized = await certificateRenewalService.initialize();
         if (!renewalInitialized) {
@@ -144,7 +127,7 @@ module.exports = {
         // Continue anyway - don't return false
       }
 
-      // 8. Take initial metrics snapshot
+      // 7. Take initial metrics snapshot
       try {
         await certificateMetricsService.takeMetricsSnapshot();
         logger.info("Initial certificate metrics snapshot taken");
@@ -163,5 +146,36 @@ module.exports = {
       });
       return false;
     }
+  },
+
+  /**
+   * Enhanced certificate service with additional functionality
+   */
+  enhancedCertificateService: {
+    certManager: certificateService,
+    renewAgentCertificate: async (agentId) => {
+      return await certificateService.renewAgentCertificate(agentId);
+    },
+    generateLetsEncryptCertificate: async (domain, options = {}) => {
+      return await certificateService.generateLetsEncryptCertificate(
+        domain,
+        options
+      );
+    },
+    renewLetsEncryptCertificate: async (certificate) => {
+      return await certificateService.renewLetsEncryptCertificate(certificate);
+    },
+    getCertificateReport: async () => {
+      return await certificateService.getCertificateReport();
+    },
+    getMetrics: async () => {
+      return await certificateMetricsService.getCurrentMetrics();
+    },
+    initialize: async () => {
+      if (!certificateService.initialized) {
+        return await certificateService.initialize();
+      }
+      return true;
+    },
   },
 };

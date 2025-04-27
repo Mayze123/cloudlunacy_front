@@ -80,27 +80,30 @@ class PathManager {
       await this.ensureDirectoriesWithFallbacks([
         {
           primary: this.basePaths.config,
-          fallback: path.join(this.basePaths.app, "config"),
+          fallback: path.join(this.basePaths.frontendRoot, "config"),
         },
         {
           primary: this.basePaths.logs,
-          fallback: path.join(this.basePaths.app, "logs"),
+          fallback: path.join(this.basePaths.frontendRoot, "logs"),
         },
         {
           primary: this.basePaths.certs,
-          fallback: path.join(this.basePaths.app, "certs"),
+          fallback: path.join(this.basePaths.frontendRoot, "config/certs"),
         },
         {
           primary: this.derivedPaths.certsAgents,
-          fallback: path.join(this.basePaths.app, "certs/agents"),
+          fallback: path.join(
+            this.basePaths.frontendRoot,
+            "config/certs/agents"
+          ),
         },
         {
           primary: this.derivedPaths.agentsConfig,
-          fallback: path.join(this.basePaths.app, "config/agents"),
+          fallback: path.join(this.basePaths.frontendRoot, "config/agents"),
         },
         {
           primary: this.derivedPaths.configBackups,
-          fallback: path.join(this.basePaths.app, "backups"),
+          fallback: path.join(this.basePaths.frontendRoot, "backups"),
         },
       ]);
 

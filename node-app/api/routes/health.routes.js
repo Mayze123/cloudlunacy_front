@@ -1,7 +1,7 @@
 /**
  * Health Routes
  *
- * Routes for system health monitoring, HAProxy management, and certificate management.
+ * Routes for system health monitoring, proxy management, and certificate management.
  */
 
 const express = require("express");
@@ -32,40 +32,20 @@ router.get(
 router.get("/system", healthController.getSystemHealth);
 
 /**
- * HAProxy Health
- * GET /api/health/haproxy - Get detailed HAProxy health metrics
+ * Consul Health
+ * GET /api/health/consul - Get detailed Consul health metrics
  */
-router.get("/haproxy", healthController.getHAProxyHealth);
+router.get("/consul", healthController.checkConsul);
 
 /**
- * HAProxy Statistics
- * GET /api/health/haproxy/stats - Get HAProxy statistics
- */
-router.get(
-  "/haproxy/stats",
-  authMiddleware.requireAuth,
-  healthController.getHAProxyStats
-);
-
-/**
- * HAProxy Recovery
- * POST /api/health/haproxy/recover - Attempt to recover HAProxy service
+ * Consul Recovery
+ * POST /api/health/consul/recover - Attempt to recover Consul service
  */
 router.post(
-  "/haproxy/recover",
+  "/consul/recover",
   authMiddleware.requireAuth,
   authMiddleware.requireAdmin,
-  healthController.recoverHAProxyService
-);
-
-/**
- * HAProxy Configuration Validation
- * GET /api/health/haproxy/validate - Validate HAProxy configuration
- */
-router.get(
-  "/haproxy/validate",
-  authMiddleware.requireAuth,
-  healthController.validateHAProxyConfig
+  healthController.recoverConsulService
 );
 
 /**
@@ -124,6 +104,16 @@ router.get(
   "/mongodb-listener",
   authMiddleware.requireAuth,
   healthController.checkMongoDBListener
+);
+
+/**
+ * MongoDB Connections Check
+ * GET /api/health/mongodb-connections - Check MongoDB connections
+ */
+router.get(
+  "/mongodb-connections",
+  authMiddleware.requireAuth,
+  healthController.checkMongoDBConnections
 );
 
 module.exports = router;

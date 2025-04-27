@@ -1,9 +1,9 @@
 version: "3.8"
 
 services:
-  haproxy:
-    image: haproxytech/haproxy-ubuntu:latest
-    container_name: haproxy
+  traefik:
+    image: traefik:v2.9
+    container_name: traefik
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -12,65 +12,110 @@ services:
       - "443:443"
       - "8081:8081"
       - "27017:27017"
-      - "5555:5555" # Data Plane API port
     networks:
       - frontend
       - backend
     volumes:
-      - ./config/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:rw
-      - ./config/haproxy/dataplaneapi.yml:/usr/local/etc/haproxy/dataplaneapi.yml:rw
-      - ./haproxy-dockerfile/custom-entrypoint.sh:/usr/local/bin/custom-entrypoint.sh:ro
-      - ./haproxy-dockerfile/install-dataplaneapi.sh:/usr/local/bin/install-dataplaneapi.sh:ro
-      - ./config/haproxy/docker-entrypoint-wrapper.sh:/usr/local/bin/docker-entrypoint-wrapper.sh:ro
-      # Certificate management tools
-      - ./config/haproxy/certificate-precheck.sh:/usr/local/etc/haproxy/certificate-precheck.sh:ro
-      - ./haproxy-dockerfile/sync-certificates.sh:/usr/local/bin/sync-certificates.sh:ro
-      # Certificate directories
-      - ./config/certs:/etc/ssl/certs:ro
-      - ./config/certs/private:/etc/ssl/private:ro
-      - haproxy-data:/etc/haproxy/dataplaneapi
+      - ./config/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./config/certs:/etc/traefik/certs:ro
+      - ./config/certs/acme:/etc/traefik/acme
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - /var/log/haproxy:/var/log/haproxy
-      - ./config/haproxy/errors:/etc/haproxy/errors:ro
-    entrypoint: ["/usr/local/bin/custom-entrypoint.sh"]
     env_file:
       - ./.env
+      - ./cloudflare.env
     environment:
       - TZ=UTC
-      - CF_EMAIL=${CF_EMAIL}
-      - CF_API_KEY=${CF_API_KEY}
-      - CLOUDFLARE_DNS_API_TOKEN=${CF_DNS_API_TOKEN}
-      - CF_ZONE_API_TOKEN=${CF_ZONE_API_TOKEN}
-      # Data Plane API Configuration
-      - HAPROXY_API_USER=admin
-      - HAPROXY_API_PASS=admin
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.dashboard.rule=Host(`traefik.${APP_DOMAIN:-cloudlunacy.uk}`)"
+      - "traefik.http.routers.dashboard.entrypoints=websecure"
+      - "traefik.http.routers.dashboard.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.dashboard.middlewares=auth-admin@docker"
+      - "traefik.http.middlewares.auth-admin.basicauth.users=admin:.KWn7vfN/SNK/"
     healthcheck:
-      # Use a shell format to properly handle the logic
-      test:
-        [
-          "CMD-SHELL",
-          "curl -f http://localhost:5555/v3/health || curl -f http://localhost:8081/health || exit 0",
-        ]
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 30s
+    depends_on:
+      - consul
+
+  consul:
+    image: hashicorp/consul:latest
+    container_name: consul
+    restart: unless-stopped
+    ports:
+      - "8500:8500"
+      - "8600:8600/tcp"
+      - "8600:8600/udp"
+    networks:
+      - frontend
+      - backend
+    volumes:
+      - consul-data:/consul/data
+    command: >
+      agent -server -bootstrap-expect=1 
+      -ui -client=0.0.0.0 
+      -bind='{{ GetInterfaceIP "eth0" }}' 
+      -advertise='{{ GetInterfaceIP "eth0" }}'
+    healthcheck:
+      test: ["CMD", "consul", "members"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  consul-kv-setup:
+    image: hashicorp/consul:latest
+    container_name: consul-kv-setup
+    restart: "no"
+    networks:
+      - backend
+    volumes:
+      - ./config/consul/populate_traefik_kv.sh:/usr/local/bin/populate_traefik_kv.sh:ro
+    entrypoint: "/bin/sh"
+    command: >
+      -c "
+        echo 'Waiting for Consul to be healthy and have a leader...' &&
+        while ! wget -q -O - http://consul:8500/v1/status/leader | grep -q .; do
+          echo -n '.' ; sleep 2;
+        done; 
+        echo '\nConsul has a leader! Waiting a bit more for stability...' &&
+        sleep 5 &&
+        echo 'Populating KV store...' &&
+        sh /usr/local/bin/populate_traefik_kv.sh
+      "
+    depends_on:
+      consul:
+        condition: service_healthy
+    env_file:
+      - ./.env
+    environment:
+      - CONSUL_HTTP_ADDR=http://consul:8500
+      - TRAEFIK_ADMIN_AUTH_HASH=${TRAEFIK_ADMIN_AUTH_HASH:-}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-}
+      - MONGO_ROUTER_RULE=${MONGO_ROUTER_RULE:-}
+      - MONGO_SERVICE_ADDRESS=${MONGO_SERVICE_ADDRESS:-}
 
   certbot:
     image: certbot/certbot:latest
     container_name: certbot
+    restart: unless-stopped
     networks:
       - frontend
       - backend
     volumes:
       - ./config/certs:/etc/letsencrypt
       - ./config/certbot/www:/var/www/certbot
-      - ./config/certbot/cloudflare.ini:/etc/cloudflare/cloudflare.ini:ro
     environment:
       - CF_EMAIL=${CF_EMAIL}
       - CF_API_KEY=${CF_API_KEY}
       - CLOUDFLARE_DNS_API_TOKEN=${CF_DNS_API_TOKEN}
       - CF_ZONE_API_TOKEN=${CF_ZONE_API_TOKEN}
+      # Add these standardized variables for certbot Cloudflare plugin
+      - CLOUDFLARE_EMAIL=${CF_EMAIL}
+      - CLOUDFLARE_API_KEY=${CF_API_KEY}
     entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew --quiet; sleep 12h & wait $${!}; done;'"
 
   node-app:
@@ -85,10 +130,7 @@ services:
     ports:
       - "${NODE_PORT:-3005}:3005"
     volumes:
-      - ./config:/app/config:rw
       - ./logs:/app/logs:rw
-      - ./node-app/scripts:/app/scripts:ro
-      - ./config/certs:/app/config/certs:rw
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - node-app-data:/opt/cloudlunacy_front
     user: "node"
@@ -99,31 +141,49 @@ services:
       - JWT_SECRET=${JWT_SECRET}
       - MONGO_DOMAIN=${MONGO_DOMAIN:-mongodb.cloudlunacy.uk}
       - APP_DOMAIN=${APP_DOMAIN:-apps.cloudlunacy.uk}
-      - HAPROXY_CONTAINER=haproxy
-      - HAPROXY_API_URL=http://haproxy:5555/v3
-      - HAPROXY_API_USER=admin
-      - HAPROXY_API_PASS=admin
+      - CONSUL_HOST=consul
+      - CONSUL_PORT=8500
       - NODE_ENV=production
       - NODE_DEBUG=
-      - HAPROXY_OPTIONAL=true
       - LOG_DIR=/app/logs
+    depends_on:
+      - consul
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.node-app.rule=Host(`api.${APP_DOMAIN:-cloudlunacy.uk}`)"
+      - "traefik.http.routers.node-app.entrypoints=websecure"
+      - "traefik.http.routers.node-app.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.node-app.service=node-app-svc"
+      - "traefik.http.services.node-app-svc.loadbalancer.server.port=${NODE_PORT:-3005}"
+      - "traefik.http.middlewares.node-app-headers.headers.accesscontrolallowmethods=GET,POST,PUT,DELETE,OPTIONS"
+      - "traefik.http.middlewares.node-app-headers.headers.accesscontrolalloworiginlist=*"
+      - "traefik.http.middlewares.node-app-headers.headers.accesscontrolallowheaders=Content-Type,Authorization,X-Requested-With"
+      - "traefik.http.middlewares.node-app-headers.headers.accesscontrolallowcredentials=true"
+      - "traefik.http.middlewares.node-app-headers.headers.accesscontrolmaxage=100"
+      - "traefik.http.middlewares.node-app-headers.headers.addvaryheader=true"
+      - "traefik.http.middlewares.secure-headers.headers.forcestsheader=true"
+      - "traefik.http.middlewares.secure-headers.headers.sslredirect=true"
+      - "traefik.http.middlewares.secure-headers.headers.stsincludesubdomains=true"
+      - "traefik.http.middlewares.secure-headers.headers.stspreload=true"
+      - "traefik.http.middlewares.secure-headers.headers.stsseconds=31536000"
+      - "traefik.http.routers.node-app.middlewares=secure-headers,node-app-headers"
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3005/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:${NODE_PORT:-3005}/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
 
 volumes:
-  node-data:
-  certbot-data:
-  haproxy-data:
+  traefik-acme-data:
   node-app-data:
+  consul-data:
+    name: consul-data
 
 networks:
   frontend:
-    name: haproxy-network
-    external: true
+    name: cloudlunacy-frontend
+    driver: bridge
   backend:
-    name: cloudlunacy-network
-    external: true
+    name: cloudlunacy-backend
+    driver: bridge

@@ -15,10 +15,11 @@ const authMiddleware = require("./middleware/auth");
 const certificateRoutes = require("./routes/certificate.routes");
 const mongodbRoutes = require("./routes/mongodb.routes");
 const healthRoutes = require("./routes/health.routes");
-const metricsRoutes = require("./routes/metrics.routes"); // Added metrics routes
+const metricsRoutes = require("./routes/metrics.routes");
 
 // Import controllers
 const agentController = require("./controllers/agentController");
+const certificateController = require("./controllers/certificateController");
 
 // Import core services
 const ProxyService = require("../services/core/proxyService");
@@ -43,11 +44,11 @@ const configService = new ConfigService();
   }
 })();
 
-// Mount modular routes
+// Mount routes
+router.use("/health", healthRoutes);
+router.use("/metrics", metricsRoutes);
 router.use("/certificates", certificateRoutes);
 router.use("/mongodb", mongodbRoutes);
-router.use("/health", healthRoutes);
-router.use("/metrics", metricsRoutes); // Mount metrics routes
 
 /**
  * Agent Routes
@@ -67,49 +68,28 @@ router.post("/agents/register", (req, res) => {
   agentController.registerAgent(req, res);
 });
 
-router.post("/agents/authenticate", async (req, res, next) => {
-  try {
-    const { agentId, agentKey } = req.body;
-
-    if (!agentId || !agentKey) {
-      throw new AppError("Agent ID and agent key are required", 400);
-    }
-
-    const result = await agentService.authenticateAgent(agentId, agentKey);
-    res.json(result);
-  } catch (err) {
-    next(err);
-  }
-});
+router.post("/agents/authenticate", agentController.authenticateAgent);
 
 router.get(
   "/agents/:agentId",
   authMiddleware.requireAuth,
   authMiddleware.requireAgentAccess(),
-  async (req, res, next) => {
-    try {
-      const { agentId } = req.params;
-      const result = await agentService.getAgentInfo(agentId);
-      res.json(result);
-    } catch (err) {
-      next(err);
-    }
-  }
+  agentController.getAgentStatus
 );
 
 router.delete(
   "/agents/:agentId",
   authMiddleware.requireAuth,
   authMiddleware.requireAgentAccess(),
-  async (req, res, next) => {
-    try {
-      const { agentId } = req.params;
-      const result = await agentService.deregisterAgent(agentId);
-      res.json(result);
-    } catch (err) {
-      next(err);
-    }
-  }
+  agentController.deregisterAgent
+);
+
+// Additional route for new API style consistency
+router.delete(
+  "/agent/:agentId",
+  authMiddleware.requireAuth,
+  authMiddleware.requireAgentAccess(),
+  agentController.deregisterAgent
 );
 
 /**
@@ -148,63 +128,19 @@ router.post(
   }
 );
 
-router.post(
-  "/proxy/mongodb",
-  authMiddleware.requireAuth,
-  async (req, res, next) => {
-    try {
-      // Add deprecation warning header
-      res.setHeader(
-        "X-Deprecated-API",
-        "This endpoint is deprecated. Please use /api/mongodb/register instead."
-      );
-
-      const { agentId, targetHost, targetPort, options } = req.body;
-
-      if (!agentId) {
-        throw new AppError("Agent ID is required", 400);
-      }
-
-      if (!targetHost) {
-        throw new AppError("Target host is required", 400);
-      }
-
-      // Log deprecation warning
-      logger.warn(
-        `Deprecated endpoint /api/proxy/mongodb was used for agent ${agentId}. This endpoint will be removed in a future version.`
-      );
-
-      const result = await proxyService.addMongoDBRoute(
-        agentId,
-        targetHost,
-        targetPort || 27017,
-        options || {}
-      );
-
-      res.json(result);
-    } catch (err) {
-      next(err);
-    }
-  }
-);
-
 router.delete("/proxy", authMiddleware.requireAuth, async (req, res, next) => {
   try {
-    const { agentId, subdomain, type } = req.body;
+    const { agentId, subdomain } = req.body;
 
     if (!agentId) {
       throw new AppError("Agent ID is required", 400);
     }
 
-    if (type === "http" && !subdomain) {
+    if (!subdomain) {
       throw new AppError("Subdomain is required for HTTP routes", 400);
     }
 
-    const result = await proxyService.removeRoute(
-      agentId,
-      subdomain,
-      type || "http"
-    );
+    const result = await proxyService.removeRoute(agentId, subdomain);
 
     res.json(result);
   } catch (err) {
@@ -266,6 +202,28 @@ router.get(
       next(err);
     }
   }
+);
+
+// Certificate routes
+router.get(
+  "/certificates/agent/:agentId",
+  //authMiddleware.requireAuth,
+  //authMiddleware.requireAgentAccess(),
+  certificateController.getAgentCertificates
+);
+
+// Temporary endpoint to regenerate certificates for an agent (without auth)
+router.post(
+  "/certificates/temp-regenerate/:agentId",
+  certificateController.tempRegenerateAgentCertificate
+);
+
+// Certificate regeneration
+router.post(
+  "/certificates/agent/:agentId/regenerate",
+  authMiddleware.requireAuth,
+  authMiddleware.requireAgentAccess(),
+  certificateController.regenerateAgentCertificate
 );
 
 // Apply error handling middleware

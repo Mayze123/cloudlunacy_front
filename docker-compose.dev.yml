@@ -1,29 +1,38 @@
 version: "3.8"
 
 services:
-  haproxy:
-    image: haproxy:2.8-alpine
-    container_name: haproxy-dev
+  traefik:
+    image: traefik:v2.10
+    container_name: traefik-dev
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
     ports:
       - "80:80"
       - "443:443"
-      - "8081:8081"
+      - "8080:8080" # Dashboard
       - "27017:27017"
     networks:
-      - haproxy-network
+      - traefik-network
       - cloudlunacy-network
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./config/haproxy:/usr/local/etc/haproxy
+      - ./config/traefik:/etc/traefik
       - ./config/certs:/etc/ssl/certs
-      - ./logs:/var/log/haproxy
+      - ./logs:/var/log/traefik
     environment:
       - TZ=UTC
+    command:
+      - "--api.dashboard=true"
+      - "--api.insecure=true" # Only for development
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.file.directory=/etc/traefik/dynamic"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.mongodb.address=:27017"
     healthcheck:
-      test: ["CMD", "haproxy", "-c", "-f", "/usr/local/etc/haproxy/haproxy.cfg"]
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -36,7 +45,7 @@ services:
     container_name: cloudlunacy-front-dev
     restart: unless-stopped
     networks:
-      - haproxy-network
+      - traefik-network
       - cloudlunacy-network
     ports:
       - "3005:3005"
@@ -46,30 +55,38 @@ services:
       - ./logs:/app/logs
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /app/node_modules
+    # Ensure directories have the right permissions before starting the container
+    user: "1000:1000" # Use UID:GID that matches your host user or the node user in container
     environment:
       - NODE_PORT=3005
       - JWT_SECRET=dev_secret_key_for_testing_only
       - NODE_ENV=development
       - MONGO_DOMAIN=mongodb.localhost
       - APP_DOMAIN=apps.localhost
-      - HAPROXY_CONTAINER=haproxy-dev
+      - TRAEFIK_CONTAINER=traefik-dev
+      - TRAEFIK_API_URL=http://traefik-dev:8080/api
       - MONGO_PORT=27017
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3005/health"]
-      interval: 1000s
+      interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
     depends_on:
-      - haproxy
+      - traefik
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.node-app.rule=Host(`apps.localhost`)"
+      - "traefik.http.routers.node-app.entrypoints=web"
+      - "traefik.http.services.node-app.loadbalancer.server.port=3005"
 
 networks:
-  haproxy-network:
-    name: haproxy-network
-    external: true
+  traefik-network:
+    name: traefik-network
+    driver: bridge
   cloudlunacy-network:
     name: cloudlunacy-network
-    external: true
+    driver: bridge
 
 volumes:
   mongodb-data:

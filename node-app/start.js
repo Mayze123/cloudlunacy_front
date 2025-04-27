@@ -14,23 +14,23 @@ const server = require("./server");
 async function startup() {
   try {
     logger.info("Starting application...");
-    
+
     // Initialize path manager first
     logger.info("Initializing path manager");
     await pathManager.initialize();
-    
+
     // Log all paths for debugging
     logger.debug("Path configuration:", pathManager.getAllPaths());
-    
+
     // Start the server
     logger.info("Starting server");
     await server.startServer();
-    
+
     logger.info("Application started successfully");
   } catch (err) {
     logger.error(`Failed to start application: ${err.message}`, {
       error: err.message,
-      stack: err.stack
+      stack: err.stack,
     });
     process.exit(1);
   }

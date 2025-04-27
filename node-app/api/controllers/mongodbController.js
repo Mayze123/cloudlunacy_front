@@ -8,10 +8,6 @@
 const coreServices = require("../../services/core");
 const logger = require("../../utils/logger").getLogger("mongodbController");
 const { AppError, asyncHandler } = require("../../utils/errorHandler");
-const ProxyService = require("../../services/core/proxyService");
-
-// Initialize ProxyService
-const proxyService = new ProxyService();
 
 /**
  * Register MongoDB
@@ -37,62 +33,44 @@ exports.registerMongoDB = asyncHandler(async (req, res) => {
     }
   );
 
-  // Register the MongoDB instance - preserve this functionality
-  const result = await coreServices.mongodbService.registerAgent(
-    agentId,
-    targetIp,
-    {
-      useTls,
-      targetPort,
-    }
-  );
-
-  if (!result.success) {
-    throw new AppError(`Failed to register MongoDB: ${result.error}`, 500);
-  }
-
-  // Generate the connection string
-  const domain = `${agentId}.${
-    process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk"
-  }`;
-  const connectionString = `mongodb://username:password@${domain}:27017/admin?${
-    useTls ? "tls=true&tlsAllowInvalidCertificates=true" : ""
-  }`;
-
-  // Update HAProxy configuration using the ProxyService
+  // Register with MongoDB service (using Traefik only)
   try {
-    // Use ProxyService to add MongoDB route
-    const proxyResult = await proxyService.addMongoDBRoute(
+    const result = await coreServices.mongodbService.registerAgent(
       agentId,
       targetIp,
-      targetPort,
-      { useTls }
+      {
+        useTls,
+        targetPort,
+      }
     );
 
-    if (!proxyResult.success) {
-      logger.warn(
-        `Proxy registration warning: ${
-          proxyResult.message || proxyResult.error
-        }`
-      );
-    } else {
-      logger.info(`Successfully updated HAProxy for MongoDB agent ${agentId}`);
+    if (!result.success) {
+      logger.error(`MongoDB registration failed: ${result.error}`);
+      throw new AppError(`Failed to register MongoDB: ${result.error}`, 500);
     }
-  } catch (haproxyErr) {
-    logger.error(`Failed to update HAProxy for MongoDB: ${haproxyErr.message}`);
-    // Continue anyway - the MongoDB registration was successful
-  }
 
-  // Return success response
-  res.status(200).json({
-    success: true,
-    message: "MongoDB registered successfully",
-    domain,
-    connectionString,
-    targetIp,
-    targetPort,
-    tlsEnabled: useTls,
-  });
+    // At this point we have a successful registration
+    const domain = `${agentId}.${
+      process.env.MONGO_DOMAIN || "mongodb.cloudlunacy.uk"
+    }`;
+    const connectionString = `mongodb://username:password@${domain}:27017/admin?${
+      useTls ? "tls=true&tlsAllowInvalidCertificates=true" : ""
+    }`;
+
+    // Return success response
+    res.status(200).json({
+      success: true,
+      message: `MongoDB registered successfully`,
+      domain,
+      connectionString,
+      targetIp: result.targetIp, // Use normalized IP from result
+      targetPort,
+      tlsEnabled: useTls,
+    });
+  } catch (error) {
+    logger.error(`MongoDB registration error: ${error.message}`);
+    throw new AppError(`Failed to register MongoDB: ${error.message}`, 500);
+  }
 });
 
 /**
@@ -103,34 +81,27 @@ exports.registerMongoDB = asyncHandler(async (req, res) => {
 exports.listSubdomains = asyncHandler(async (req, res) => {
   logger.info("Listing all MongoDB subdomains");
 
-  // Get all routes using the enhanced HAProxy service
   try {
-    // Use enhancedHAProxyService if available, otherwise fall back to haproxyService
-    const haproxyService =
-      coreServices.enhancedHAProxyService || coreServices.haproxyService;
-
-    // Ensure service is initialized
-    if (!haproxyService.initialized) {
-      await haproxyService.initialize();
+    // Get all routes using the MongoDB service
+    if (!coreServices.mongodbService.initialized) {
+      await coreServices.mongodbService.initialize();
     }
 
-    // Get all routes
-    const routesResponse = await haproxyService.getAllRoutes();
-
-    // Filter for MongoDB routes
-    const mongoRoutes = routesResponse.routes
-      .filter((route) => route.type === "mongodb")
-      .map((route) => ({
-        name: route.name || `mongodb-agent-${route.agentId}`,
-        agentId: route.agentId,
-        targetAddress: `${route.targetHost}:${route.targetPort}`,
-        lastUpdated: route.lastUpdated,
-      }));
+    // Get all connection info from the cache
+    const mongodbConnections = [];
+    coreServices.mongodbService.connectionCache.forEach((info) => {
+      mongodbConnections.push({
+        name: `mongodb-agent-${info.agentId}`,
+        agentId: info.agentId,
+        targetAddress: `${info.targetIp}:${info.targetPort}`,
+        lastUpdated: info.lastUpdated || info.created,
+      });
+    });
 
     res.status(200).json({
       success: true,
-      count: mongoRoutes.length,
-      subdomains: mongoRoutes,
+      count: mongodbConnections.length,
+      subdomains: mongodbConnections,
     });
   } catch (err) {
     logger.error(`Failed to list MongoDB subdomains: ${err.message}`);
@@ -151,35 +122,38 @@ exports.removeSubdomain = asyncHandler(async (req, res) => {
 
   logger.info(`Removing MongoDB subdomain for agent ${agentId}`);
 
-  // Remove the MongoDB subdomain
+  // First get connection info to have details for the logs
+  let connectionInfo = null;
+  try {
+    connectionInfo = await coreServices.mongodbService.getConnectionInfo(
+      agentId
+    );
+  } catch (infoErr) {
+    // Continue even if we can't get info - might still be able to deregister
+    logger.warn(
+      `Could not get connection info before removal: ${infoErr.message}`
+    );
+  }
+
+  // Try to remove MongoDB registration
   const result = await coreServices.mongodbService.deregisterAgent(agentId);
 
   if (!result.success) {
+    logger.error(
+      `Failed to remove MongoDB for agent ${agentId}: ${
+        result.error || "Unknown error"
+      }`
+    );
     throw new AppError(
       `Failed to remove MongoDB subdomain for agent ${agentId}: ${result.error}`,
       404
     );
   }
 
-  res.status(200).json(result);
-});
-
-/**
- * Test MongoDB connectivity
- *
- * GET /api/mongodb/:agentId/test
- */
-exports.testConnection = asyncHandler(async (req, res) => {
-  const { agentId } = req.params;
-
-  logger.info(`Testing MongoDB connectivity for agent ${agentId}`);
-
-  // Test MongoDB connectivity
-  const result = await coreServices.mongodbService.testConnection(agentId);
-
+  // Return success response
   res.status(200).json({
     success: true,
-    result,
+    message: `MongoDB subdomain for agent ${agentId} removed successfully`,
   });
 });
 
@@ -209,62 +183,9 @@ exports.getConnectionInfo = asyncHandler(async (req, res) => {
     success: true,
     connectionInfo: {
       domain: connectionInfo.domain,
-      connectionString: connectionInfo.connectionString.replace(
-        /:[^:]*@/,
-        ":***@"
-      ), // Hide password
-      host: connectionInfo.host,
-      port: connectionInfo.port,
+      host: connectionInfo.targetIp,
+      port: connectionInfo.targetPort,
       useTls: connectionInfo.useTls,
-    },
-  });
-});
-
-/**
- * Generate MongoDB credentials for a database
- *
- * POST /api/mongodb/:agentId/credentials
- * {
- *   "dbName": "myDatabase",
- *   "username": "optional-username" // If not provided, will be generated
- * }
- */
-exports.generateCredentials = asyncHandler(async (req, res) => {
-  const { agentId } = req.params;
-  const { dbName, username } = req.body;
-
-  if (!dbName) {
-    throw new AppError("Missing required parameter: dbName is required", 400);
-  }
-
-  logger.info(
-    `Generating MongoDB credentials for database ${dbName} on agent ${agentId}`
-  );
-
-  // Generate credentials
-  const credentials = await coreServices.mongodbService.generateCredentials(
-    agentId,
-    dbName,
-    username
-  );
-
-  if (!credentials.success) {
-    throw new AppError(
-      `Failed to generate credentials: ${credentials.error}`,
-      500
-    );
-  }
-
-  res.status(201).json({
-    success: true,
-    credentials: {
-      username: credentials.username,
-      password: credentials.password,
-      connectionString: credentials.connectionString.replace(
-        /:[^:]*@/,
-        ":***@"
-      ), // Hide password in logs
-      dbName,
     },
   });
 });

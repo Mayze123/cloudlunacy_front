@@ -1,0 +1,51 @@
+# Dynamic routes configuration for Traefik
+# This file is managed by the CloudLunacy Front API
+
+http:
+  routers:
+    traefik-healthcheck:
+      entryPoints:
+        - "traefik"
+      rule: "Path(`/ping`)"
+      service: "api@internal"
+      middlewares:
+        - secure-headers
+
+    dashboard:
+      entryPoints:
+        - "websecure"
+      rule: "Host(`traefik.localhost`)"
+      service: "api@internal"
+      middlewares:
+        - auth-admin
+        - secure-headers
+      tls: {}
+
+    http-catchall:
+      entryPoints:
+        - "web"
+      rule: "hostregexp(`{host:.+}`)"
+      middlewares:
+        - redirect-to-https
+      service: "noop@internal"
+
+  services:
+    noop@internal:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:8080"
+
+tcp:
+  routers:
+    mongodb:
+      entryPoints:
+        - "mongodb"
+      rule: "HostSNI(`*.mongodb.cloudlunacy.uk`)"
+      service: "mongodb"
+      tls:
+        passthrough: true
+  services:
+    mongodb:
+      loadBalancer:
+        servers:
+          - address: "127.0.0.1:27017"

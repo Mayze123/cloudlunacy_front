@@ -233,8 +233,14 @@ exports.deregisterAgent = asyncHandler(async (req, res) => {
       );
     }
 
-    // Remove agent from registry
-    coreServices.agentService.agents.delete(agentId);
+    // Use the new unregisterAgent method which handles Consul and config updates
+    const unregisterResult = await coreServices.agentService.unregisterAgent(
+      agentId
+    );
+
+    if (!unregisterResult) {
+      throw new AppError(`Failed to unregister agent ${agentId}`, 500);
+    }
 
     logger.info(`Agent ${agentId} deregistered successfully`);
 
