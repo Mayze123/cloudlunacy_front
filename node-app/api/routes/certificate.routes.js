@@ -111,38 +111,41 @@ router.get(
         } catch (e) {
           debugInfo.directories.agents = `Error: ${e.message}`;
         }
-        
+
         // Look for certificates in other potential locations
         try {
           const configDir = process.env.CONFIG_DIR || "/app/config";
           debugInfo.configPath = configDir;
-          
+
           const configDirContents = await fs.readdir(configDir);
           debugInfo.directories.config = configDirContents;
-          
+
           // Check if there's an alternative agents directory
-          if (configDirContents.includes('agents')) {
-            const altAgentsPath = path.join(configDir, 'agents');
+          if (configDirContents.includes("agents")) {
+            const altAgentsPath = path.join(configDir, "agents");
             const altAgentsDirContents = await fs.readdir(altAgentsPath);
             debugInfo.directories.altAgents = altAgentsDirContents;
-            
+
             // Look for certificate files in agent directories
             for (const agentDir of altAgentsDirContents) {
               try {
                 const agentPath = path.join(altAgentsPath, agentDir);
                 const stat = await fs.stat(agentPath);
-                
+
                 if (stat.isDirectory()) {
                   const agentFiles = await fs.readdir(agentPath);
-                  const hasCertFiles = agentFiles.some(file => 
-                    file.endsWith('.crt') || file.endsWith('.key') || file.endsWith('.pem')
+                  const hasCertFiles = agentFiles.some(
+                    (file) =>
+                      file.endsWith(".crt") ||
+                      file.endsWith(".key") ||
+                      file.endsWith(".pem")
                   );
-                  
+
                   if (hasCertFiles) {
                     debugInfo.foundCertificates.push({
                       agentId: agentDir,
                       path: agentPath,
-                      files: agentFiles
+                      files: agentFiles,
                     });
                   }
                 }
@@ -151,24 +154,27 @@ router.get(
               }
             }
           }
-          
+
           // Also check if certificates are stored in a flattened structure
-          const configCertsPath = path.join(configDir, 'certs');
-          if (configDirContents.includes('certs')) {
+          const configCertsPath = path.join(configDir, "certs");
+          if (configDirContents.includes("certs")) {
             try {
               const configCertsDirContents = await fs.readdir(configCertsPath);
               debugInfo.directories.configCerts = configCertsDirContents;
-              
+
               // Check for certificate files in a flat structure
-              const certFiles = configCertsDirContents.filter(file => 
-                file.endsWith('.crt') || file.endsWith('.key') || file.endsWith('.pem')
+              const certFiles = configCertsDirContents.filter(
+                (file) =>
+                  file.endsWith(".crt") ||
+                  file.endsWith(".key") ||
+                  file.endsWith(".pem")
               );
-              
+
               // Group by prefix to identify agent certificates
               const agentPrefixMap = {};
               for (const file of certFiles) {
-                if (file === 'ca.crt' || file === 'ca.key') continue;
-                
+                if (file === "ca.crt" || file === "ca.key") continue;
+
                 const match = file.match(/^([^\.]+)\.(?:crt|key|pem)$/);
                 if (match) {
                   const prefix = match[1];
@@ -178,14 +184,15 @@ router.get(
                   agentPrefixMap[prefix].push(file);
                 }
               }
-              
+
               // Add any identified agent certificates
-              Object.keys(agentPrefixMap).forEach(prefix => {
-                if (agentPrefixMap[prefix].length >= 2) { // Likely a cert+key pair
+              Object.keys(agentPrefixMap).forEach((prefix) => {
+                if (agentPrefixMap[prefix].length >= 2) {
+                  // Likely a cert+key pair
                   debugInfo.foundCertificates.push({
                     agentId: prefix,
                     path: configCertsPath,
-                    files: agentPrefixMap[prefix]
+                    files: agentPrefixMap[prefix],
                   });
                 }
               });
@@ -206,7 +213,7 @@ router.get(
         useHaproxy: coreServices.certificateService.useHaproxy || false,
         caPath: coreServices.certificateService.caPath || null,
         caKeyPath: coreServices.certificateService.caKeyPath || null,
-        autoRenew: coreServices.certificateService.autoRenew || false
+        autoRenew: coreServices.certificateService.autoRenew || false,
       };
 
       const result =
@@ -313,8 +320,80 @@ router.post(
  */
 router.get(
   "/agent/:agentId",
-  requireRole("admin"),
-  asyncHandler(certificateController.getAgentCertificates)
+  asyncHandler(async (req, res) => {
+    const { agentId } = req.params;
+    const { targetIp } = req.query;
+
+    const logger = require("../../utils/logger").getLogger(
+      "certificateController"
+    );
+    logger.info(
+      `Certificate request for agent ${agentId}${
+        targetIp ? ` with IP ${targetIp}` : ""
+      }`
+    );
+
+    // Initialize certificate service if needed
+    const coreServices = require("../../services/core");
+    if (!coreServices.certificateService) {
+      throw new Error("Certificate service not available");
+    }
+
+    if (!coreServices.certificateService.initialized) {
+      logger.info("Initializing certificate service");
+      await coreServices.certificateService.initialize();
+    }
+
+    try {
+      // Get the certificates from the service
+      // First try to generate - this will either create new certs or use existing ones
+      await coreServices.certificateService.generateAgentCertificate(
+        agentId,
+        targetIp
+      );
+
+      // After generation, retrieve the actual certificate files
+      const certFiles =
+        await coreServices.certificateService.getAgentCertificates(agentId);
+
+      // Add debugging information to help diagnose issues
+      const debugInfo = {
+        certsDir: coreServices.certificateService.certsDir,
+        agentCertsDir: `${coreServices.certificateService.certsDir}/agents/${agentId}`,
+        certificatesGenerated: true,
+        certificatesRetrieved: !!certFiles,
+      };
+
+      logger.info(
+        `Certificate generation result for ${agentId}: success=${!!certFiles}`
+      );
+
+      // Return the certificate data
+      return res.status(200).json({
+        success: !!certFiles,
+        agentId,
+        certificates: certFiles
+          ? {
+              serverKey: certFiles.serverKey,
+              serverCert: certFiles.serverCert,
+              caCert: certFiles.caCert,
+            }
+          : null,
+        debugInfo,
+      });
+    } catch (error) {
+      logger.error(`Certificate generation error: ${error.message}`);
+
+      // Return error with debugging info
+      return res.status(500).json({
+        success: false,
+        message: `Failed to generate/retrieve agent certificates: ${error.message}`,
+        agentId,
+        error: error.message,
+        stack: error.stack,
+      });
+    }
+  })
 );
 
 /**
