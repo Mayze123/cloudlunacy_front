@@ -46,16 +46,68 @@ router.get(
   asyncHandler(async (req, res) => {
     try {
       const coreServices = require("../../services/core");
+      const pathManager = require("../../utils/pathManager");
+      const fs = require("fs").promises;
+
+      // Add debugging information to response
+      const debugInfo = {
+        certsPath: null,
+        agentsPath: null,
+        directories: {
+          certs: null,
+          agents: null,
+        },
+        pathManagerInitialized: false,
+        certificateServiceInitialized: false,
+      };
+
+      // Check path manager status
+      if (pathManager.initialized) {
+        debugInfo.pathManagerInitialized = true;
+        debugInfo.certsPath = pathManager.getPath("certs");
+        debugInfo.agentsPath = `${debugInfo.certsPath}/agents`;
+      }
 
       if (!coreServices.certificateService) {
         return res.status(500).json({
           success: false,
           message: "Certificate service not available",
+          debugInfo,
         });
       }
 
+      // Initialize if needed
       if (!coreServices.certificateService.initialized) {
         await coreServices.certificateService.initialize();
+      }
+
+      debugInfo.certificateServiceInitialized =
+        coreServices.certificateService.initialized;
+
+      // Check if directories exist and what they contain
+      try {
+        const certsDir = coreServices.certificateService.certsDir;
+        debugInfo.certsPath = certsDir;
+
+        const agentsDir = `${certsDir}/agents`;
+        debugInfo.agentsPath = agentsDir;
+
+        // List directories
+        try {
+          const certsDirContents = await fs.readdir(certsDir);
+          debugInfo.directories.certs = certsDirContents;
+        } catch (e) {
+          debugInfo.directories.certs = `Error: ${e.message}`;
+        }
+
+        try {
+          const agentsDirContents = await fs.readdir(agentsDir);
+          debugInfo.directories.agents = agentsDirContents;
+        } catch (e) {
+          debugInfo.directories.agents = `Error: ${e.message}`;
+        }
+      } catch (dirError) {
+        debugInfo.directoryError = dirError.message;
       }
 
       const result =
@@ -68,6 +120,7 @@ router.get(
         success: true,
         message: "All certificates have been renewed",
         result,
+        debugInfo,
       });
     } catch (error) {
       return res.status(500).json({
