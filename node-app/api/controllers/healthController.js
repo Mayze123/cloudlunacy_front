@@ -10,7 +10,6 @@ const { exec } = require("child_process");
 const { promisify } = require("util");
 const execAsync = promisify(exec);
 const coreServices = require("../../services/core");
-const { enhancedCertificateService } = require("../../services/core");
 const logger = require("../../utils/logger").getLogger("healthController");
 const { asyncHandler } = require("../../utils/errorHandler");
 const path = require("path");
@@ -652,9 +651,10 @@ exports.recoverConsulService = async (req, res) => {
  */
 exports.getCertificateReport = async (req, res) => {
   try {
-    await enhancedCertificateService.initialize();
+    await coreServices.certificateService.initialize();
 
-    const report = await enhancedCertificateService.getCertificateReport();
+    const report =
+      await coreServices.certificateService.getCertificateDashboard();
 
     res.status(200).json({
       success: true,
@@ -676,9 +676,10 @@ exports.getCertificateReport = async (req, res) => {
  */
 exports.getCertificateMetrics = async (req, res) => {
   try {
-    await enhancedCertificateService.initialize();
+    await coreServices.certificateService.initialize();
 
-    const metrics = await enhancedCertificateService.getMetrics();
+    const metrics =
+      await coreServices.certificateMetricsService.getCurrentMetrics();
 
     res.status(200).json({
       success: true,
@@ -700,7 +701,7 @@ exports.getCertificateMetrics = async (req, res) => {
  */
 exports.validateCertificate = async (req, res) => {
   try {
-    await enhancedCertificateService.initialize();
+    await coreServices.certificateService.initialize();
 
     const { certPath } = req.body;
 
@@ -711,8 +712,9 @@ exports.validateCertificate = async (req, res) => {
       });
     }
 
-    const certManager = enhancedCertificateService.certManager;
-    const result = await certManager.validateCertificate(certPath);
+    const result = await coreServices.certificateService.validateCertificate(
+      certPath
+    );
 
     res.status(200).json({
       success: true,
@@ -736,7 +738,7 @@ exports.validateCertificate = async (req, res) => {
  */
 exports.renewCertificate = async (req, res) => {
   try {
-    await enhancedCertificateService.initialize();
+    await coreServices.certificateService.initialize();
 
     const { certPath, agentId, domain, force } = req.body;
 
@@ -750,17 +752,34 @@ exports.renewCertificate = async (req, res) => {
     let result;
 
     if (agentId) {
-      result = await enhancedCertificateService.renewAgentCertificate(agentId);
+      result =
+        await coreServices.certificateService.renewCertificateWithResilience(
+          agentId
+        );
     } else if (domain) {
-      result = await enhancedCertificateService.generateLetsEncryptCertificate(
-        domain
-      );
+      // Using the provider for Let's Encrypt certificates
+      if (
+        coreServices.certificateService.provider &&
+        coreServices.certificateService.provider.supportsLetsEncrypt
+      ) {
+        result =
+          await coreServices.certificateService.provider.generateLetsEncryptCertificate(
+            domain
+          );
+      } else {
+        return res.status(400).json({
+          success: false,
+          error:
+            "Let's Encrypt certificate generation not supported by current provider",
+        });
+      }
     } else {
       // Get certificate info
-      const certManager = enhancedCertificateService.certManager;
-      const certInfo = await certManager.analyzeCertificate(certPath);
+      const certInfo = await coreServices.certificateService.getCertificateInfo(
+        path.basename(path.dirname(certPath))
+      );
 
-      if (!certInfo) {
+      if (!certInfo || !certInfo.exists) {
         return res.status(400).json({
           success: false,
           error: "Invalid certificate or certificate not found",
@@ -768,7 +787,7 @@ exports.renewCertificate = async (req, res) => {
       }
 
       // Check if certificate needs renewal
-      if (!force && !certInfo.isExpiring && !certInfo.isExpired) {
+      if (!force && !certInfo.isExpired && certInfo.daysRemaining > 30) {
         return res.status(200).json({
           success: true,
           renewed: false,
@@ -777,15 +796,40 @@ exports.renewCertificate = async (req, res) => {
         });
       }
 
-      // Renew based on type
-      if (certInfo.agent) {
-        result = await enhancedCertificateService.renewAgentCertificate(
-          certInfo.agent
-        );
+      // Extract agent ID from path if possible
+      const pathParts = certPath.split("/");
+      const agentsIndex = pathParts.indexOf("agents");
+      const extractedAgentId =
+        agentsIndex >= 0 && agentsIndex < pathParts.length - 1
+          ? pathParts[agentsIndex + 1]
+          : null;
+
+      if (extractedAgentId) {
+        result =
+          await coreServices.certificateService.renewCertificateWithResilience(
+            extractedAgentId
+          );
       } else if (certPath.includes("letsencrypt")) {
-        result = await enhancedCertificateService.renewLetsEncryptCertificate(
-          certInfo
-        );
+        // For Let's Encrypt certificates
+        if (
+          coreServices.certificateService.provider &&
+          coreServices.certificateService.provider.supportsLetsEncrypt
+        ) {
+          const domain = certInfo.domain || path.basename(certPath, ".pem");
+          result =
+            await coreServices.certificateService.provider.renewLetsEncryptCertificate(
+              {
+                domain: domain,
+                certPath: certPath,
+              }
+            );
+        } else {
+          return res.status(400).json({
+            success: false,
+            error:
+              "Let's Encrypt certificate renewal not supported by current provider",
+          });
+        }
       } else {
         return res.status(400).json({
           success: false,
@@ -814,7 +858,7 @@ exports.renewCertificate = async (req, res) => {
  */
 exports.generateLetsEncryptCertificate = async (req, res) => {
   try {
-    await enhancedCertificateService.initialize();
+    await coreServices.certificateService.initialize();
 
     const { domain, email } = req.body;
 
@@ -825,10 +869,25 @@ exports.generateLetsEncryptCertificate = async (req, res) => {
       });
     }
 
-    const result =
-      await enhancedCertificateService.generateLetsEncryptCertificate(domain, {
-        email,
+    // Check if the provider supports Let's Encrypt
+    if (
+      !coreServices.certificateService.provider ||
+      !coreServices.certificateService.provider.supportsLetsEncrypt
+    ) {
+      return res.status(400).json({
+        success: false,
+        error:
+          "Let's Encrypt certificate generation not supported by current provider",
       });
+    }
+
+    const result =
+      await coreServices.certificateService.provider.generateLetsEncryptCertificate(
+        domain,
+        {
+          email,
+        }
+      );
 
     res.status(200).json({
       success: true,

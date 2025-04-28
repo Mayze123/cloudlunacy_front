@@ -147,35 +147,4 @@ module.exports = {
       return false;
     }
   },
-
-  /**
-   * Enhanced certificate service with additional functionality
-   */
-  enhancedCertificateService: {
-    certManager: certificateService,
-    renewAgentCertificate: async (agentId) => {
-      return await certificateService.renewAgentCertificate(agentId);
-    },
-    generateLetsEncryptCertificate: async (domain, options = {}) => {
-      return await certificateService.generateLetsEncryptCertificate(
-        domain,
-        options
-      );
-    },
-    renewLetsEncryptCertificate: async (certificate) => {
-      return await certificateService.renewLetsEncryptCertificate(certificate);
-    },
-    getCertificateReport: async () => {
-      return await certificateService.getCertificateReport();
-    },
-    getMetrics: async () => {
-      return await certificateMetricsService.getCurrentMetrics();
-    },
-    initialize: async () => {
-      if (!certificateService.initialized) {
-        return await certificateService.initialize();
-      }
-      return true;
-    },
-  },
 };

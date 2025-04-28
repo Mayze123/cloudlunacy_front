@@ -1,7 +1,12 @@
 /**
  * Certificate Service
  *
- * Handles certificate generation, storage, and distribution using Traefik
+ * Unified service that handles all certificate operations including:
+ * - Certificate generation, storage, and distribution
+ * - Circuit breaking to prevent cascading failures
+ * - Monitoring for certificate health and expiration
+ * - Automatic certificate renewal scheduling
+ * - Advanced error handling and resilience
  */
 
 const fs = require("fs").promises;
@@ -18,6 +23,10 @@ const { AppError } = require("../../utils/errorHandler");
 const FileLock = require("../../utils/fileLock");
 const retryHandler = require("../../utils/retryHandler");
 const CertificateProviderFactory = require("../../utils/certProviders/providerFactory");
+const EventEmitter = require("events");
+const CertificateCircuitBreaker = require("../../utils/certificateCircuitBreaker");
+const CertificateMonitor = require("../../utils/certificateMonitor");
+const RetryHandler = require("../../utils/retryHandler");
 
 // Constants
 const CERTIFICATE_LOCK_PREFIX = "cert";
@@ -26,8 +35,10 @@ const CERTIFICATE_LIST_LOCK = "certificate_list";
 const MAX_RETRY_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 1000;
 
-class CertificateService {
+class CertificateService extends EventEmitter {
   constructor() {
+    super(); // Initialize EventEmitter
+
     this.initialized = false;
     this.certsDir = null;
     this.caCertPath = null;
@@ -63,6 +74,48 @@ class CertificateService {
     // Initialize certificate provider using factory
     const providerType = process.env.CERT_PROVIDER_TYPE || "self-signed";
     this.provider = this._createProvider(providerType);
+
+    // Enhanced features from EnhancedCertificateManager
+
+    // Default renewal settings
+    this.defaultRenewalDays = parseInt(process.env.CERT_RENEWAL_DAYS, 10) || 30;
+    this.renewalScheduleInterval =
+      parseInt(process.env.CERT_CHECK_INTERVAL_MS, 10) || 24 * 60 * 60 * 1000; // 24 hours
+
+    // Create circuit breaker for resilient certificate operations
+    this.circuitBreaker = new CertificateCircuitBreaker({
+      failureThreshold: parseInt(process.env.CERT_FAILURE_THRESHOLD, 10) || 5,
+      resetTimeout:
+        parseInt(process.env.CERT_RESET_TIMEOUT_MS, 10) || 5 * 60 * 1000, // 5 minutes
+      healthCheck: async () => this._checkCertificateSystemHealth(),
+    });
+
+    // Create retry handler for handling transient failures
+    this.retryHandler = new RetryHandler({
+      retryCount: parseInt(process.env.CERT_RETRY_COUNT, 10) || 3,
+      initialDelay: parseInt(process.env.CERT_RETRY_DELAY_MS, 10) || 1000,
+      maxDelay: parseInt(process.env.CERT_MAX_RETRY_DELAY_MS, 10) || 30000,
+      backoffFactor: parseFloat(process.env.CERT_BACKOFF_FACTOR) || 2,
+    });
+
+    // Setup certificate monitoring
+    this.certificateMonitor = new CertificateMonitor({
+      certificatesPath: this.certsPath,
+      getActiveCertificates: () => this.getActiveCertificates(),
+      checkInterval:
+        parseInt(process.env.CERT_MONITOR_INTERVAL_MS, 10) || 60 * 60 * 1000, // 1 hour
+      warningThresholdDays:
+        parseInt(process.env.CERT_WARNING_THRESHOLD_DAYS, 10) || 14,
+      criticalThresholdDays:
+        parseInt(process.env.CERT_CRITICAL_THRESHOLD_DAYS, 10) || 3,
+    });
+
+    // Setup certificate renewal scheduling
+    this.renewalSchedule = [];
+    this.renewalTimer = null;
+
+    // Forward certificate monitor events
+    this._setupEventListeners();
   }
 
   /**
@@ -117,7 +170,7 @@ class CertificateService {
    * Initialize the certificate service
    */
   async initialize() {
-    logger.info("Initializing certificate service");
+    logger.info("Initializing unified certificate service");
 
     try {
       // Initialize path manager if needed
@@ -132,6 +185,9 @@ class CertificateService {
 
       // Set single source of truth for agent certificates
       this.agentCertsBaseDir = path.join(this.certsDir, "agents");
+
+      // Update certificate monitor path
+      this.certificateMonitor.certificatesPath = this.certsDir;
 
       // Ensure certificates directory exists
       await this._ensureCertsDir();
@@ -157,8 +213,15 @@ class CertificateService {
         // Continue even if provider initialization fails, as we can still use basic operations
       }
 
+      // Start monitoring and health checks
+      await this.certificateMonitor.start();
+      this.circuitBreaker.startHealthChecks();
+
+      // Schedule certificate renewals
+      await this._scheduleRenewals();
+
       this.initialized = true;
-      logger.info("Certificate service initialized successfully");
+      logger.info("Unified certificate service initialized successfully");
       return true;
     } catch (err) {
       logger.error(`Failed to initialize certificate service: ${err.message}`, {
@@ -1917,6 +1980,422 @@ DNS.2 = localhost
       logger.error(`Error getting dashboard data: ${error.message}`);
       throw new AppError("Failed to get dashboard data", 500);
     }
+  }
+
+  /**
+   * Set up event listeners for certificate monitoring events
+   * @private
+   */
+  _setupEventListeners() {
+    // Forward certificate monitor events
+    this.certificateMonitor.on("certificate-warning", (data) => {
+      this.emit("certificate-warning", data);
+    });
+
+    this.certificateMonitor.on("certificate-critical", (data) => {
+      this.emit("certificate-critical", data);
+    });
+
+    this.certificateMonitor.on("certificate-expired", (data) => {
+      this.emit("certificate-expired", data);
+    });
+
+    this.certificateMonitor.on("status-change", (data) => {
+      this.emit("status-change", data);
+    });
+  }
+
+  /**
+   * Check certificate system health
+   * @returns {Promise<boolean>} Health status
+   * @private
+   */
+  async _checkCertificateSystemHealth() {
+    try {
+      // Check if certificate directories are accessible
+      await fs.access(this.certsDir);
+
+      // Check if CA certificate is accessible
+      try {
+        await fs.access(this.caCertPath);
+        await fs.access(this.caKeyPath);
+      } catch (caErr) {
+        logger.warn(`CA certificate health check warning: ${caErr.message}`);
+        // Continue with health check even if CA certificates are not accessible
+      }
+
+      // For now, consider the system healthy if basic paths are accessible
+      return true;
+    } catch (err) {
+      logger.error(`Certificate system health check failed: ${err.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Get all active certificates
+   * This method is used by the certificate monitor
+   * @returns {Promise<Array>} List of active certificates
+   */
+  async getActiveCertificates() {
+    try {
+      if (!this.initialized) {
+        await this.initialize();
+      }
+
+      // Find all agent certificate directories
+      const agentsDir = path.join(this.certsDir, "agents");
+      let agentDirs;
+
+      try {
+        agentDirs = await fs.readdir(agentsDir);
+      } catch (err) {
+        logger.error(`Failed to read agents directory: ${err.message}`);
+        return [];
+      }
+
+      const certificates = [];
+
+      // Process each agent certificate
+      for (const agentId of agentDirs) {
+        try {
+          const certInfo = await this.getCertificateInfo(agentId);
+
+          if (certInfo.exists) {
+            certificates.push({
+              domain: `${agentId}.${this.mongoDomain}`,
+              name: agentId,
+              valid: !certInfo.isExpired,
+              expiresAt: certInfo.expiry,
+              path: certInfo.certPath,
+              daysRemaining: certInfo.daysRemaining,
+            });
+          }
+        } catch (err) {
+          logger.warn(
+            `Error processing certificate for ${agentId}: ${err.message}`
+          );
+          // Continue with other certificates
+        }
+      }
+
+      return certificates;
+    } catch (err) {
+      logger.error(`Failed to get active certificates: ${err.message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Create certificate with circuit breaking protection and resilience
+   * Use this method for reliable certificate operations with built-in retry and circuit breaking
+   * @param {string} agentId - Agent ID
+   * @param {string} targetIp - Target IP address
+   * @returns {Promise<Object>} Result with certificate paths
+   */
+  async createCertificateWithResilience(agentId, targetIp) {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+
+    logger.info(`Creating certificate with resilience for agent ${agentId}`);
+
+    try {
+      // Use circuit breaker to prevent cascading failures
+      return await this.circuitBreaker.execute(
+        async () => {
+          // Use retry handler for transient failures
+          return await this.retryHandler.execute(
+            async () => {
+              // Call the actual certificate creation method
+              return await this.createCertificateForAgent(agentId, targetIp);
+            },
+            `Create certificate for ${agentId}`,
+            (err) => {
+              // Only retry if the error is not related to bad input
+              // Transient errors like timeouts are retryable
+              return (
+                !err.message.includes("Invalid") &&
+                !err.message.includes("Bad request") &&
+                !err.message.includes("Not found")
+              );
+            }
+          );
+        },
+        `Create certificate for ${agentId}`,
+        "create" // Operation type for rate limiting
+      );
+    } catch (err) {
+      logger.error(
+        `Failed to create certificate for ${agentId} with resilience: ${err.message}`
+      );
+      throw err;
+    }
+  }
+
+  /**
+   * Renew certificate with circuit breaking protection and resilience
+   * Use this method for reliable certificate renewal with built-in retry and circuit breaking
+   * @param {string} agentId - Agent ID
+   * @param {string} targetIp - Target IP address
+   * @returns {Promise<Object>} Result with certificate paths
+   */
+  async renewCertificateWithResilience(agentId, targetIp) {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+
+    logger.info(`Renewing certificate with resilience for agent ${agentId}`);
+
+    try {
+      // Use circuit breaker to prevent cascading failures
+      return await this.circuitBreaker.execute(
+        async () => {
+          // Use retry handler for the actual renewal
+          return await this.retryHandler.execute(
+            async () => {
+              // Call the actual certificate renewal method
+              return await this.renewCertificate(agentId, targetIp);
+            },
+            `Renew certificate for ${agentId}`,
+            (err) => {
+              // Only retry on transient errors
+              return (
+                !err.message.includes("Invalid") &&
+                !err.message.includes("Bad request") &&
+                !err.message.includes("Not found")
+              );
+            }
+          );
+        },
+        `Renew certificate for ${agentId}`,
+        "renew" // Operation type for rate limiting
+      );
+    } catch (err) {
+      logger.error(
+        `Failed to renew certificate for ${agentId} with resilience: ${err.message}`
+      );
+      throw err;
+    }
+  }
+
+  /**
+   * Schedule certificate renewals
+   * @private
+   */
+  async _scheduleRenewals() {
+    // Clear any existing schedule
+    this.renewalSchedule = [];
+
+    // Get all active certificates
+    const certificates = await this.getActiveCertificates();
+
+    // Calculate renewal dates
+    for (const cert of certificates) {
+      if (cert.valid && cert.expiresAt) {
+        const expiresAt = new Date(cert.expiresAt);
+        const renewalDate = new Date(expiresAt);
+
+        // Set renewal to occur defaultRenewalDays before expiry
+        renewalDate.setDate(renewalDate.getDate() - this.defaultRenewalDays);
+
+        this.renewalSchedule.push({
+          domain: cert.domain,
+          name: cert.name,
+          expiresAt: cert.expiresAt,
+          renewalDate: renewalDate.toISOString(),
+        });
+      }
+    }
+
+    // Sort by renewal date (earliest first)
+    this.renewalSchedule.sort((a, b) => {
+      return new Date(a.renewalDate) - new Date(b.renewalDate);
+    });
+
+    // Schedule next check
+    this._scheduleNextRenewalCheck();
+
+    logger.info(
+      `Scheduled renewals for ${this.renewalSchedule.length} certificates`
+    );
+  }
+
+  /**
+   * Schedule the next renewal check
+   * @private
+   */
+  _scheduleNextRenewalCheck() {
+    // Clear any existing timer
+    if (this.renewalTimer) {
+      clearTimeout(this.renewalTimer);
+    }
+
+    // Schedule the next renewal check
+    this.renewalTimer = setTimeout(async () => {
+      await this._checkRenewals();
+
+      // Schedule next check
+      this._scheduleNextRenewalCheck();
+    }, this.renewalScheduleInterval);
+
+    // Prevent timer from blocking Node exit
+    if (this.renewalTimer.unref) {
+      this.renewalTimer.unref();
+    }
+
+    logger.debug(
+      `Next renewal check scheduled in ${
+        this.renewalScheduleInterval / 1000
+      } seconds`
+    );
+  }
+
+  /**
+   * Check for certificates that need renewal
+   * @private
+   */
+  async _checkRenewals() {
+    try {
+      logger.info("Checking for certificate renewals");
+
+      const now = new Date();
+      let renewedCount = 0;
+
+      for (const item of this.renewalSchedule) {
+        const renewalDate = new Date(item.renewalDate);
+
+        // If renewal date is in the past or today, attempt renewal
+        if (renewalDate <= now) {
+          try {
+            logger.info(`Certificate for ${item.name} needs renewal`);
+
+            // Extract agent ID from domain name
+            const agentId = item.name;
+
+            // Get certificate info to extract target IP if available
+            const certInfo = await this.getCertificateInfo(agentId);
+            let targetIp = null;
+
+            if (certInfo.summary) {
+              // Try to extract IP address from certificate
+              const ipMatch = certInfo.summary.match(
+                /IP Address:(\d+\.\d+\.\d+\.\d+)/
+              );
+              if (ipMatch && ipMatch[1]) {
+                targetIp = ipMatch[1];
+              }
+            }
+
+            // Attempt to renew
+            await this.renewCertificateWithResilience(agentId, targetIp);
+            renewedCount++;
+
+            // Emit renewal event
+            this.emit("certificate-renewed", {
+              domain: item.domain,
+              name: item.name,
+              previousExpiry: item.expiresAt,
+            });
+          } catch (err) {
+            logger.error(
+              `Scheduled renewal failed for ${item.name}: ${err.message}`
+            );
+
+            // Emit renewal failure event
+            this.emit("certificate-renewal-failed", {
+              domain: item.domain,
+              name: item.name,
+              error: err.message,
+            });
+          }
+        }
+      }
+
+      if (renewedCount > 0) {
+        logger.info(`Renewed ${renewedCount} certificates`);
+      } else {
+        logger.debug("No certificates needed renewal");
+      }
+
+      // Update the renewal schedule
+      await this._scheduleRenewals();
+    } catch (err) {
+      logger.error(`Error checking renewals: ${err.message}`);
+    }
+  }
+
+  /**
+   * Start certificate monitoring and periodic checks
+   * Call this method to enable automatic certificate monitoring and renewal
+   */
+  startMonitoring() {
+    if (!this.initialized) {
+      logger.warn(
+        "Certificate service not initialized, monitoring not started"
+      );
+      return;
+    }
+
+    // Start certificate monitor
+    this.certificateMonitor.start();
+
+    // Start circuit breaker health checks
+    this.circuitBreaker.startHealthChecks();
+
+    // Schedule initial renewal check
+    this._scheduleRenewals();
+
+    logger.info("Certificate monitoring started");
+  }
+
+  /**
+   * Stop certificate monitoring and periodic checks
+   */
+  stopMonitoring() {
+    // Stop certificate monitor
+    if (this.certificateMonitor) {
+      this.certificateMonitor.stop();
+    }
+
+    // Stop circuit breaker health checks
+    if (this.circuitBreaker) {
+      this.circuitBreaker.stopHealthChecks();
+    }
+
+    // Clear renewal timer
+    if (this.renewalTimer) {
+      clearTimeout(this.renewalTimer);
+      this.renewalTimer = null;
+    }
+
+    logger.info("Certificate monitoring stopped");
+  }
+
+  /**
+   * Get certificate system status
+   * @returns {Promise<Object>} Status information including circuit breaker state,
+   * monitoring status, and renewal schedule
+   */
+  async getStatus() {
+    return {
+      initialized: this.initialized,
+      circuitBreaker: this.circuitBreaker.getStatus(),
+      certificates: (await this.certificateMonitor?.getStatus()) || {},
+      renewalSchedule: [...this.renewalSchedule],
+      provider: this.provider?.getProviderInfo() || { type: "unknown" },
+    };
+  }
+
+  /**
+   * Force a refresh of certificate status
+   * @returns {Promise<Object>} Updated status
+   */
+  async refreshStatus() {
+    if (this.certificateMonitor) {
+      await this.certificateMonitor.checkCertificates();
+    }
+    return this.getStatus();
   }
 }
 
