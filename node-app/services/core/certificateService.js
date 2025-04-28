@@ -26,7 +26,6 @@ const CertificateProviderFactory = require("../../utils/certProviders/providerFa
 const EventEmitter = require("events");
 const CertificateCircuitBreaker = require("../../utils/certificateCircuitBreaker");
 const CertificateMonitor = require("../../utils/certificateMonitor");
-const RetryHandler = require("../../utils/retryHandler");
 
 // Constants
 const CERTIFICATE_LOCK_PREFIX = "cert";
@@ -90,13 +89,13 @@ class CertificateService extends EventEmitter {
       healthCheck: async () => this._checkCertificateSystemHealth(),
     });
 
-    // Create retry handler for handling transient failures
-    this.retryHandler = new RetryHandler({
-      retryCount: parseInt(process.env.CERT_RETRY_COUNT, 10) || 3,
+    // Store retry configuration for handling transient failures
+    this.retryConfig = {
+      maxRetries: parseInt(process.env.CERT_RETRY_COUNT, 10) || 3,
       initialDelay: parseInt(process.env.CERT_RETRY_DELAY_MS, 10) || 1000,
       maxDelay: parseInt(process.env.CERT_MAX_RETRY_DELAY_MS, 10) || 30000,
       backoffFactor: parseFloat(process.env.CERT_BACKOFF_FACTOR) || 2,
-    });
+    };
 
     // Setup certificate monitoring
     this.certificateMonitor = new CertificateMonitor({
@@ -899,8 +898,8 @@ DNS.2 = localhost
 
         // Use the retry handler to retry the reload operation
         return await retryHandler.withRetry(reloadWithRetries, {
-          maxAttempts: MAX_RETRY_ATTEMPTS,
-          retryDelay: RETRY_DELAY_MS,
+          maxRetries: MAX_RETRY_ATTEMPTS,
+          initialDelay: RETRY_DELAY_MS,
           onRetry: (error, attempt) => {
             logger.warn(
               `Retry ${attempt}/${MAX_RETRY_ATTEMPTS} reloading Traefik: ${error.message}`
@@ -2105,20 +2104,29 @@ DNS.2 = localhost
       return await this.circuitBreaker.execute(
         async () => {
           // Use retry handler for transient failures
-          return await this.retryHandler.execute(
+          return await retryHandler.withRetry(
             async () => {
               // Call the actual certificate creation method
               return await this.createCertificateForAgent(agentId, targetIp);
             },
-            `Create certificate for ${agentId}`,
-            (err) => {
-              // Only retry if the error is not related to bad input
-              // Transient errors like timeouts are retryable
-              return (
-                !err.message.includes("Invalid") &&
-                !err.message.includes("Bad request") &&
-                !err.message.includes("Not found")
-              );
+            {
+              maxRetries: this.retryConfig.maxRetries,
+              initialDelay: this.retryConfig.initialDelay,
+              maxDelay: this.retryConfig.maxDelay,
+              shouldRetry: (err) => {
+                // Only retry if the error is not related to bad input
+                // Transient errors like timeouts are retryable
+                return (
+                  !err.message.includes("Invalid") &&
+                  !err.message.includes("Bad request") &&
+                  !err.message.includes("Not found")
+                );
+              },
+              onRetry: (err, attempt) => {
+                logger.warn(
+                  `Retry ${attempt}/${this.retryConfig.maxRetries} creating certificate for ${agentId}: ${err.message}`
+                );
+              },
             }
           );
         },
@@ -2151,20 +2159,29 @@ DNS.2 = localhost
       // Use circuit breaker to prevent cascading failures
       return await this.circuitBreaker.execute(
         async () => {
-          // Use retry handler for the actual renewal
-          return await this.retryHandler.execute(
+          // Use retry handler for transient failures
+          return await retryHandler.withRetry(
             async () => {
               // Call the actual certificate renewal method
               return await this.renewCertificate(agentId, targetIp);
             },
-            `Renew certificate for ${agentId}`,
-            (err) => {
-              // Only retry on transient errors
-              return (
-                !err.message.includes("Invalid") &&
-                !err.message.includes("Bad request") &&
-                !err.message.includes("Not found")
-              );
+            {
+              maxRetries: this.retryConfig.maxRetries,
+              initialDelay: this.retryConfig.initialDelay,
+              maxDelay: this.retryConfig.maxDelay,
+              shouldRetry: (err) => {
+                // Only retry on transient errors
+                return (
+                  !err.message.includes("Invalid") &&
+                  !err.message.includes("Bad request") &&
+                  !err.message.includes("Not found")
+                );
+              },
+              onRetry: (err, attempt) => {
+                logger.warn(
+                  `Retry ${attempt}/${this.retryConfig.maxRetries} renewing certificate for ${agentId}: ${err.message}`
+                );
+              },
             }
           );
         },
