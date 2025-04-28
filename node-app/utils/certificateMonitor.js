@@ -26,18 +26,38 @@ class CertificateMonitor extends EventEmitter {
   /**
    * Create a new certificate monitor
    * @param {Object} options - Monitor options
-   * @param {string} options.certDir - Directory containing certificates
+   * @param {string} options.certificatesPath - Directory containing certificates
    * @param {number} options.warningThresholdDays - Days before expiry to trigger warning
-   * @param {number} options.checkIntervalMinutes - Minutes between certificate checks
+   * @param {number} options.checkInterval - Minutes between certificate checks
+   * @param {Function} options.getActiveCertificates - Function to get active certificates
    * @param {Function} options.notifyExpiringSoon - Function called when certificate is expiring soon
    * @param {Function} options.notifyExpired - Function called when certificate has expired
    */
   constructor(options = {}) {
     super();
 
-    this.certDir = options.certDir || process.env.CERT_DIR || "./certs";
+    // Support both naming conventions for backward compatibility
+    this.certificatesPath =
+      options.certificatesPath ||
+      options.certDir ||
+      process.env.CERT_DIR ||
+      "./certs";
     this.warningThresholdDays = options.warningThresholdDays || 30;
-    this.checkIntervalMinutes = options.checkIntervalMinutes || 60;
+    this.criticalThresholdDays = options.criticalThresholdDays || 7;
+
+    // Convert to minutes if passed in milliseconds
+    if (options.checkInterval && options.checkInterval > 1000) {
+      this.checkIntervalMinutes = Math.floor(
+        options.checkInterval / (60 * 1000)
+      );
+    } else {
+      this.checkIntervalMinutes =
+        options.checkInterval || options.checkIntervalMinutes || 60;
+    }
+
+    // Optional function to get certificates from an external source
+    this.getActiveCertificates = options.getActiveCertificates;
+
     this.notifyExpiringSoon =
       options.notifyExpiringSoon || this._defaultNotifyExpiringSoon;
     this.notifyExpired = options.notifyExpired || this._defaultNotifyExpired;
@@ -67,6 +87,11 @@ class CertificateMonitor extends EventEmitter {
     };
 
     this.checkIntervalId = null;
+
+    // Log initialized state
+    logger.debug(
+      `Certificate monitor initialized with path: ${this.certificatesPath}`
+    );
   }
 
   /**
@@ -124,8 +149,47 @@ class CertificateMonitor extends EventEmitter {
       const now = new Date();
       this.metrics.lastCheckTimestamp = now;
 
-      // Start with agents directory
-      const agentsDir = path.join(this.certDir, "agents");
+      // If there's a getActiveCertificates function provided, use it first
+      if (typeof this.getActiveCertificates === "function") {
+        try {
+          logger.debug("Using provided function to get active certificates");
+          const activeCerts = await this.getActiveCertificates();
+
+          if (Array.isArray(activeCerts) && activeCerts.length > 0) {
+            // Process certificates from external source
+            this._processActiveCertificates(activeCerts);
+
+            // Emit certificate check event
+            this.emit("certificates-checked", {
+              timestamp: now,
+              totalValid: this.metrics.totalValidCerts,
+              totalExpired: this.metrics.totalExpiredCerts,
+              totalExpiring: this.metrics.totalExpiringCerts,
+              expiringCerts: this.metrics.expiringCerts.map((c) => ({
+                domain: c.domain,
+                expiresIn: c.daysUntilExpiry,
+              })),
+            });
+
+            return {
+              totalValid: this.metrics.totalValidCerts,
+              totalExpired: this.metrics.totalExpiredCerts,
+              totalExpiring: this.metrics.totalExpiringCerts,
+            };
+          } else {
+            logger.debug(
+              "No certificates returned from getActiveCertificates, falling back to file scanning"
+            );
+          }
+        } catch (err) {
+          logger.warn(
+            `Error getting active certificates from function: ${err.message}, falling back to file scanning`
+          );
+        }
+      }
+
+      // Fallback to scanning the agents directory
+      const agentsDir = path.join(this.certificatesPath, "agents");
 
       try {
         const agents = await fs.readdir(agentsDir);
@@ -181,6 +245,151 @@ class CertificateMonitor extends EventEmitter {
       this.emit("check-error", { error: err.message });
       throw err;
     }
+  }
+
+  /**
+   * Process active certificates from an external source
+   * @param {Array} certificates - Array of certificate objects
+   * @private
+   */
+  _processActiveCertificates(certificates) {
+    if (!Array.isArray(certificates)) {
+      logger.warn(
+        "Expected certificates to be an array but got: " + typeof certificates
+      );
+      if (certificates && typeof certificates === "object") {
+        logger.warn(
+          `Expected certificates to be an array but got: object with keys: [${Object.keys(
+            certificates
+          )}]`
+        );
+      }
+      return;
+    }
+
+    // Process each certificate
+    for (const cert of certificates) {
+      try {
+        if (!cert.domain && cert.name) {
+          cert.domain = cert.name; // Use name as domain if domain not present
+        }
+
+        if (!cert.domain) {
+          logger.warn("Certificate missing domain/name property, skipping");
+          continue;
+        }
+
+        // Extract agent ID from domain or use provided name/id
+        const agentId = cert.agentId || cert.name || cert.domain.split(".")[0];
+
+        // Initialize agent metrics if needed
+        if (!this.metrics.certsByAgent[agentId]) {
+          this.metrics.certsByAgent[agentId] = {
+            validCerts: 0,
+            expiredCerts: 0,
+            expiringCerts: 0,
+            domains: [],
+          };
+        }
+
+        // Add domain to agent if not already present
+        if (!this.metrics.certsByAgent[agentId].domains.includes(cert.domain)) {
+          this.metrics.certsByAgent[agentId].domains.push(cert.domain);
+        }
+
+        // Calculate days until expiry if not provided
+        let daysUntilExpiry = cert.daysRemaining;
+        let expiryDate = cert.expiresAt ? new Date(cert.expiresAt) : null;
+
+        if (!daysUntilExpiry && expiryDate) {
+          const now = new Date();
+          daysUntilExpiry = Math.floor(
+            (expiryDate - now) / (1000 * 60 * 60 * 24)
+          );
+        }
+
+        // Determine certificate state
+        let state = HEALTH_STATE.UNKNOWN;
+
+        if (
+          cert.valid === false ||
+          (daysUntilExpiry !== undefined && daysUntilExpiry <= 0)
+        ) {
+          state = HEALTH_STATE.EXPIRED;
+          this.metrics.certsByAgent[agentId].expiredCerts++;
+          this.metrics.totalExpiredCerts++;
+          this.metrics.expiredCerts.push({
+            domain: cert.domain,
+            agentId,
+            expiryDate,
+          });
+        } else if (
+          daysUntilExpiry !== undefined &&
+          daysUntilExpiry <= this.warningThresholdDays
+        ) {
+          state = HEALTH_STATE.WARNING;
+          this.metrics.certsByAgent[agentId].expiringCerts++;
+          this.metrics.totalExpiringCerts++;
+          this.metrics.expiringCerts.push({
+            domain: cert.domain,
+            agentId,
+            expiryDate,
+            daysUntilExpiry,
+          });
+        } else if (cert.valid !== false) {
+          state = HEALTH_STATE.GOOD;
+          this.metrics.certsByAgent[agentId].validCerts++;
+          this.metrics.totalValidCerts++;
+        }
+
+        // Store in domain metrics
+        this.metrics.certsByDomain[cert.domain] = {
+          domain: cert.domain,
+          agentId,
+          state,
+          expiryDate,
+          daysUntilExpiry,
+          issueDate: cert.issueDate ? new Date(cert.issueDate) : null,
+          path: cert.path,
+        };
+
+        // Emit events for expiring/expired certificates
+        if (state === HEALTH_STATE.WARNING) {
+          this.emit("certificate-warning", {
+            domain: cert.domain,
+            daysUntilExpiry,
+            expiryDate,
+          });
+
+          // Also call the notification function
+          this.notifyExpiringSoon({
+            domain: cert.domain,
+            daysUntilExpiry,
+            expiryDate,
+          });
+        } else if (state === HEALTH_STATE.EXPIRED) {
+          this.emit("certificate-expired", {
+            domain: cert.domain,
+            expiryDate,
+          });
+
+          // Also call the notification function
+          this.notifyExpired({
+            domain: cert.domain,
+            expiryDate,
+          });
+        }
+      } catch (err) {
+        logger.warn(`Error processing certificate: ${err.message}`);
+      }
+    }
+
+    logger.info("Certificate metrics snapshot completed", {
+      totalCertificates: certificates.length,
+      validCertificates: this.metrics.totalValidCerts,
+      expiringSoon: this.metrics.totalExpiringCerts,
+      expired: this.metrics.totalExpiredCerts,
+    });
   }
 
   /**

@@ -68,44 +68,50 @@ class PathManager {
       logger.info("Initializing path manager");
 
       // Test if frontendRoot is writable, otherwise switch to app path
-      if (!(await this.isWritable(this.basePaths.frontendRoot))) {
+      const frontendRootWritable = await this.isWritable(
+        this.basePaths.frontendRoot
+      );
+      if (!frontendRootWritable) {
         logger.warn(
           `Frontend root path ${this.basePaths.frontendRoot} is not writable, using app path instead`
         );
         this.basePaths.frontendRoot = this.basePaths.app;
         this.permissionIssues = true;
+
+        // Update derived paths that depend on frontendRoot
+        this.updateDerivedPaths();
       }
 
       // Ensure critical directories exist with fallbacks if needed
       await this.ensureDirectoriesWithFallbacks([
         {
           primary: this.basePaths.config,
-          fallback: path.join(this.basePaths.frontendRoot, "config"),
+          fallback: path.join(this.basePaths.app, "config"),
         },
         {
           primary: this.basePaths.logs,
-          fallback: path.join(this.basePaths.frontendRoot, "logs"),
+          fallback: path.join(this.basePaths.app, "logs"),
         },
         {
           primary: this.basePaths.certs,
-          fallback: path.join(this.basePaths.frontendRoot, "config/certs"),
+          fallback: path.join(this.basePaths.app, "config/certs"),
         },
         {
           primary: this.derivedPaths.certsAgents,
-          fallback: path.join(
-            this.basePaths.frontendRoot,
-            "config/certs/agents"
-          ),
+          fallback: path.join(this.basePaths.app, "config/certs/agents"),
         },
         {
           primary: this.derivedPaths.agentsConfig,
-          fallback: path.join(this.basePaths.frontendRoot, "config/agents"),
+          fallback: path.join(this.basePaths.app, "config/agents"),
         },
         {
           primary: this.derivedPaths.configBackups,
-          fallback: path.join(this.basePaths.frontendRoot, "backups"),
+          fallback: path.join(this.basePaths.app, "backups"),
         },
       ]);
+
+      // Update derived paths to ensure consistency
+      this.updateDerivedPaths();
 
       this.initialized = true;
       logger.info("Path manager initialized successfully");
@@ -409,6 +415,46 @@ class PathManager {
    */
   resolveDockerComposePath() {
     return this.derivedPaths.dockerCompose;
+  }
+
+  /**
+   * Update derived paths based on current base paths
+   * Ensures all derived paths are consistent after base path changes
+   */
+  updateDerivedPaths() {
+    // Update config-related paths
+    this.derivedPaths.haproxyConfig = path.join(
+      this.basePaths.config,
+      "haproxy/haproxy.cfg"
+    );
+    this.derivedPaths.agentsConfig = path.join(this.basePaths.config, "agents");
+    this.derivedPaths.configBackups = path.join(
+      this.basePaths.config,
+      "backups"
+    );
+    this.derivedPaths.dynamicConfig = path.join(
+      this.basePaths.config,
+      "dynamic-config.yaml"
+    );
+
+    // Update certificate paths
+    this.derivedPaths.certsAgents = path.join(this.basePaths.certs, "agents");
+    this.derivedPaths.caCert = path.join(this.basePaths.certs, "ca.crt");
+    this.derivedPaths.caKey = path.join(this.basePaths.certs, "ca.key");
+
+    // Update external paths if needed
+    if (this.permissionIssues) {
+      this.externalPaths.haproxyConfig = path.join(
+        this.basePaths.app,
+        "config/haproxy"
+      );
+      this.externalPaths.haproxyCerts = path.join(
+        this.basePaths.app,
+        "config/certs"
+      );
+    }
+
+    logger.debug("Updated derived paths to ensure consistency");
   }
 }
 
