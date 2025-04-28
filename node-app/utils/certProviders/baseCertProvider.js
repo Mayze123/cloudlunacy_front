@@ -114,6 +114,29 @@ class BaseCertProvider {
       return false;
     }
   }
+
+  /**
+   * Update the provider configuration
+   * @param {Object} newConfig - New configuration options to apply
+   * @returns {void}
+   */
+  updateConfig(newConfig = {}) {
+    if (!newConfig) return;
+
+    logger.info("Updating certificate provider configuration");
+
+    // Update only valid configuration properties
+    if (newConfig.certsDir) this.certsDir = newConfig.certsDir;
+    if (newConfig.keySize) this.keySize = newConfig.keySize;
+    if (newConfig.validityDays) this.validityDays = newConfig.validityDays;
+    if (newConfig.caCertPath) this.caCertPath = newConfig.caCertPath;
+    if (newConfig.caKeyPath) this.caKeyPath = newConfig.caKeyPath;
+
+    // Update the main config object as well
+    this.config = { ...this.config, ...newConfig };
+
+    logger.debug(`Provider config updated. New certsDir: ${this.certsDir}`);
+  }
 }
 
 module.exports = BaseCertProvider;
