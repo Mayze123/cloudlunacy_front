@@ -169,6 +169,12 @@ class CertificateService extends EventEmitter {
    * Initialize the certificate service
    */
   async initialize() {
+    // Prevent multiple initializations
+    if (this.initialized) {
+      logger.debug("Certificate service already initialized, skipping");
+      return true;
+    }
+
     logger.info("Initializing unified certificate service");
 
     try {
@@ -212,6 +218,9 @@ class CertificateService extends EventEmitter {
         // Continue even if provider initialization fails, as we can still use basic operations
       }
 
+      // Mark as initialized BEFORE starting monitor to prevent recursion
+      this.initialized = true;
+
       // Start monitoring and health checks
       await this.certificateMonitor.start();
       this.circuitBreaker.startHealthChecks();
@@ -219,7 +228,6 @@ class CertificateService extends EventEmitter {
       // Schedule certificate renewals
       await this._scheduleRenewals();
 
-      this.initialized = true;
       logger.info("Unified certificate service initialized successfully");
       return true;
     } catch (err) {
