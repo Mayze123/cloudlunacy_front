@@ -34,8 +34,8 @@ exports.addApp = asyncHandler(async (req, res) => {
 
   logger.info(`Adding app ${subdomain} with target ${targetUrl}`);
 
-  // Add the app route
-  const result = await coreServices.routingService.addHttpRoute(
+  // Register the app using the new AppRegistrationService
+  const result = await coreServices.appRegistrationService.registerApp(
     agentId || "default",
     subdomain,
     targetUrl,
@@ -53,20 +53,13 @@ exports.addApp = asyncHandler(async (req, res) => {
 exports.listApps = asyncHandler(async (req, res) => {
   logger.info("Listing all apps");
 
-  // Get all HTTP routes from cache
-  const routes = Array.from(coreServices.routingService.routeCache.entries())
-    .filter(([key]) => key.startsWith("http:"))
-    .map(([, route]) => ({
-      name: route.name,
-      domain: route.domain || extractDomainFromRule(route.rule),
-      targetUrl: route.targetUrl || extractServiceFromConfig(route.service),
-      lastUpdated: route.lastUpdated,
-    }));
+  // Get all apps using the new AppRegistrationService
+  const apps = await coreServices.appRegistrationService.getAllApps();
 
   res.status(200).json({
     success: true,
-    count: routes.length,
-    apps: routes,
+    count: apps.length,
+    apps: apps,
   });
 });
 
@@ -80,7 +73,8 @@ exports.removeApp = asyncHandler(async (req, res) => {
 
   logger.info(`Removing app ${subdomain} for agent ${agentId}`);
 
-  const result = await coreServices.routingService.removeHttpRoute(
+  // Unregister the app using the new AppRegistrationService
+  const result = await coreServices.appRegistrationService.unregisterApp(
     agentId,
     subdomain
   );
@@ -92,7 +86,7 @@ exports.removeApp = asyncHandler(async (req, res) => {
   res.status(200).json(result);
 });
 
-// Helper function to extract domain from rule
+// Helper function to extract domain from rule (kept for backward compatibility)
 function extractDomainFromRule(rule) {
   if (!rule) return null;
 

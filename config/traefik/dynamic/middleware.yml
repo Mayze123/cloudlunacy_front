@@ -39,3 +39,11 @@ http:
         stsIncludeSubdomains: true
         stsPreload: true
         stsSeconds: 31536000
+
+    # App routing specific middleware
+    app-routing:
+      chain:
+        middlewares:
+          - secure-headers
+          - cors-headers
+          - compress

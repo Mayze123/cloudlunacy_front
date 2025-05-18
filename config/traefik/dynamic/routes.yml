@@ -29,11 +29,39 @@ http:
         - redirect-to-https
       service: "noop@internal"
 
+    # Dynamic app router - handles all app subdomains
+    apps:
+      entryPoints:
+        - "websecure"
+      rule: "HostRegexp(`{subdomain:[a-z0-9-]+}.apps.cloudlunacy.uk`)"
+      service: "node-app-service"
+      middlewares:
+        - app-routing
+      tls:
+        certResolver: "letsencrypt"
+
+    # API router
+    api:
+      entryPoints:
+        - "websecure"
+      rule: "Host(`api.cloudlunacy.uk`)"
+      service: "node-app-service"
+      middlewares:
+        - secure-headers
+        - cors-headers
+      tls:
+        certResolver: "letsencrypt"
+
   services:
     noop@internal:
       loadBalancer:
         servers:
           - url: "http://127.0.0.1:8080"
+
+    node-app-service:
+      loadBalancer:
+        servers:
+          - url: "http://node-app:3005"
 
 tcp:
   routers:

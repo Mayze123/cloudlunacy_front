@@ -118,10 +118,41 @@ class ProxyService {
       secure: options.secure !== false,
     };
 
-    // Add HTTP route using Consul service
-    const consulRegistered = await this.consulService.registerAgent(
-      agentConfig
-    );
+    // Prepare HTTP router and service for Consul KV
+    const routerName = `${agentId}-${subdomain}`;
+    const serviceName = `${routerName}-service`;
+
+    // Create HTTP router configuration
+    const router = {
+      entryPoints: ["websecure"],
+      rule: `Host(\`${subdomain}.${this.appDomain}\`)`,
+      service: serviceName,
+      middlewares: ["app-routing"],
+      tls: {
+        certResolver: "letsencrypt",
+      },
+    };
+
+    // Create HTTP service configuration
+    const service = {
+      loadBalancer: {
+        servers: [{ url: targetUrl }],
+      },
+    };
+
+    // Register HTTP route using Consul service
+    let consulRegistered = false;
+    try {
+      // Set router and service in Consul
+      await this.consulService.set(`http/routers/${routerName}`, router);
+      await this.consulService.set(`http/services/${serviceName}`, service);
+      consulRegistered = true;
+    } catch (err) {
+      logger.error(
+        `Failed to register HTTP route for ${subdomain} in Consul: ${err.message}`
+      );
+      throw new AppError("Failed to register route in Consul KV store", 500);
+    }
 
     if (!consulRegistered) {
       logger.error(`Failed to register HTTP route for ${subdomain} in Consul`);
@@ -174,10 +205,23 @@ class ProxyService {
       throw new AppError("Consul service not available for route removal", 500);
     }
 
+    // Prepare router and service names
+    const routerName = `${agentId}-${subdomain}`;
+    const serviceName = `${routerName}-service`;
+
     // Remove route using Consul service
-    const consulResult = await this.consulService.unregisterAgent(
-      `${agentId}-${subdomain}`
-    );
+    let consulResult = false;
+    try {
+      // Delete router and service from Consul
+      await this.consulService.delete(`http/routers/${routerName}`);
+      await this.consulService.delete(`http/services/${serviceName}`);
+      consulResult = true;
+    } catch (err) {
+      logger.error(
+        `Failed to remove HTTP route for ${subdomain} from Consul: ${err.message}`
+      );
+      throw new AppError("Failed to remove route from Consul KV store", 500);
+    }
 
     if (!consulResult) {
       logger.error(`Failed to remove HTTP route for ${subdomain} from Consul`);
@@ -218,7 +262,11 @@ class ProxyService {
       if (httpRouters) {
         // Filter routers that belong to this agent
         for (const [name, router] of Object.entries(httpRouters)) {
-          if (name.startsWith(`${agentId}-`)) {
+          if (
+            name.startsWith(`${agentId}-`) &&
+            !name.includes("dashboard") &&
+            !name.includes("traefik-healthcheck")
+          ) {
             // Get the service details
             const serviceName = router.service;
             const service = await this.consulService.get(
@@ -226,7 +274,17 @@ class ProxyService {
             );
 
             if (service) {
-              const subdomain = name.replace(`${agentId}-`, "");
+              // Extract subdomain from name, removing potential service suffix
+              const nameParts = name.replace(`${agentId}-`, "").split("-");
+              let subdomain;
+
+              // Handle both formats: "agentId-subdomain" and "agentId-subdomain-service"
+              if (nameParts[nameParts.length - 1] === "service") {
+                subdomain = nameParts.slice(0, -1).join("-");
+              } else {
+                subdomain = nameParts.join("-");
+              }
+
               routes.http.push({
                 agentId,
                 subdomain,
@@ -317,7 +375,14 @@ class ProxyService {
             const parts = name.split("-");
             if (parts.length >= 2) {
               const agentId = parts[0];
-              const subdomain = parts.slice(1).join("-");
+              let subdomain;
+
+              // Handle both formats: "agentId-subdomain" and "agentId-subdomain-service"
+              if (parts[parts.length - 1] === "service") {
+                subdomain = parts.slice(1, -1).join("-");
+              } else {
+                subdomain = parts.slice(1).join("-");
+              }
 
               routes.http.push({
                 agentId,
@@ -325,6 +390,7 @@ class ProxyService {
                 domain: `${subdomain}.${this.appDomain}`,
                 rule: router.rule,
                 targetUrl: service.loadBalancer?.servers?.[0]?.url || "unknown",
+                lastUpdated: new Date().toISOString(),
               });
             }
           }

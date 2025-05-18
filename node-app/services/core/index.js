@@ -14,6 +14,7 @@ const CertificateRenewalService = require("./certificateRenewalService");
 const CertificateMetricsService = require("./certificateMetricsService");
 const MongoDBService = require("./databases/mongodbService");
 const ConsulService = require("./consulService");
+const AppRegistrationService = require("./appRegistrationService");
 
 // Create instances of core services
 const certificateService = new CertificateService();
@@ -34,6 +35,9 @@ const agentService = new AgentService(configService);
 // Initialize Consul service
 const consulService = new ConsulService();
 
+// Initialize App Registration service
+const appRegistrationService = new AppRegistrationService();
+
 // Export all service instances
 module.exports = {
   // Primary services
@@ -45,6 +49,7 @@ module.exports = {
   certificateRenewalService,
   certificateMetricsService,
   consulService,
+  appRegistrationService,
 
   /**
    * Get the Consul service instance
@@ -135,6 +140,24 @@ module.exports = {
         logger.warn(
           `Failed to take initial metrics snapshot: ${metricsError.message}. Continuing without initial metrics.`
         );
+      }
+      
+      // 8. Initialize app registration service
+      try {
+        const appRegistrationInitialized = await appRegistrationService.initialize();
+        if (!appRegistrationInitialized) {
+          logger.warn(
+            "App registration service initialization had issues but will continue"
+          );
+          // Continue anyway - don't return false
+        } else {
+          logger.info("App registration service initialized successfully");
+        }
+      } catch (appRegError) {
+        logger.warn(
+          `App registration service initialization error: ${appRegError.message}. Continuing with limited app registration functionality.`
+        );
+        // Continue anyway - don't return false
       }
 
       logger.info("All core services initialized successfully");
