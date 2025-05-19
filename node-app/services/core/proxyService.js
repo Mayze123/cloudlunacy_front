@@ -139,6 +139,9 @@ class ProxyService {
       loadBalancer: {
         servers: [{ url: targetUrl }],
       },
+      endpoint: {
+        url: targetUrl,
+      },
     };
 
     // Register HTTP route using Consul service
