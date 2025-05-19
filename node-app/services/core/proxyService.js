@@ -365,8 +365,10 @@ class ProxyService {
     }
 
     try {
-      // Get all HTTP and TCP routers from Consul
-      const httpRouters = await this.consulService.get("http/routers");
+      // Get all HTTP routers (use recursive list so we see each child key)
+      const httpRouters = await this.consulService.get("http/routers", {
+        recurse: true,
+      });
       const tcpRouters = await this.consulService.get("tcp/routers");
 
       const routes = { http: [], mongodb: [] };
