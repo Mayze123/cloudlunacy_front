@@ -165,27 +165,43 @@ class ConsulService {
 
   /**
    * Get a value from Consul
-   * @param {string} key - The key to get
-   * @returns {Promise<any>} The value
+   * @param {string} key                  - The key or prefix to get (relative to prefix)
+   * @param {{ recurse?: boolean }} opts  - If recurse=true, list all children under that prefix
+   * @returns {Promise<any>} The value or an object map when recurse=true
    */
-  async get(key) {
+  async get(key, { recurse = false } = {}) {
     try {
       if (!this.isInitialized) {
         throw new Error("Consul service not initialized");
       }
 
       const fullKey = `${this.prefix}/${key}`;
-      const result = await this.consul.kv.get(fullKey);
 
-      if (!result) {
-        return null;
-      }
-
-      // Try to parse as JSON, return as is if not valid JSON
-      try {
-        return JSON.parse(result.Value);
-      } catch (e) {
-        return result.Value;
+      if (recurse) {
+        // return a map of child-key → parsed JSON/value
+        const items = await this.consul.kv.get({ key: fullKey, recurse: true });
+        if (!items) return {};
+        return items.reduce((acc, { Key, Value }) => {
+          // strip off the prefix + slash
+          const name = Key.slice(fullKey.length + 1);
+          let v;
+          try {
+            v = JSON.parse(Value);
+          } catch {
+            v = Value;
+          }
+          acc[name] = v;
+          return acc;
+        }, {});
+      } else {
+        // single-key read
+        const pair = await this.consul.kv.get(fullKey);
+        if (!pair) return null;
+        try {
+          return JSON.parse(pair.Value);
+        } catch {
+          return pair.Value;
+        }
       }
     } catch (error) {
       logger.error(`Failed to get key ${key}: ${error.message}`);
