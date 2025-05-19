@@ -137,10 +137,11 @@ class ProxyService {
     // Create HTTP service configuration
     const service = {
       loadBalancer: {
-        servers: [{ url: targetUrl }],
-      },
-      endpoint: {
-        url: targetUrl,
+        servers: [
+          {
+            url: targetUrl,
+          },
+        ],
       },
     };
 
