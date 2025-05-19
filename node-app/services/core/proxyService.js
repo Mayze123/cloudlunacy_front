@@ -131,7 +131,7 @@ class ProxyService {
       tls: {
         certResolver: "letsencrypt",
       },
-       priority: 110,
+      priority: 110,
     };
 
     // Create HTTP service configuration
@@ -360,7 +360,7 @@ class ProxyService {
         success: false,
         error: "Consul service not available",
         routes: [],
-        routesByType: { http: [], mongodb: [] }
+        routesByType: { http: [], mongodb: [] },
       };
     }
 
@@ -375,7 +375,11 @@ class ProxyService {
       if (httpRouters) {
         for (const [name, router] of Object.entries(httpRouters)) {
           // Skip special routers like traefik dashboard
-          if (name === "dashboard" || name === "traefik-healthcheck" || name === "http-catchall") {
+          if (
+            name === "dashboard" ||
+            name === "traefik-healthcheck" ||
+            name === "http-catchall"
+          ) {
             continue;
           }
 
@@ -386,7 +390,7 @@ class ProxyService {
               logger.warn(`Router ${name} has no service defined, skipping`);
               continue;
             }
-            
+
             const service = await this.consulService.get(
               `http/services/${serviceName}`
             );
@@ -410,10 +414,17 @@ class ProxyService {
                   subdomain,
                   domain: `${subdomain}.${this.appDomain}`,
                   rule: router.rule,
-                  targetUrl: service.loadBalancer?.servers?.[0]?.url || "unknown",
-                lastUpdated: new Date().toISOString(),
-              });
+                  targetUrl:
+                    service.loadBalancer?.servers?.[0]?.url || "unknown",
+                  lastUpdated: new Date().toISOString(),
+                });
+              }
             }
+          } catch (error) {
+            logger.error(`Error processing router ${name}: ${error.message}`, {
+              error: error.message,
+              stack: error.stack,
+            });
           }
         }
       }
