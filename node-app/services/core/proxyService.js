@@ -139,7 +139,8 @@ class ProxyService {
       loadBalancer: {
         servers: [
           {
-            url: targetUrl,
+            address: hostname,
+            port: parseInt(port, 10),
           },
         ],
       },
