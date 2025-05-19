@@ -10,6 +10,7 @@ const router = express.Router();
 const { AppError } = require("../utils/errorHandler");
 const { errorMiddleware } = require("../utils/errorHandler");
 const authMiddleware = require("./middleware/auth");
+const coreServices = require("../services/core");
 
 // Import route modules
 const certificateRoutes = require("./routes/certificate.routes");
