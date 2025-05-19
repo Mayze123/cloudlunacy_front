@@ -17,6 +17,7 @@ services:
       - backend
     volumes:
       - ./config/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./config/traefik/dynamic:/etc/traefik/dynamic:ro
       - ./config/certs:/etc/traefik/certs:ro
       - ./config/certs/acme:/etc/traefik/acme
       - /var/run/docker.sock:/var/run/docker.sock:ro

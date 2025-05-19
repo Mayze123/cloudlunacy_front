@@ -189,17 +189,30 @@ agent:
       try {
         // Use the proxy service if available
         const coreServices = require("../core");
-        if (coreServices && coreServices.consulService) {
+        if (
+          coreServices &&
+          coreServices.proxyService &&
+          coreServices.proxyService.initialized
+        ) {
           const routeInfo = await coreServices.proxyService.getAgentRoutes(
             agentId
           );
-          if (routeInfo && routeInfo.routes) {
+
+          // Check if routes is an array
+          if (routeInfo && Array.isArray(routeInfo.routes)) {
             mongoRouteExists = routeInfo.routes.some(
               (route) => route.type === "mongodb"
             );
             redisRouteExists = routeInfo.routes.some(
               (route) => route.type === "redis"
             );
+          }
+          // If routes is not an array, check routesByType (backwards compatibility)
+          else if (routeInfo && routeInfo.routesByType) {
+            mongoRouteExists =
+              routeInfo.routesByType.mongodb &&
+              routeInfo.routesByType.mongodb.length > 0;
+            redisRouteExists = false; // Redis is not currently supported in the new structure
           }
         }
       } catch (proxyErr) {

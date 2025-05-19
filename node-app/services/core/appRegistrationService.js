@@ -26,13 +26,35 @@ class AppRegistrationService {
 
     try {
       // Get consul service from core services
-      const coreServices = require("../core");
-      this.consulService = coreServices.consulService;
+      if (!this.consulService) {
+        const coreServices = require("../core");
+        this.consulService = coreServices.consulService;
+      }
 
-      if (!this.consulService || !this.consulService.isInitialized) {
+      // Wait for Consul service to be available
+      if (!this.consulService) {
+        logger.warn("Consul service not yet available, will try again later");
+        return false;
+      }
+
+      // Wait for Consul service to be initialized
+      if (!this.consulService.isInitialized) {
+        try {
+          await this.consulService.initialize();
+        } catch (consulErr) {
+          logger.warn(
+            `Failed to initialize Consul service: ${consulErr.message}`
+          );
+        }
+      }
+
+      // Final check if Consul is initialized
+      if (!this.consulService.isInitialized) {
         logger.error(
-          "Consul service not available, app registration service will not function"
+          "Consul service not initialized, app registration service will not function properly"
         );
+        // Continue anyway but mark as not fully initialized
+        this.initialized = false;
         return false;
       }
 

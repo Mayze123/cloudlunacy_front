@@ -37,6 +37,7 @@ http:
       loadBalancer:
         servers:
           - url: "http://node-app:3005"
+        passHostHeader: true
 
 # TLS configuration
 tls:

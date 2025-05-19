@@ -317,9 +317,16 @@ class ProxyService {
         }
       }
 
+      // Combine routes into a flat array with type field
+      const flatRoutes = [
+        ...routes.http.map((route) => ({ ...route, type: "http" })),
+        ...routes.mongodb.map((route) => ({ ...route, type: "mongodb" })),
+      ];
+
       return {
         success: true,
-        routes,
+        routes: flatRoutes,
+        routesByType: routes, // Keep the old structure for backward compatibility
       };
     } catch (error) {
       logger.error(`Error retrieving agent routes: ${error.message}`, {
@@ -330,6 +337,8 @@ class ProxyService {
       return {
         success: false,
         error: `Failed to retrieve agent routes: ${error.message}`,
+        routes: [], // Add empty routes array to prevent "some is not a function" errors
+        routesByType: { http: [], mongodb: [] }, // Add empty routesByType to prevent "routeInfo.routes.some is not a function"
       };
     }
   }
@@ -417,9 +426,16 @@ class ProxyService {
         }
       }
 
+      // Combine routes into a flat array with type field
+      const flatRoutes = [
+        ...routes.http.map((route) => ({ ...route, type: "http" })),
+        ...routes.mongodb.map((route) => ({ ...route, type: "mongodb" })),
+      ];
+
       return {
         success: true,
-        routes,
+        routes: flatRoutes,
+        routesByType: routes, // Keep the old structure for backward compatibility
       };
     } catch (error) {
       logger.error(`Error retrieving all routes: ${error.message}`, {
@@ -430,6 +446,8 @@ class ProxyService {
       return {
         success: false,
         error: `Failed to retrieve all routes: ${error.message}`,
+        routes: [], // Add empty routes array to prevent "some is not a function" errors
+        routesByType: { http: [], mongodb: [] }, // Add empty routesByType to prevent "routes.some is not a function"
       };
     }
   }

@@ -141,10 +141,11 @@ module.exports = {
           `Failed to take initial metrics snapshot: ${metricsError.message}. Continuing without initial metrics.`
         );
       }
-      
+
       // 8. Initialize app registration service
       try {
-        const appRegistrationInitialized = await appRegistrationService.initialize();
+        const appRegistrationInitialized =
+          await appRegistrationService.initialize();
         if (!appRegistrationInitialized) {
           logger.warn(
             "App registration service initialization had issues but will continue"

@@ -39,6 +39,7 @@ http:
         - app-routing
       tls:
         certResolver: "letsencrypt"
+      priority: 100
 
     # API router
     api:

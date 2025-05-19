@@ -163,6 +163,51 @@ router.get(
   }
 );
 
+// Add route for proxy/routes - needed by agents to verify route configuration
+// This endpoint should be unprotected so agents can access it
+router.get("/proxy/routes", async (req, res, next) => {
+  try {
+    console.log("GET /proxy/routes called");
+    const result = await proxyService.getAllRoutes();
+    console.log("Routes result:", JSON.stringify(result));
+
+    // Format the response to match what the agent expects
+    // The agent is looking for a specific format with domain/service properties
+    if (result.routes && Array.isArray(result.routes)) {
+      // Transform into what agent expects
+      const formattedRoutes = result.routes.map((route) => ({
+        name: `${route.agentId}-${route.subdomain}`,
+        domain: route.domain,
+        targetUrl: route.targetUrl || route.target,
+        type: route.type,
+      }));
+
+      res.json({
+        success: true,
+        routes: formattedRoutes,
+      });
+    } else {
+      // Return original result if structure is different
+      res.json(result);
+    }
+  } catch (err) {
+    console.error("Error in /proxy/routes:", err);
+    next(err);
+  }
+});
+
+// Alternative route for agent routing checks (just for backward compatibility)
+router.get("/agent/routes", async (req, res, next) => {
+  try {
+    console.log("GET /agent/routes called (compatibility endpoint)");
+    const result = await proxyService.getAllRoutes();
+    res.json(result);
+  } catch (err) {
+    console.error("Error in /agent/routes:", err);
+    next(err);
+  }
+});
+
 router.get(
   "/proxy",
   authMiddleware.requireAuth,

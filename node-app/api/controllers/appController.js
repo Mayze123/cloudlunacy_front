@@ -34,13 +34,30 @@ exports.addApp = asyncHandler(async (req, res) => {
 
   logger.info(`Adding app ${subdomain} with target ${targetUrl}`);
 
-  // Register the app using the new AppRegistrationService
-  const result = await coreServices.appRegistrationService.registerApp(
-    agentId || "default",
-    subdomain,
-    targetUrl,
-    { protocol: protocol || "http" }
-  );
+  let result;
+  // First try to use the AppRegistrationService
+  if (
+    coreServices.appRegistrationService &&
+    coreServices.appRegistrationService.initialized
+  ) {
+    result = await coreServices.appRegistrationService.registerApp(
+      agentId || "default",
+      subdomain,
+      targetUrl,
+      { protocol: protocol || "http" }
+    );
+  } else {
+    // Fallback to the ProxyService if AppRegistrationService is not available
+    logger.info(
+      "AppRegistrationService not initialized, falling back to ProxyService"
+    );
+    result = await coreServices.proxyService.addHttpRoute(
+      agentId || "default",
+      subdomain,
+      targetUrl,
+      { protocol: protocol || "http" }
+    );
+  }
 
   res.status(201).json(result);
 });
@@ -53,8 +70,24 @@ exports.addApp = asyncHandler(async (req, res) => {
 exports.listApps = asyncHandler(async (req, res) => {
   logger.info("Listing all apps");
 
-  // Get all apps using the new AppRegistrationService
-  const apps = await coreServices.appRegistrationService.getAllApps();
+  let apps = [];
+  // First try to use the AppRegistrationService
+  if (
+    coreServices.appRegistrationService &&
+    coreServices.appRegistrationService.initialized
+  ) {
+    apps = await coreServices.appRegistrationService.getAllApps();
+  } else {
+    // Fallback to the ProxyService if AppRegistrationService is not available
+    logger.info(
+      "AppRegistrationService not initialized, falling back to ProxyService"
+    );
+    const result = await coreServices.proxyService.getAllRoutes();
+    if (result && result.success && result.routes) {
+      // Filter to only include HTTP routes
+      apps = result.routes.filter((route) => route.type === "http");
+    }
+  }
 
   res.status(200).json({
     success: true,
@@ -73,11 +106,23 @@ exports.removeApp = asyncHandler(async (req, res) => {
 
   logger.info(`Removing app ${subdomain} for agent ${agentId}`);
 
-  // Unregister the app using the new AppRegistrationService
-  const result = await coreServices.appRegistrationService.unregisterApp(
-    agentId,
-    subdomain
-  );
+  let result;
+  // First try to use the AppRegistrationService
+  if (
+    coreServices.appRegistrationService &&
+    coreServices.appRegistrationService.initialized
+  ) {
+    result = await coreServices.appRegistrationService.unregisterApp(
+      agentId,
+      subdomain
+    );
+  } else {
+    // Fallback to the ProxyService if AppRegistrationService is not available
+    logger.info(
+      "AppRegistrationService not initialized, falling back to ProxyService"
+    );
+    result = await coreServices.proxyService.removeRoute(agentId, subdomain);
+  }
 
   if (!result.success) {
     throw new AppError(`Failed to remove app ${subdomain}`, 404);
