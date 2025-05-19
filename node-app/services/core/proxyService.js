@@ -355,7 +355,12 @@ class ProxyService {
     // Check if Consul service is available
     if (!this.consulService || !this.consulService.isInitialized) {
       logger.error("Consul service not available for retrieving all routes");
-      throw new AppError("Consul service not available", 500);
+      return {
+        success: false,
+        error: "Consul service not available",
+        routes: [],
+        routesByType: { http: [], mongodb: [] }
+      };
     }
 
     try {
@@ -369,36 +374,42 @@ class ProxyService {
       if (httpRouters) {
         for (const [name, router] of Object.entries(httpRouters)) {
           // Skip special routers like traefik dashboard
-          if (name === "dashboard" || name === "traefik-healthcheck") {
+          if (name === "dashboard" || name === "traefik-healthcheck" || name === "http-catchall") {
             continue;
           }
 
-          // Get the service details
-          const serviceName = router.service;
-          const service = await this.consulService.get(
-            `http/services/${serviceName}`
-          );
+          try {
+            // Get the service details
+            const serviceName = router.service;
+            if (!serviceName) {
+              logger.warn(`Router ${name} has no service defined, skipping`);
+              continue;
+            }
+            
+            const service = await this.consulService.get(
+              `http/services/${serviceName}`
+            );
 
-          if (service) {
-            // Extract agent ID and subdomain from name
-            const parts = name.split("-");
-            if (parts.length >= 2) {
-              const agentId = parts[0];
-              let subdomain;
+            if (service) {
+              // Extract agent ID and subdomain from name
+              const parts = name.split("-");
+              if (parts.length >= 2) {
+                const agentId = parts[0];
+                let subdomain;
 
-              // Handle both formats: "agentId-subdomain" and "agentId-subdomain-service"
-              if (parts[parts.length - 1] === "service") {
-                subdomain = parts.slice(1, -1).join("-");
-              } else {
-                subdomain = parts.slice(1).join("-");
-              }
+                // Handle both formats: "agentId-subdomain" and "agentId-subdomain-service"
+                if (parts[parts.length - 1] === "service") {
+                  subdomain = parts.slice(1, -1).join("-");
+                } else {
+                  subdomain = parts.slice(1).join("-");
+                }
 
-              routes.http.push({
-                agentId,
-                subdomain,
-                domain: `${subdomain}.${this.appDomain}`,
-                rule: router.rule,
-                targetUrl: service.loadBalancer?.servers?.[0]?.url || "unknown",
+                routes.http.push({
+                  agentId,
+                  subdomain,
+                  domain: `${subdomain}.${this.appDomain}`,
+                  rule: router.rule,
+                  targetUrl: service.loadBalancer?.servers?.[0]?.url || "unknown",
                 lastUpdated: new Date().toISOString(),
               });
             }

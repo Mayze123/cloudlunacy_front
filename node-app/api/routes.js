@@ -168,31 +168,75 @@ router.get(
 router.get("/proxy/routes", async (req, res, next) => {
   try {
     console.log("GET /proxy/routes called");
+
+    // First try to use AppRegistrationService for app routes
+    let appRoutes = [];
+    if (
+      coreServices.appRegistrationService &&
+      coreServices.appRegistrationService.initialized
+    ) {
+      try {
+        appRoutes = await coreServices.appRegistrationService.getAllApps();
+        console.log(
+          `Retrieved ${appRoutes.length} app routes from AppRegistrationService`
+        );
+      } catch (appErr) {
+        console.error("Error retrieving app routes:", appErr.message);
+      }
+    }
+
+    // Then get all routes from ProxyService
     const result = await proxyService.getAllRoutes();
-    console.log("Routes result:", JSON.stringify(result));
+    console.log(
+      `Retrieved ${result.routes?.length || 0} routes from ProxyService`
+    );
+
+    // Combine all routes and format them
+    const combinedRoutes = [...(result.routes || [])];
+
+    // Add any app routes not already in the results
+    if (appRoutes.length > 0) {
+      appRoutes.forEach((appRoute) => {
+        // Check if this route is already in the combined routes
+        const exists = combinedRoutes.some(
+          (r) =>
+            r.agentId === appRoute.agentId && r.subdomain === appRoute.subdomain
+        );
+
+        if (!exists) {
+          combinedRoutes.push({
+            ...appRoute,
+            type: "http",
+          });
+        }
+      });
+    }
 
     // Format the response to match what the agent expects
-    // The agent is looking for a specific format with domain/service properties
-    if (result.routes && Array.isArray(result.routes)) {
-      // Transform into what agent expects
-      const formattedRoutes = result.routes.map((route) => ({
-        name: `${route.agentId}-${route.subdomain}`,
-        domain: route.domain,
-        targetUrl: route.targetUrl || route.target,
-        type: route.type,
-      }));
+    const formattedRoutes = combinedRoutes.map((route) => ({
+      name: `${route.agentId}-${route.subdomain || ""}`,
+      domain: route.domain,
+      targetUrl: route.targetUrl || route.target,
+      type: route.type || "http",
+      agentId: route.agentId,
+      subdomain: route.subdomain,
+    }));
 
-      res.json({
-        success: true,
-        routes: formattedRoutes,
-      });
-    } else {
-      // Return original result if structure is different
-      res.json(result);
-    }
+    const response = {
+      success: true,
+      routes: formattedRoutes,
+      routeCount: formattedRoutes.length,
+    };
+
+    console.log(`Sending ${formattedRoutes.length} routes to client`);
+    res.json(response);
   } catch (err) {
     console.error("Error in /proxy/routes:", err);
-    next(err);
+    res.status(500).json({
+      success: false,
+      error: err.message,
+      routes: [], // Empty array to prevent client-side errors
+    });
   }
 });
 
