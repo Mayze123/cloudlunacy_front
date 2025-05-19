@@ -131,6 +131,7 @@ class ProxyService {
       tls: {
         certResolver: "letsencrypt",
       },
+       priority: 110,
     };
 
     // Create HTTP service configuration
