@@ -139,8 +139,7 @@ class ProxyService {
       loadBalancer: {
         servers: [
           {
-            address: hostname,
-            port: parseInt(port, 10),
+            url: targetUrl,
           },
         ],
       },
@@ -151,6 +150,24 @@ class ProxyService {
     try {
       // Set router and service in Consul
       await this.consulService.set(`http/routers/${routerName}`, router);
+
+      // Debug log to verify service format before saving
+      logger.debug(
+        `Registering HTTP service with configuration: ${JSON.stringify(
+          service
+        )}`
+      );
+
+      // Ensure the service is using the correct format (url instead of address/port)
+      if (!service.loadBalancer.servers[0].url) {
+        logger.error(
+          `Service configuration missing url property: ${JSON.stringify(
+            service
+          )}`
+        );
+        throw new AppError("Invalid service configuration", 500);
+      }
+
       await this.consulService.set(`http/services/${serviceName}`, service);
       consulRegistered = true;
     } catch (err) {
@@ -291,12 +308,48 @@ class ProxyService {
                 subdomain = nameParts.join("-");
               }
 
+              // Extract target URL from service, handling both format types (url or address/port)
+              let targetUrl = "unknown";
+              if (service.loadBalancer?.servers?.[0]) {
+                const server = service.loadBalancer.servers[0];
+                if (server.url) {
+                  targetUrl = server.url;
+                } else if (server.address && server.port) {
+                  // Convert address/port format to URL format
+                  targetUrl = `http://${server.address}:${server.port}`;
+
+                  // Fix the service configuration to use URL format
+                  logger.warn(
+                    `Found HTTP service using address/port format instead of URL. Fixing for ${name}`
+                  );
+                  const fixedService = {
+                    ...service,
+                    loadBalancer: {
+                      servers: [{ url: targetUrl }],
+                    },
+                  };
+
+                  // Update the service in Consul
+                  try {
+                    await this.consulService.set(
+                      `http/services/${serviceName}`,
+                      fixedService
+                    );
+                    logger.info(`Fixed service configuration for ${name}`);
+                  } catch (fixErr) {
+                    logger.error(
+                      `Failed to fix service configuration: ${fixErr.message}`
+                    );
+                  }
+                }
+              }
+
               routes.http.push({
                 agentId,
                 subdomain,
                 domain: `${subdomain}.${this.appDomain}`,
                 rule: router.rule,
-                targetUrl: service.loadBalancer?.servers?.[0]?.url || "unknown",
+                targetUrl,
               });
             }
           }
@@ -431,13 +484,48 @@ class ProxyService {
                   subdomain = parts.slice(1).join("-");
                 }
 
+                // Extract target URL from service, handling both format types (url or address/port)
+                let targetUrl = "unknown";
+                if (service.loadBalancer?.servers?.[0]) {
+                  const server = service.loadBalancer.servers[0];
+                  if (server.url) {
+                    targetUrl = server.url;
+                  } else if (server.address && server.port) {
+                    // Convert address/port format to URL format
+                    targetUrl = `http://${server.address}:${server.port}`;
+
+                    // Fix the service configuration to use URL format
+                    logger.warn(
+                      `Found HTTP service using address/port format instead of URL. Fixing for ${name}`
+                    );
+                    const fixedService = {
+                      ...service,
+                      loadBalancer: {
+                        servers: [{ url: targetUrl }],
+                      },
+                    };
+
+                    // Update the service in Consul
+                    try {
+                      await this.consulService.set(
+                        `http/services/${serviceName}`,
+                        fixedService
+                      );
+                      logger.info(`Fixed service configuration for ${name}`);
+                    } catch (fixErr) {
+                      logger.error(
+                        `Failed to fix service configuration: ${fixErr.message}`
+                      );
+                    }
+                  }
+                }
+
                 routes.http.push({
                   agentId,
                   subdomain,
                   domain: `${subdomain}.${this.appDomain}`,
                   rule: router.rule,
-                  targetUrl:
-                    service.loadBalancer?.servers?.[0]?.url || "unknown",
+                  targetUrl,
                   lastUpdated: new Date().toISOString(),
                 });
               }
