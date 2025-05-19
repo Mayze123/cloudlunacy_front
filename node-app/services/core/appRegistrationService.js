@@ -48,16 +48,16 @@ class AppRegistrationService {
         }
       }
 
-      // Final check if Consul is initialized
+      // Final check if Consul is initialized - only mark as initialized if Consul is ready
       if (!this.consulService.isInitialized) {
         logger.error(
           "Consul service not initialized, app registration service will not function properly"
         );
-        // Continue anyway but mark as not fully initialized
         this.initialized = false;
         return false;
       }
 
+      // Only set initialized to true when both this service and ConsulService are fully initialized
       this.initialized = true;
       logger.info("App registration service initialized successfully");
       return true;
@@ -69,6 +69,7 @@ class AppRegistrationService {
           stack: err.stack,
         }
       );
+      this.initialized = false;
       return false;
     }
   }

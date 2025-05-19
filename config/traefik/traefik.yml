@@ -13,12 +13,13 @@ ping:
 entryPoints:
   web:
     address: ":80"
-    http:
-      redirections:
-        entryPoint:
-          to: websecure
-          scheme: https
-          permanent: true
+    # Comment out the redirect for testing purposes
+    # http:
+    #   redirections:
+    #     entryPoint:
+    #       to: websecure
+    #       scheme: https
+    #       permanent: true
   websecure:
     address: ":443"
     http:
@@ -29,6 +30,7 @@ entryPoints:
             sans:
               - "api.${APP_DOMAIN:-cloudlunacy.uk}" # API subdomain
               - "traefik.${APP_DOMAIN:-cloudlunacy.uk}" # Traefik dashboard domain (if needed securely)
+              - "*.apps.${APP_DOMAIN:-cloudlunacy.uk}" # Wildcard for all app subdomains
               # Add other domains/SANs as needed
   mongodb:
     address: ":27017" # Entrypoint for MongoDB
@@ -44,14 +46,12 @@ providers:
     endpoints:
       - "consul:8500"
     rootKey: "traefik" # Default prefix for KV store keys
+    watch: true # Enable watching for KV changes
 
   # Enable File provider for local configuration files
   file:
     directory: "/etc/traefik/dynamic"
     watch: true
-    endpoint:
-      address: "consul:8500" # Address of the Consul agent
-      scheme: "http"
     # Optional: Default rule template if needed globally
     # defaultRule: "Host(`{{ .Name }}.example.com`)"
 

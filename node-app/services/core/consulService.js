@@ -144,6 +144,7 @@ class ConsulService {
    * @param {string} key - The key to set (relative to prefix)
    * @param {any} value - The value to set
    * @returns {Promise<boolean>} Success status
+   * @throws {Error} If setting the key fails
    */
   async set(key, value) {
     try {
@@ -159,7 +160,7 @@ class ConsulService {
       return true;
     } catch (error) {
       logger.error(`Failed to set key (legacy) ${key}: ${error.message}`);
-      return false;
+      throw new Error(`Failed to set key ${key}: ${error.message}`);
     }
   }
 

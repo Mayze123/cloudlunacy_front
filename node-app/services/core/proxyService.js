@@ -70,7 +70,7 @@ class ProxyService {
     }
 
     if (!subdomain) {
-      throw new AppError("Subdomain is required", 400);
+      throw new AppError("Subdomain is required for HTTP routes", 400);
     }
 
     if (!targetUrl) {
@@ -146,7 +146,6 @@ class ProxyService {
     };
 
     // Register HTTP route using Consul service
-    let consulRegistered = false;
     try {
       // Set router and service in Consul
       await this.consulService.set(`http/routers/${routerName}`, router);
@@ -169,33 +168,30 @@ class ProxyService {
       }
 
       await this.consulService.set(`http/services/${serviceName}`, service);
-      consulRegistered = true;
+
+      logger.info(
+        `Successfully registered HTTP route for ${subdomain} in Consul KV store`
+      );
+
+      return {
+        success: true,
+        message: `HTTP route added successfully for ${subdomain}.${this.appDomain}`,
+        route: {
+          agentId,
+          subdomain,
+          domain: `${subdomain}.${this.appDomain}`,
+          targetUrl,
+        },
+      };
     } catch (err) {
       logger.error(
         `Failed to register HTTP route for ${subdomain} in Consul: ${err.message}`
       );
-      throw new AppError("Failed to register route in Consul KV store", 500);
+      throw new AppError(
+        `Failed to register route in Consul KV store: ${err.message}`,
+        500
+      );
     }
-
-    if (!consulRegistered) {
-      logger.error(`Failed to register HTTP route for ${subdomain} in Consul`);
-      throw new AppError("Failed to register route in Consul KV store", 500);
-    }
-
-    logger.info(
-      `Successfully registered HTTP route for ${subdomain} in Consul KV store`
-    );
-
-    return {
-      success: true,
-      message: `HTTP route added successfully for ${subdomain}.${this.appDomain}`,
-      route: {
-        agentId,
-        subdomain,
-        domain: `${subdomain}.${this.appDomain}`,
-        targetUrl,
-      },
-    };
   }
 
   /**
