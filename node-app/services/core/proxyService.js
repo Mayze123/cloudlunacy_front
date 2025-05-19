@@ -371,9 +371,19 @@ class ProxyService {
 
       const routes = { http: [], mongodb: [] };
 
+      logger.info(
+        `⏳ [getAllRoutes] raw httpRouters =,${JSON.stringify(
+          httpRouters,
+          null,
+          2
+        )}`
+      );
+
       // Process HTTP routes
       if (httpRouters) {
         for (const [name, router] of Object.entries(httpRouters)) {
+          logger.info("🔍 examining router:", name, router);
+
           // Skip special routers like traefik dashboard
           if (
             name === "dashboard" ||
@@ -386,6 +396,10 @@ class ProxyService {
           try {
             // Get the service details
             const serviceName = router.service;
+            logger.info(
+              "   → will fetch service key:",
+              `http/services/${serviceName}`
+            );
             if (!serviceName) {
               logger.warn(`Router ${name} has no service defined, skipping`);
               continue;
@@ -394,6 +408,7 @@ class ProxyService {
             const service = await this.consulService.get(
               `http/services/${serviceName}`
             );
+            logger.info("   → fetched service:", service);
 
             if (service) {
               // Extract agent ID and subdomain from name
