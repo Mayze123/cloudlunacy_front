@@ -24,14 +24,14 @@ entryPoints:
     address: ":443"
     http:
       tls:
-        certResolver: letsencrypt # Default cert resolver
+        certResolver: letsencrypt
         domains:
-          - main: "${APP_DOMAIN:-cloudlunacy.uk}" # Main domain from .env
+          - main: "apps.cloudlunacy.uk" # From your APP_DOMAIN
             sans:
-              - "api.${APP_DOMAIN:-cloudlunacy.uk}" # API subdomain
-              - "traefik.${APP_DOMAIN:-cloudlunacy.uk}" # Traefik dashboard domain (if needed securely)
-              - "*.apps.${APP_DOMAIN:-cloudlunacy.uk}" # Wildcard for all app subdomains
-              # Add other domains/SANs as needed
+              - "api.apps.cloudlunacy.uk"
+              - "traefik.apps.cloudlunacy.uk"
+              - "*.apps.cloudlunacy.uk" # Wildcard for your app subdomains
+
   mongodb:
     address: ":27017" # Entrypoint for MongoDB
 
