@@ -1,19 +1,14 @@
-## Traefik Dynamic Configuration
-
-# HTTP configuration including middlewares
+# 1) ALL HTTP config under one document
 http:
   middlewares:
-    # Basic authentication for the dashboard
     auth-admin:
       basicAuth:
         users:
-          - "admin:$apr1$ruca84Hq$mbjdMZBAG.KWn7vfN/SNK/" # Password: adminpass
+          - "admin:$apr1$ruca84Hq$mbjdMZBAG.KWn7vfN/SNK/"
 
-    # Compression middleware
     compress:
       compress: {}
 
-    # CORS headers middleware
     cors-headers:
       headers:
         accessControlAllowMethods:
@@ -29,7 +24,6 @@ http:
         accessControlMaxAge: 100
         addVaryHeader: true
 
-    # Security headers middleware
     secure-headers:
       headers:
         frameDeny: true
@@ -40,10 +34,94 @@ http:
         stsPreload: true
         stsSeconds: 31536000
 
-    # App routing specific middleware
-    app-routing:
-      chain:
-        middlewares:
-          - secure-headers
-          - cors-headers
-          - compress
+    redirect-to-https:
+      redirectScheme:
+        scheme: https
+        permanent: true
+
+    rate-limit:
+      rateLimit:
+        average: 100
+        burst: 50
+        period: 1s
+        sourceCriterion:
+          ipStrategy:
+            depth: 0 # must specify at least one property
+
+  routers:
+    traefik-healthcheck:
+      entryPoints:
+        - "web" # or “traefik” if you’ve defined that entryPoint
+      rule: "Path(`/ping`)"
+      service: "api@internal"
+      middlewares:
+        - secure-headers
+
+    dashboard:
+      entryPoints:
+        - "websecure"
+      rule: "Host(`traefik.localhost`)"
+      service: "api@internal"
+      middlewares:
+        - auth-admin
+        - secure-headers
+      tls: {}
+
+    http-catchall:
+      entryPoints:
+        - "web"
+      rule: "HostRegexp(`{host:.+}`)"
+      middlewares:
+        - redirect-to-https
+      service: "noop@internal"
+
+    apps:
+      entryPoints:
+        - "websecure"
+      rule: "HostRegexp(`{subdomain:[a-z0-9-]+}.apps.cloudlunacy.uk`)"
+      service: "node-app-service"
+      middlewares:
+        - app-routing
+      tls:
+        certResolver: "letsencrypt"
+      priority: 100
+
+    api:
+      entryPoints:
+        - "websecure"
+      rule: "Host(`api.cloudlunacy.uk`)"
+      service: "node-app-service"
+      middlewares:
+        - secure-headers
+        - cors-headers
+      tls:
+        certResolver: "letsencrypt"
+
+  services:
+    noop@internal:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:8080"
+
+    node-app-service:
+      loadBalancer:
+        servers:
+          - url: "http://node-app:3005"
+        passHostHeader: true
+
+# 2) TCP routing for MongoDB still separate
+tcp:
+  routers:
+    mongodb:
+      entryPoints:
+        - "mongodb"
+      rule: "HostSNI(`*.mongodb.cloudlunacy.uk`)"
+      service: "mongodb"
+      tls:
+        passthrough: true
+
+  services:
+    mongodb:
+      loadBalancer:
+        servers:
+          - address: "127.0.0.1:27017"
