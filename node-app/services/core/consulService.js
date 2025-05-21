@@ -239,10 +239,20 @@ class ConsulService {
    * @returns {Promise<boolean>} Success status
    */
   async addHttpRouter(name, routerConfig) {
-    // TODO: Update this similarly if HTTP routes use Consul KV
-    // For now, keep the old method if it works for HTTP
-    logger.warn("Using legacy set for addHttpRouter. Consider updating.");
-    return this.set(`http/routers/${name}`, routerConfig);
+    try {
+      if (!this.isInitialized) {
+        throw new Error("Consul service not initialized");
+      }
+      const basePath = `${this.prefix}/http/routers/${name}`;
+      await this._setConsulKeysFromObject(basePath, routerConfig);
+      logger.info(`Successfully set HTTP router keys for ${name}`);
+      return true;
+    } catch (error) {
+      logger.error(
+        `Failed to set HTTP router keys for ${name}: ${error.message}`
+      );
+      return false;
+    }
   }
 
   /**
@@ -252,10 +262,20 @@ class ConsulService {
    * @returns {Promise<boolean>} Success status
    */
   async addHttpService(name, serviceConfig) {
-    // TODO: Update this similarly if HTTP routes use Consul KV
-    // For now, keep the old method if it works for HTTP
-    logger.warn("Using legacy set for addHttpService. Consider updating.");
-    return this.set(`http/services/${name}`, serviceConfig);
+    try {
+      if (!this.isInitialized) {
+        throw new Error("Consul service not initialized");
+      }
+      const basePath = `${this.prefix}/http/services/${name}`;
+      await this._setConsulKeysFromObject(basePath, serviceConfig);
+      logger.info(`Successfully set HTTP service keys for ${name}`);
+      return true;
+    } catch (error) {
+      logger.error(
+        `Failed to set HTTP service keys for ${name}: ${error.message}`
+      );
+      return false;
+    }
   }
 
   /**
