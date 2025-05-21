@@ -55,48 +55,11 @@ class ConsulService {
    * @returns {Promise<void>}
    */
   async initializeKeyStructure() {
-    logger.debug("Initializing Consul key structure");
-
-    // Create base keys with empty structures if they don't exist
-    const baseKeys = [
-      { key: `${this.prefix}/http/routers`, value: JSON.stringify({}) },
-      { key: `${this.prefix}/http/services`, value: JSON.stringify({}) },
-      { key: `${this.prefix}/tcp/routers`, value: JSON.stringify({}) },
-      { key: `${this.prefix}/tcp/services`, value: JSON.stringify({}) },
-      { key: `${this.prefix}/http/middlewares`, value: JSON.stringify({}) },
-      { key: `${this.prefix}/tls/certificates`, value: JSON.stringify({}) },
-    ];
-
-    for (const { key, value } of baseKeys) {
-      try {
-        const exists = await this.consul.kv.get(key);
-        if (!exists) {
-          await this.consul.kv.set(key, value);
-          logger.debug(`Created base key: ${key}`);
-        }
-      } catch (error) {
-        logger.warn(`Failed to initialize key ${key}: ${error.message}`);
-      }
-    }
-
-    // Also create an empty entrypoints configuration
-    try {
-      const entrypointsKey = `${this.prefix}/entrypoints`;
-      const exists = await this.consul.kv.get(entrypointsKey);
-      if (!exists) {
-        await this.consul.kv.set(
-          entrypointsKey,
-          JSON.stringify({
-            web: { address: ":80" },
-            websecure: { address: ":443" },
-            mongodb: { address: ":27017" },
-          })
-        );
-        logger.debug(`Created entrypoints key`);
-      }
-    } catch (error) {
-      logger.warn(`Failed to initialize entrypoints key: ${error.message}`);
-    }
+    logger.debug("Initializing Consul key structure - no explicit base keys will be created by this function anymore.");
+    // The KV entries for routers, services, etc., will be created on-demand
+    // when they are registered by other methods like addHttpRouter, addTcpRouter, etc.
+    // No need to create placeholder "folder" keys.
+    return Promise.resolve();
   }
 
   /**
