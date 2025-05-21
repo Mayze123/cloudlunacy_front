@@ -44,4 +44,8 @@ http:
         burst: 50
         period: 1s
         sourceCriterion:
-          ipStrategy: {}
+          ipStrategy:
+            depth: 1
+            excludedIPs:
+              - "127.0.0.1/32"
+              - "::1/128"
