@@ -28,8 +28,6 @@ entryPoints:
         domains:
           - main: "apps.cloudlunacy.uk" # From your APP_DOMAIN
             sans:
-              - "api.apps.cloudlunacy.uk"
-              - "traefik.apps.cloudlunacy.uk"
               - "*.apps.cloudlunacy.uk" # Wildcard for your app subdomains
 
   mongodb:
