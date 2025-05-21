@@ -46,7 +46,6 @@ providers:
     endpoints:
       - "consul:8500"
     rootKey: "traefik" # Default prefix for KV store keys
-    watch: true # Enable watching for KV changes
 
   # Enable File provider for local configuration files
   file:
