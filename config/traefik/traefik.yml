@@ -69,7 +69,7 @@ certificatesResolvers:
           - "8.8.8.8:53"
 
 log:
-  level: DEBUG # Temporarily increased for troubleshooting
+  level: Trace # Temporarily increased for troubleshooting
   # filePath: "/var/log/traefik.log" # Uncomment to log to a file inside the container
 
 accessLog:
