@@ -57,32 +57,14 @@ class ConsulService {
   async initializeKeyStructure() {
     logger.debug("Initializing Consul key structure and essential middlewares");
 
-    // Create base keys with empty structures if they don't exist
-    const baseKeys = [
-      { key: `${this.prefix}/http/routers`, value: JSON.stringify({}) },
-      { key: `${this.prefix}/http/services`, value: JSON.stringify({}) },
-      { key: `${this.prefix}/tcp/routers`, value: JSON.stringify({}) },
-      { key: `${this.prefix}/tcp/services`, value: JSON.stringify({}) },
-      { key: `${this.prefix}/http/middlewares`, value: JSON.stringify({}) },
-      { key: `${this.prefix}/tls/certificates`, value: JSON.stringify({}) },
-    ];
-
-    for (const { key, value } of baseKeys) {
-      try {
-        const exists = await this.consul.kv.get(key);
-        if (!exists) {
-          await this.consul.kv.set(key, value);
-          logger.debug(`Created base key: ${key}`);
-        }
-      } catch (error) {
-        logger.warn(`Failed to initialize key ${key}: ${error.message}`);
-      }
-    }
+    // Don't create empty parent objects - they cause issues with Traefik
+    // Consul KV allows setting nested keys without parent paths existing
+    // Only create the entrypoints configuration that Traefik needs
 
     // Create essential middlewares that are referenced by application routes
     await this._createEssentialMiddlewares();
 
-    // Also create an empty entrypoints configuration
+    // Create an empty entrypoints configuration
     try {
       const entrypointsKey = `${this.prefix}/entrypoints`;
       const exists = await this.consul.kv.get(entrypointsKey);

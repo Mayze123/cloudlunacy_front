@@ -176,10 +176,10 @@ class ProxyService {
       }
 
       // Set service FIRST to avoid orphaned routers
-      await this.consulService.set(`http/services/${serviceName}`, service);
+      await this.consulService.addHttpService(serviceName, service);
 
       // Only set router after service is successfully created
-      await this.consulService.set(`http/routers/${routerName}`, router);
+      await this.consulService.addHttpRouter(routerName, router);
 
       logger.info(
         `Successfully registered HTTP route for ${subdomain} in Consul KV store`
