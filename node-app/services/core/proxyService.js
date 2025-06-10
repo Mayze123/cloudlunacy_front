@@ -127,7 +127,6 @@ class ProxyService {
       entryPoints: ["websecure"],
       rule: `Host(\`${subdomain}.${this.appDomain}\`)`,
       service: serviceName,
-      middlewares: ["app-routing"],
       tls: {
         certResolver: "letsencrypt",
       },
