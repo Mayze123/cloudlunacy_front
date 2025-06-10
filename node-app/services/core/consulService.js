@@ -55,11 +55,112 @@ class ConsulService {
    * @returns {Promise<void>}
    */
   async initializeKeyStructure() {
-    logger.debug("Initializing Consul key structure - no explicit base keys will be created by this function anymore.");
-    // The KV entries for routers, services, etc., will be created on-demand
-    // when they are registered by other methods like addHttpRouter, addTcpRouter, etc.
-    // No need to create placeholder "folder" keys.
-    return Promise.resolve();
+    logger.debug("Initializing Consul key structure and essential middlewares");
+
+    // Create base keys with empty structures if they don't exist
+    const baseKeys = [
+      { key: `${this.prefix}/http/routers`, value: JSON.stringify({}) },
+      { key: `${this.prefix}/http/services`, value: JSON.stringify({}) },
+      { key: `${this.prefix}/tcp/routers`, value: JSON.stringify({}) },
+      { key: `${this.prefix}/tcp/services`, value: JSON.stringify({}) },
+      { key: `${this.prefix}/http/middlewares`, value: JSON.stringify({}) },
+      { key: `${this.prefix}/tls/certificates`, value: JSON.stringify({}) },
+    ];
+
+    for (const { key, value } of baseKeys) {
+      try {
+        const exists = await this.consul.kv.get(key);
+        if (!exists) {
+          await this.consul.kv.set(key, value);
+          logger.debug(`Created base key: ${key}`);
+        }
+      } catch (error) {
+        logger.warn(`Failed to initialize key ${key}: ${error.message}`);
+      }
+    }
+
+    // Create essential middlewares that are referenced by application routes
+    await this._createEssentialMiddlewares();
+
+    // Also create an empty entrypoints configuration
+    try {
+      const entrypointsKey = `${this.prefix}/entrypoints`;
+      const exists = await this.consul.kv.get(entrypointsKey);
+      if (!exists) {
+        await this.consul.kv.set(
+          entrypointsKey,
+          JSON.stringify({
+            web: { address: ":80" },
+            websecure: { address: ":443" },
+            mongodb: { address: ":27017" },
+          })
+        );
+        logger.debug(`Created entrypoints key`);
+      }
+    } catch (error) {
+      logger.warn(`Failed to initialize entrypoints key: ${error.message}`);
+    }
+  }
+
+  /**
+   * Create essential middlewares that are referenced by application routes
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _createEssentialMiddlewares() {
+    logger.debug("Creating essential middlewares");
+
+    const essentialMiddlewares = {
+      "app-routing": {
+        headers: {
+          customRequestHeaders: {
+            "X-Forwarded-Proto": "https",
+          },
+        },
+      },
+      "secure-headers": {
+        headers: {
+          frameDeny: true,
+          browserXssFilter: true,
+          contentTypeNosniff: true,
+          forceSTSHeader: true,
+          stsIncludeSubdomains: true,
+          stsPreload: true,
+          stsSeconds: 31536000,
+        },
+      },
+      "cors-headers": {
+        headers: {
+          accessControlAllowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+          accessControlAllowOriginList: [
+            "https://*.cloudlunacy.uk",
+            "https://*.apps.cloudlunacy.uk",
+            "http://localhost:3000",
+          ],
+          accessControlAllowCredentials: true,
+          accessControlMaxAge: 100,
+          addVaryHeader: true,
+        },
+      },
+      compress: {
+        compress: {},
+      },
+    };
+
+    for (const [middlewareName, config] of Object.entries(essentialMiddlewares)) {
+      try {
+        const middlewareKey = `${this.prefix}/http/middlewares/${middlewareName}`;
+        const exists = await this.consul.kv.get(middlewareKey);
+        if (!exists) {
+          await this._setConsulKeysFromObject(middlewareKey, config);
+          logger.info(`Created essential middleware: ${middlewareName}`);
+        } else {
+          logger.debug(`Middleware ${middlewareName} already exists, skipping`);
+        }
+      } catch (error) {
+        logger.error(`Failed to create middleware ${middlewareName}: ${error.message}`);
+      }
+    }
   }
 
   /**
@@ -280,6 +381,29 @@ class ConsulService {
     } catch (error) {
       logger.error(
         `Failed to set TCP service keys for ${name}: ${error.message}`
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Add HTTP middleware configuration to Consul using individual keys.
+   * @param {string} name - Middleware name
+   * @param {object} middlewareConfig - Middleware configuration
+   * @returns {Promise<boolean>} Success status
+   */
+  async addHttpMiddleware(name, middlewareConfig) {
+    try {
+      if (!this.isInitialized) {
+        throw new Error("Consul service not initialized");
+      }
+      const basePath = `${this.prefix}/http/middlewares/${name}`;
+      await this._setConsulKeysFromObject(basePath, middlewareConfig);
+      logger.info(`Created HTTP middleware: ${name}`);
+      return true;
+    } catch (error) {
+      logger.error(
+        `Failed to set HTTP middleware keys for ${name}: ${error.message}`
       );
       return false;
     }
