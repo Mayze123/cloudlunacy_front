@@ -115,6 +115,8 @@ class ConsulService {
         headers: {
           customRequestHeaders: {
             "X-Forwarded-Proto": "https",
+            "X-Real-IP": "{remoteIP}",
+            "X-Forwarded-For": "{remoteIP}",
           },
         },
       },
@@ -131,7 +133,13 @@ class ConsulService {
       },
       "cors-headers": {
         headers: {
-          accessControlAllowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+          accessControlAllowMethods: [
+            "GET",
+            "POST",
+            "PUT",
+            "DELETE",
+            "OPTIONS",
+          ],
           accessControlAllowOriginList: [
             "https://*.cloudlunacy.uk",
             "https://*.apps.cloudlunacy.uk",
@@ -147,18 +155,32 @@ class ConsulService {
       },
     };
 
-    for (const [middlewareName, config] of Object.entries(essentialMiddlewares)) {
+    for (const [middlewareName, config] of Object.entries(
+      essentialMiddlewares
+    )) {
       try {
         const middlewareKey = `${this.prefix}/http/middlewares/${middlewareName}`;
-        const exists = await this.consul.kv.get(middlewareKey);
-        if (!exists) {
+
+        // Always recreate the app-routing middleware to ensure it has the latest config
+        if (middlewareName === "app-routing") {
+          await this.delete(`http/middlewares/${middlewareName}`);
           await this._setConsulKeysFromObject(middlewareKey, config);
-          logger.info(`Created essential middleware: ${middlewareName}`);
+          logger.info(`Recreated essential middleware: ${middlewareName}`);
         } else {
-          logger.debug(`Middleware ${middlewareName} already exists, skipping`);
+          const exists = await this.consul.kv.get(middlewareKey);
+          if (!exists) {
+            await this._setConsulKeysFromObject(middlewareKey, config);
+            logger.info(`Created essential middleware: ${middlewareName}`);
+          } else {
+            logger.debug(
+              `Middleware ${middlewareName} already exists, skipping`
+            );
+          }
         }
       } catch (error) {
-        logger.error(`Failed to create middleware ${middlewareName}: ${error.message}`);
+        logger.error(
+          `Failed to create middleware ${middlewareName}: ${error.message}`
+        );
       }
     }
   }
@@ -404,6 +426,34 @@ class ConsulService {
     } catch (error) {
       logger.error(
         `Failed to set HTTP middleware keys for ${name}: ${error.message}`
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Update an existing HTTP middleware configuration in Consul
+   * @param {string} name - Middleware name
+   * @param {object} middlewareConfig - New middleware configuration
+   * @returns {Promise<boolean>} Success status
+   */
+  async updateHttpMiddleware(name, middlewareConfig) {
+    try {
+      if (!this.isInitialized) {
+        throw new Error("Consul service not initialized");
+      }
+
+      // First, delete the existing middleware
+      await this.delete(`http/middlewares/${name}`);
+
+      // Then create the new one
+      const basePath = `${this.prefix}/http/middlewares/${name}`;
+      await this._setConsulKeysFromObject(basePath, middlewareConfig);
+      logger.info(`Updated HTTP middleware: ${name}`);
+      return true;
+    } catch (error) {
+      logger.error(
+        `Failed to update HTTP middleware ${name}: ${error.message}`
       );
       return false;
     }
