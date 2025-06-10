@@ -130,7 +130,7 @@ class ProxyService {
       tls: {
         certResolver: "letsencrypt",
       },
-      priority: 110,
+      priority: 200, // Higher priority than file-based routes (100)
     };
 
     // Create HTTP service configuration
