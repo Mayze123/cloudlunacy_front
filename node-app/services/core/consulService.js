@@ -115,13 +115,8 @@ class ConsulService {
         headers: {
           customRequestHeaders: {
             "X-Forwarded-Proto": "https",
-            "X-Forwarded-Host": "{host}",
             "X-Real-IP": "{remoteIP}",
             "X-Forwarded-For": "{remoteIP}",
-          },
-          customResponseHeaders: {
-            "X-Frame-Options": "DENY",
-            "X-Content-Type-Options": "nosniff",
           },
         },
       },
