@@ -173,6 +173,25 @@ class ProxyService {
         `Successfully registered HTTP route for ${subdomain} in Consul KV store`
       );
 
+      // Force Traefik to reload its configuration to pick up the new route immediately
+      try {
+        const coreServices = require("../core");
+        if (coreServices.certificateService && coreServices.certificateService.initialized) {
+          logger.info("Forcing Traefik to reload configuration after route update");
+          const reloadResult = await coreServices.certificateService.reloadTraefik();
+          if (!reloadResult.success) {
+            logger.warn(`Traefik reload failed: ${reloadResult.error}`);
+          } else {
+            logger.info("Traefik configuration reloaded successfully");
+          }
+        } else {
+          logger.warn("Certificate service not available for Traefik reload");
+        }
+      } catch (reloadErr) {
+        // Don't fail the route registration if reload fails, just log the warning
+        logger.warn(`Failed to reload Traefik after route update: ${reloadErr.message}`);
+      }
+
       return {
         success: true,
         message: `HTTP route added successfully for ${subdomain}.${this.appDomain}`,
@@ -250,6 +269,25 @@ class ProxyService {
     logger.info(
       `Successfully removed HTTP route for ${subdomain} from Consul KV store`
     );
+
+    // Force Traefik to reload its configuration to remove the route immediately
+    try {
+      const coreServices = require("../core");
+      if (coreServices.certificateService && coreServices.certificateService.initialized) {
+        logger.info("Forcing Traefik to reload configuration after route removal");
+        const reloadResult = await coreServices.certificateService.reloadTraefik();
+        if (!reloadResult.success) {
+          logger.warn(`Traefik reload failed: ${reloadResult.error}`);
+        } else {
+          logger.info("Traefik configuration reloaded successfully");
+        }
+      } else {
+        logger.warn("Certificate service not available for Traefik reload");
+      }
+    } catch (reloadErr) {
+      // Don't fail the route removal if reload fails, just log the warning
+      logger.warn(`Failed to reload Traefik after route removal: ${reloadErr.message}`);
+    }
 
     return {
       success: true,
