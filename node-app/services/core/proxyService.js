@@ -41,6 +41,18 @@ class ProxyService {
 
       this.initialized = true;
       logger.info("Proxy service initialized successfully");
+
+      // Perform self-healing: clean up any orphaned routers
+      try {
+        logger.info("Performing self-healing check for orphaned routers...");
+        await this.getAllRoutes(); // This will automatically clean up orphaned routers
+        logger.info("Self-healing check completed");
+      } catch (healErr) {
+        logger.warn(
+          `Self-healing check failed, but continuing: ${healErr.message}`
+        );
+      }
+
       return true;
     } catch (err) {
       logger.error(`Failed to initialize proxy service: ${err.message}`, {
@@ -146,9 +158,6 @@ class ProxyService {
 
     // Register HTTP route using Consul service
     try {
-      // Set router and service in Consul
-      await this.consulService.set(`http/routers/${routerName}`, router);
-
       // Debug log to verify service format before saving
       logger.debug(
         `Registering HTTP service with configuration: ${JSON.stringify(
@@ -166,7 +175,11 @@ class ProxyService {
         throw new AppError("Invalid service configuration", 500);
       }
 
+      // Set service FIRST to avoid orphaned routers
       await this.consulService.set(`http/services/${serviceName}`, service);
+
+      // Only set router after service is successfully created
+      await this.consulService.set(`http/routers/${routerName}`, router);
 
       logger.info(
         `Successfully registered HTTP route for ${subdomain} in Consul KV store`
@@ -213,6 +226,18 @@ class ProxyService {
       logger.error(
         `Failed to register HTTP route for ${subdomain} in Consul: ${err.message}`
       );
+
+      // Cleanup orphaned router/service if they were partially created
+      try {
+        logger.warn(
+          `Cleaning up potentially orphaned router/service for ${routerName}`
+        );
+        await this.consulService.delete(`http/routers/${routerName}`);
+        await this.consulService.delete(`http/services/${serviceName}`);
+      } catch (cleanupErr) {
+        logger.warn(`Cleanup failed, but continuing: ${cleanupErr.message}`);
+      }
+
       throw new AppError(
         `Failed to register route in Consul KV store: ${err.message}`,
         500
@@ -506,6 +531,22 @@ class ProxyService {
             const service = await this.consulService.get(
               `http/services/${serviceName}`
             );
+
+            if (!service) {
+              // Auto-fix orphaned router: remove it to prevent Traefik errors
+              logger.warn(
+                `Found orphaned router ${name} with missing service ${serviceName}, removing it`
+              );
+              try {
+                await this.consulService.delete(`http/routers/${name}`);
+                logger.info(`Successfully removed orphaned router ${name}`);
+              } catch (removeErr) {
+                logger.error(
+                  `Failed to remove orphaned router ${name}: ${removeErr.message}`
+                );
+              }
+              continue;
+            }
 
             if (service) {
               // Extract agent ID and subdomain from name
